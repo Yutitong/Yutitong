@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { circumference, decalFrame, decalLocal, mirrorDecal } from '../src/app/decalMath.js';
+import { circumference, decalFrame, decalLocal, decalPoint, mirrorDecal } from '../src/app/decalMath.js';
 
 const base = { position: [5, 110, 12], normal: [0.3, 0, 1], rotation: 20, size: 20, flipX: false };
 
@@ -79,5 +79,33 @@ describe('wrap-around images', () => {
     const b = decalLocal(m, 1, [-20, 44, 8.66]);
     expect(1 - b[0]).toBeCloseTo(a[0]); // flipX is toggled on the copy
     expect(b[1]).toBeCloseTo(a[1]);
+  });
+});
+
+describe('handle positions', () => {
+  const wrapped = {
+    position: [15, 40, 10],
+    normal: [0, 0, 1],
+    rotation: 30,
+    size: 20,
+    flipX: false,
+    mode: 'wrap',
+    wrap: { origin: [15, 0, 0], dir: [0, 1, 0], side: 1 },
+  };
+  it.each([
+    ['projected', base],
+    ['wrapped', wrapped],
+  ])('%s corners map back to the image corners', (_, d) => {
+    for (const [u, v] of [
+      [0.001, 0.001],
+      [0.999, 0.001],
+      [0.999, 0.999],
+      [0.5, 0.999],
+    ]) {
+      const p = decalPoint(d, 1.5, u, v);
+      const local = decalLocal(d, 1.5, p);
+      expect(local[0]).toBeCloseTo(u, 6);
+      expect(local[1]).toBeCloseTo(v, 6);
+    }
   });
 });

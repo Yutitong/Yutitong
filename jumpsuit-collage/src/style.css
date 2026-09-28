@@ -389,6 +389,65 @@ dialog select {
   }
 }
 
+.handles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.handle-frame {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-opacity: 0.55;
+}
+
+.handle-stem {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.handle {
+  pointer-events: all;
+  touch-action: none;
+}
+
+.handle-scale {
+  fill: #ffffff;
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: nwse-resize;
+}
+
+.handle-rotate circle {
+  fill: var(--accent);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.handle-rotate path {
+  stroke: #ffffff;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.handle-rotate {
+  cursor: grab;
+}
+
+.handle:hover,
+.handle:focus-visible {
+  filter: drop-shadow(0 0 3px rgba(43, 108, 255, 0.7));
+}
+
+.view.rotating,
+.view.rotating .handle {
+  cursor: grabbing;
+}
+
 [hidden] {
   display: none !important;
 }

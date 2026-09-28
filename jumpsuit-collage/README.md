@@ -26,7 +26,9 @@ npm run build    # static site in dist/ (works from any sub-path)
   an arm like a band, all the way round and continuous across every seam it crosses.
   "Fit all the way around" sizes it to just over one full turn; the overlapping ends are
   blended behind the body so there is no visible join.
-- **Edit**: drag a placed image to move it. Shift+scroll resizes it and Alt+scroll rotates it.
+- **Edit**: drag a placed image to move it. The selected image shows handles on the model:
+  drag a corner to resize it (1–250 cm wide) and the round handle above it to rotate it a full
+  360° (hold Shift to snap to 15°). Shift+scroll and Alt+scroll also resize and rotate.
   The right panel also has size, rotation, opacity, projection depth, flip, mirror copy (for a
   symmetric design), duplicate, layer order and delete.
 - **Keys**: Ctrl/⌘+Z to undo, Ctrl/⌘+Shift+Z to redo, Delete to remove, Ctrl/⌘+D to duplicate,

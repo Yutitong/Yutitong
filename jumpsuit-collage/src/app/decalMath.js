@@ -77,6 +77,33 @@ function wrapLocal(f, p) {
   return [(sx * f.cos + sy * f.sin) / f.width + 0.5, (sy * f.cos - sx * f.sin) / f.height + 0.5];
 }
 
+// 3D point of a local image coordinate (0..1 across, 0..1 up), used to place the
+// on-model handles. Wrapped images keep handles within `maxAngle` of the centre so
+// they stay on the visible side of the body.
+export function decalPoint(d, aspect, lx, ly, maxAngle = 1.3) {
+  if (d.mode === 'wrap') {
+    const f = wrapFrame(d, aspect);
+    const x = (lx - 0.5) * f.width;
+    const y = (ly - 0.5) * f.height;
+    const sx = f.cos * x - f.sin * y;
+    const sy = f.sin * x + f.cos * y;
+    const phi = Math.max(-maxAngle, Math.min(maxAngle, sx / f.radius));
+    const t = f.tc + sy;
+    return [0, 1, 2].map(
+      (c) => f.origin[c] + f.dir[c] * t + f.radius * (f.A[c] * Math.cos(phi) + f.right[c] * Math.sin(phi)),
+    );
+  }
+  const f = decalFrame(d, aspect);
+  const x = (lx - 0.5) * f.width;
+  const y = (ly - 0.5) * f.height;
+  return [0, 1, 2].map((c) => f.center[c] + f.right[c] * x + f.up[c] * y);
+}
+
+// Direction the image faces outward at its centre (for hiding handles seen from behind).
+export function decalFacing(d, aspect) {
+  return d.mode === 'wrap' ? wrapFrame(d, aspect).A : decalFrame(d, aspect).normal;
+}
+
 export const circumference = (d) => 2 * Math.PI * wrapFrame(d, 1).radius;
 
 // Local (0..1) coordinates of a 3D point inside a placed image, or null.

@@ -7,6 +7,7 @@ import { builtinStickers, loadImageFile, makeAsset, textSticker } from './app/as
 import { circumference, decalLocal, mirrorDecal } from './app/decalMath.js';
 import { wrapAxisFor } from './app/wrapAxis.js';
 import { History } from './app/history.js';
+import { HandleOverlay, MAX_SIZE, MIN_SIZE } from './app/handles.js';
 import { exportPattern } from './app/exporter.js';
 
 const $ = (id) => document.getElementById(id);
@@ -183,7 +184,7 @@ let drag = null;
 view3d.addEventListener(
   'pointerdown',
   (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || e.target.closest?.('.handle')) return;
     const hit = garmentView.pick(e.clientX, e.clientY);
     drag = { x: e.clientX, y: e.clientY, moved: false, hit: !!hit, decal: null };
     if (!hit) return;
@@ -247,7 +248,7 @@ view3d.addEventListener(
     e.preventDefault();
     e.stopImmediatePropagation();
     const delta = e.deltaY || e.deltaX;
-    if (e.shiftKey) d.size = clamp(d.size * Math.exp(-delta * 0.0015), 2, 150);
+    if (e.shiftKey) d.size = clamp(d.size * Math.exp(-delta * 0.0015), MIN_SIZE, MAX_SIZE);
     else d.rotation = wrapAngle(d.rotation - Math.sign(delta) * 5);
     dirty = true;
     refreshInspector();
@@ -330,7 +331,7 @@ $('fit-around').addEventListener(
   withSelected((d) => {
     // A little over one full turn: the overlapping ends are blended into each other
     // behind the body, so the band has no visible join.
-    d.size = Math.min(circumference(d) * 1.12, 150);
+    d.size = Math.min(circumference(d) * 1.12, MAX_SIZE);
     changed();
   }),
 );
@@ -461,7 +462,7 @@ window.addEventListener('keydown', (e) => {
     d.rotation = wrapAngle(d.rotation + (e.key === '[' ? -5 : 5));
     changed();
   } else if (e.key === '-' || e.key === '=' || e.key === '+') {
-    d.size = clamp(d.size * (e.key === '-' ? 1 / 1.08 : 1.08), 2, 150);
+    d.size = clamp(d.size * (e.key === '-' ? 1 / 1.08 : 1.08), MIN_SIZE, MAX_SIZE);
     changed();
   }
 });
@@ -553,8 +554,23 @@ function frame() {
   }
   renderView(garmentView, view3d);
   renderView(patternView, $('view-pattern'));
+  handles.update();
   requestAnimationFrame(frame);
 }
+
+const handles = new HandleOverlay(view3d, garmentView, {
+  selected,
+  aspectOf: (d) => state.assets.get(d.assetId)?.aspect,
+  onChange: () => {
+    dirty = true;
+    refreshInspector();
+  },
+  onCommit: () => changed(),
+  onInfo: (text) => {
+    if (text) $('view-hint').textContent = text;
+    else refreshUi();
+  },
+});
 
 history.push(snapshot());
 refreshUi();
