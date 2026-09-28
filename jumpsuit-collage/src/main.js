@@ -4,7 +4,8 @@ import { Baker } from './render/baker.js';
 import { GarmentView } from './render/garmentView.js';
 import { PatternView } from './render/patternView.js';
 import { builtinStickers, loadImageFile, makeAsset, textSticker } from './app/assets.js';
-import { decalLocal, mirrorDecal } from './app/decalMath.js';
+import { circumference, decalLocal, mirrorDecal } from './app/decalMath.js';
+import { wrapAxisFor } from './app/wrapAxis.js';
 import { History } from './app/history.js';
 import { exportPattern } from './app/exporter.js';
 
@@ -151,6 +152,9 @@ function placeDecal(assetId, hit) {
     opacity: 1,
     flipX: false,
     depth: null,
+    pieceId: hit.pieceId,
+    mode: 'project',
+    wrap: null,
   };
   state.decals.push(d);
   state.selectedId = d.id;
@@ -218,6 +222,8 @@ view3d.addEventListener('pointermove', (e) => {
   if (!hit) return;
   drag.decal.position = hit.point;
   drag.decal.normal = hit.normal;
+  drag.decal.pieceId = hit.pieceId;
+  if (drag.decal.mode === 'wrap') drag.decal.wrap = wrapAxisFor(hit.pieceId, hit.point);
   dirty = true;
 });
 
@@ -241,7 +247,7 @@ view3d.addEventListener(
     e.preventDefault();
     e.stopImmediatePropagation();
     const delta = e.deltaY || e.deltaX;
-    if (e.shiftKey) d.size = clamp(d.size * Math.exp(-delta * 0.0015), 2, 120);
+    if (e.shiftKey) d.size = clamp(d.size * Math.exp(-delta * 0.0015), 2, 150);
     else d.rotation = wrapAngle(d.rotation - Math.sign(delta) * 5);
     dirty = true;
     refreshInspector();
@@ -312,6 +318,22 @@ $('mirror').addEventListener(
     changed();
   }),
 );
+$('wrap').addEventListener('change', (e) => {
+  const d = selected();
+  if (!d) return;
+  d.mode = e.target.checked ? 'wrap' : 'project';
+  d.wrap = e.target.checked ? wrapAxisFor(d.pieceId, d.position) : null;
+  changed();
+});
+$('fit-around').addEventListener(
+  'click',
+  withSelected((d) => {
+    // A little over one full turn: the overlapping ends are blended into each other
+    // behind the body, so the band has no visible join.
+    d.size = Math.min(circumference(d) * 1.12, 150);
+    changed();
+  }),
+);
 $('duplicate').addEventListener('click', withSelected(duplicate));
 $('delete').addEventListener('click', withSelected(remove));
 $('forward').addEventListener('click', withSelected((d) => move(d, 1)));
@@ -343,6 +365,10 @@ function refreshInspector() {
   const d = selected();
   $('inspector').classList.toggle('disabled', !d);
   if (!d) return;
+  const wrap = d.mode === 'wrap';
+  $('wrap').checked = wrap;
+  $('fit-around').hidden = !wrap;
+  $('depth-label').hidden = wrap;
   const values = { ...d, depth: depthOf(d) };
   for (const [key, format] of Object.entries(sliders)) {
     $(key).value = values[key];
@@ -435,7 +461,7 @@ window.addEventListener('keydown', (e) => {
     d.rotation = wrapAngle(d.rotation + (e.key === '[' ? -5 : 5));
     changed();
   } else if (e.key === '-' || e.key === '=' || e.key === '+') {
-    d.size = clamp(d.size * (e.key === '-' ? 1 / 1.08 : 1.08), 2, 120);
+    d.size = clamp(d.size * (e.key === '-' ? 1 / 1.08 : 1.08), 2, 150);
     changed();
   }
 });

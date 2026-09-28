@@ -61,12 +61,14 @@
         <section id="inspector" class="disabled">
           <h2>Selected image</h2>
           <label>Width <output id="size-out"></output>
-            <input type="range" id="size" min="2" max="120" step="0.5" /></label>
+            <input type="range" id="size" min="2" max="150" step="0.5" /></label>
           <label>Rotation <output id="rotation-out"></output>
             <input type="range" id="rotation" min="-180" max="180" step="1" /></label>
           <label>Opacity <output id="opacity-out"></output>
             <input type="range" id="opacity" min="0" max="1" step="0.01" /></label>
-          <label>Wrap depth <output id="depth-out"></output>
+          <label class="row"><input type="checkbox" id="wrap" /> Wrap around body</label>
+          <button id="fit-around" class="wide" hidden>Fit all the way around</button>
+          <label id="depth-label">Projection depth <output id="depth-out"></output>
             <input type="range" id="depth" min="1" max="40" step="0.5" /></label>
           <div class="buttons">
             <button id="flip">Flip</button>
@@ -76,7 +78,7 @@
             <button id="backward">Send backward</button>
             <button id="delete" class="danger">Delete</button>
           </div>
-          <p class="hint">Shift + scroll resizes, Alt + scroll rotates the selected image on the model.</p>
+          <p class="hint">Shift + scroll resizes, Alt + scroll rotates the selected image on the model. “Wrap around body” winds the image around the torso, a leg or an arm, so it can continue across seams all the way round.</p>
         </section>
         <section>
           <h2>Layers</h2>

@@ -284,6 +284,10 @@ button.danger {
   margin-top: 10px;
 }
 
+button.wide {
+  width: 100%;
+}
+
 .buttons.end {
   display: flex;
   justify-content: flex-end;
@@ -383,4 +387,8 @@ dialog select {
   .topbar {
     flex-wrap: wrap;
   }
+}
+
+[hidden] {
+  display: none !important;
 }

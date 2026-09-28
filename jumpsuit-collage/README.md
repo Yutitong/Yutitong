@@ -22,8 +22,12 @@ npm run build    # static site in dist/ (works from any sub-path)
   panel or straight onto the model), or make a text sticker.
 - **Place**: click an image, then click the jumpsuit. Shift+click places several. You can also
   drag a thumbnail onto the model.
+- **Wrap around body**: tick this for the selected image and it winds around the torso, a leg or
+  an arm like a band, all the way round and continuous across every seam it crosses.
+  "Fit all the way around" sizes it to just over one full turn; the overlapping ends are
+  blended behind the body so there is no visible join.
 - **Edit**: drag a placed image to move it. Shift+scroll resizes it and Alt+scroll rotates it.
-  The right panel also has size, rotation, opacity, wrap depth, flip, mirror copy (for a
+  The right panel also has size, rotation, opacity, projection depth, flip, mirror copy (for a
   symmetric design), duplicate, layer order and delete.
 - **Keys**: Ctrl/⌘+Z to undo, Ctrl/⌘+Shift+Z to redo, Delete to remove, Ctrl/⌘+D to duplicate,
   `[` `]` to rotate, `-` `=` to resize, Esc to deselect.
@@ -61,6 +65,11 @@ piece carries its own artwork.
    point. The same pass drives the 3D texture, the pattern view and the high-resolution
    tiled export, so what you see is what prints. The seam allowance is filled by extending
    the surface tangentially past each seam.
+4. **Seamless across seams**: each image is a single continuous function of the 3D surface
+   point, with soft fades rather than hard cut-offs. Surface normals are averaged where pieces
+   meet, so both sides of a seam print the same colour. A browser check across every seam
+   (side seams, inseams, crotch, waist, armholes, shoulders) found an average colour
+   difference of at most about 5 out of 255.
 
 ## Limitations / ideas
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decalFrame, decalLocal, mirrorDecal } from '../src/app/decalMath.js';
+import { circumference, decalFrame, decalLocal, mirrorDecal } from '../src/app/decalMath.js';
 
 const base = { position: [5, 110, 12], normal: [0.3, 0, 1], rotation: 20, size: 20, flipX: false };
 
@@ -33,5 +33,51 @@ describe('decal projection', () => {
   it('keeps a stable frame on horizontal surfaces', () => {
     const f = decalFrame({ ...base, normal: [0, 1, 0], rotation: 0 }, 1);
     expect(f.up[2]).toBeCloseTo(-1);
+  });
+});
+
+describe('wrap-around images', () => {
+  const leg = {
+    position: [15, 40, 10],
+    normal: [0, 0, 1],
+    rotation: 0,
+    size: 20,
+    flipX: false,
+    mode: 'wrap',
+    wrap: { origin: [15, 0, 0], dir: [0, 1, 0], side: 1 },
+  };
+
+  it('winds around the axis: arc length maps to image width', () => {
+    // Quarter turn toward the wearer's left (+x) at radius 10 is 2*pi*10/4 cm along the image.
+    const p = [25, 40, 0];
+    const [lx, ly] = decalLocal({ ...leg, size: 40 }, 1, p);
+    expect(lx).toBeCloseTo(0.5 + (Math.PI * 5) / 40);
+    expect(ly).toBeCloseTo(0.5);
+  });
+
+  it('covers the full circumference when fitted around, continuing behind the leg', () => {
+    const d = { ...leg, size: circumference(leg) };
+    expect(d.size).toBeCloseTo(2 * Math.PI * 10);
+    // Points all the way round, including the back (behind the side seams), are covered.
+    for (let a = -3.1; a <= 3.1; a += 0.2) {
+      const p = [15 + 10 * Math.sin(a), 40, 10 * Math.cos(a)];
+      const local = decalLocal(d, 4, p);
+      expect(local).not.toBeNull();
+      expect(local[0]).toBeCloseTo(0.5 + a / (2 * Math.PI));
+    }
+  });
+
+  it('ignores points far from the axis (e.g. the other leg)', () => {
+    expect(decalLocal(leg, 1, [-15, 40, 10])).toBeNull();
+  });
+
+  it('mirrors onto the opposite limb', () => {
+    const m = mirrorDecal(leg);
+    expect(m.wrap.origin[0]).toBe(-15);
+    expect(m.wrap.side).toBe(-1);
+    const a = decalLocal(leg, 1, [20, 44, 8.66]);
+    const b = decalLocal(m, 1, [-20, 44, 8.66]);
+    expect(1 - b[0]).toBeCloseTo(a[0]); // flipX is toggled on the copy
+    expect(b[1]).toBeCloseTo(a[1]);
   });
 });

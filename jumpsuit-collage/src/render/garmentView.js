@@ -51,6 +51,7 @@ export class GarmentView {
       g.computeBoundingSphere();
       const mesh = new THREE.Mesh(g, outer);
       mesh.userData.pieceIndex = i;
+      mesh.userData.pieceId = piece.id;
       this.pickables.push(mesh);
       this.garment.add(mesh, new THREE.Mesh(g, inner));
       seamPositions.push(...seamLoop3D(piece));
@@ -103,7 +104,7 @@ export class GarmentView {
     // screen, tilted slightly toward the surface so they wrap naturally on curves.
     const toCamera = this.camera.position.clone().sub(h.point).normalize();
     const projection = toCamera.multiplyScalar(0.7).addScaledVector(normal, 0.3).normalize();
-    return { point: h.point.toArray(), normal: projection.toArray() };
+    return { point: h.point.toArray(), normal: projection.toArray(), pieceId: h.object.userData.pieceId };
   }
 
   project(p) {

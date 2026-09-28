@@ -473,6 +473,7 @@ function finishPiece(built) {
     name: spec.name,
     cut: 1,
     grid: { nu, nv },
+    boundary: loop,
     vertexCount: total,
     gridVertexCount: gridCount,
     positions: pos,
@@ -497,7 +498,7 @@ export function buildPieces() {
   const sleeve = buildPiece(sleeveSpec());
   const legFront = buildPiece(lowerSpec(false));
   const legBack = buildPiece(lowerSpec(true));
-  return [
+  const pieces = [
     front,
     back,
     sleeve,
@@ -507,6 +508,53 @@ export function buildPieces() {
     legBack,
     mirrorPiece(legBack, 'leg-back-right', 'Right back leg'),
   ].map(finishPiece);
+  stitchNormals(pieces);
+  return pieces;
+}
+
+// Average normals where pieces meet, so shading and image fading (which depend on the
+// normal) are identical on both sides of every seam.
+function stitchNormals(pieces, tolerance = 0.1) {
+  const edges = pieces.map((p) =>
+    p.boundary.map((k) => ({
+      p: at3(p.positions, k),
+      n: at3(p.normals, k),
+    })),
+  );
+  const updates = pieces.map((piece, a) =>
+    piece.boundary.map((k) => {
+      const pa = at3(piece.positions, k);
+      const sum = at3(piece.normals, k);
+      edges.forEach((loop, b) => {
+        if (b === a) return;
+        let best = null;
+        for (let i = 0; i < loop.length; i++) {
+          const s0 = loop[i];
+          const s1 = loop[(i + 1) % loop.length];
+          const e = sub(s1.p, s0.p);
+          const l2 = dot(e, e) || 1e-12;
+          const t = Math.min(1, Math.max(0, dot(sub(pa, s0.p), e) / l2));
+          const q = [s0.p[0] + e[0] * t, s0.p[1] + e[1] * t, s0.p[2] + e[2] * t];
+          const d = Math.hypot(...sub(q, pa));
+          if (d < tolerance && (!best || d < best.d)) {
+            best = { d, n: [0, 1, 2].map((c) => s0.n[c] + (s1.n[c] - s0.n[c]) * t) };
+          }
+        }
+        if (best) for (let c = 0; c < 3; c++) sum[c] += best.n[c];
+      });
+      const l = Math.hypot(...sum) || 1;
+      return sum.map((c) => c / l);
+    }),
+  );
+  pieces.forEach((piece, a) => {
+    const L = piece.boundary.length;
+    const rings = (piece.vertexCount - piece.gridVertexCount) / L;
+    piece.boundary.forEach((k, li) => {
+      const n = updates[a][li];
+      piece.normals.set(n, 3 * k);
+      for (let r = 0; r < rings; r++) piece.normals.set(n, 3 * (piece.gridVertexCount + r * L + li));
+    });
+  });
 }
 
 // Shelf-pack pieces onto a strip of fabric. Returns offsets (cm) and the fabric size.

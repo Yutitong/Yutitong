@@ -3,7 +3,7 @@
 // position, while the fragment shader knows the matching 3D surface point and
 // projects each decal onto it. The result is a texture laid out like the fabric.
 import * as THREE from 'three';
-import { decalFrame } from '../app/decalMath.js';
+import { decalFrame, wrapFrame } from '../app/decalMath.js';
 
 const vertexShader = /* glsl */ `
   attribute vec2 layoutPos;
@@ -20,6 +20,7 @@ const vertexShader = /* glsl */ `
 
 const decalFragment = /* glsl */ `
   uniform sampler2D uMap;
+  uniform float uMode; // 0 = project, 1 = wrap around an axis
   uniform vec3 uCenter;
   uniform vec3 uRight;
   uniform vec3 uUp;
@@ -29,22 +30,90 @@ const decalFragment = /* glsl */ `
   uniform float uOpacity;
   uniform float uFlip;
   uniform float uHighlight;
+  // wrap mode
+  uniform vec3 uAxisOrigin;
+  uniform vec3 uAxisDir;
+  uniform vec3 uAxisA;     // radial direction of the image centre
+  uniform vec3 uAxisRight; // tangential direction at the image centre
+  uniform float uRadius;
+  uniform float uCenterT;
+  uniform vec2 uRot;       // cos, sin of the rotation
+  uniform vec2 uRadial;    // distance range from the axis (faded softly at both ends)
+  uniform float uSide;     // +1 / -1: keep to that half of the body (leg bands), 0: all
   varying vec3 vPos;
   varying vec3 vNormal;
+  // Distance (cm) from a local image coordinate to the nearest image edge.
+  float edgeWeight(vec2 l) {
+    vec2 d = min(l, 1.0 - l) * uSize;
+    return clamp(min(d.x, d.y), 0.0, 1e4);
+  }
+
   void main() {
-    vec3 d = vPos - uCenter;
-    float lx = dot(d, uRight) / uSize.x + 0.5;
-    float ly = dot(d, uUp) / uSize.y + 0.5;
-    float lz = dot(d, uNormal);
-    if (lx < 0.0 || lx > 1.0 || ly < 0.0 || ly > 1.0 || abs(lz) > uDepth) discard;
-    float facing = dot(normalize(vNormal), uNormal);
-    float fade = smoothstep(0.02, 0.3, facing);
-    vec2 uv = vec2(uFlip > 0.5 ? 1.0 - lx : lx, ly);
-    vec4 c = texture2D(uMap, uv);
+    vec2 local;
+    vec2 gx;
+    vec2 gy;
+    float fade;
+    vec4 c;
+    if (uMode < 0.5) {
+      vec3 d = vPos - uCenter;
+      local = vec2(dot(d, uRight) / uSize.x, dot(d, uUp) / uSize.y) + 0.5;
+      float lz = abs(dot(d, uNormal));
+      if (lz > uDepth) discard;
+      fade = smoothstep(0.02, 0.3, dot(normalize(vNormal), uNormal)) * (1.0 - smoothstep(0.75 * uDepth, uDepth, lz));
+      if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) discard;
+      vec2 uv = vec2(uFlip > 0.5 ? 1.0 - local.x : local.x, local.y);
+      c = texture2D(uMap, uv);
+    } else {
+      vec3 q = vPos - uAxisOrigin;
+      float t = dot(q, uAxisDir);
+      vec3 radial = q - t * uAxisDir;
+      float r = length(radial);
+      // Soft limits (never hard cuts, so the print is continuous across every seam):
+      // distance from the axis, facing away from it, and staying on one half for leg bands.
+      fade = smoothstep(uRadial.x, uRadial.x * 1.8, r) * (1.0 - smoothstep(uRadial.y * 0.7, uRadial.y, r));
+      fade *= smoothstep(-0.15, 0.15, dot(normalize(vNormal), radial / max(r, 1e-4)));
+      if (uSide != 0.0) fade *= smoothstep(-0.5, 2.5, vPos.x * uSide);
+      if (fade <= 0.0) discard;
+      float phi = atan(dot(radial, uAxisRight), dot(radial, uAxisA));
+      mat2 rot = mat2(uRot.x, -uRot.y, uRot.y, uRot.x);
+      local = (rot * vec2(phi * uRadius, t - uCenterT)) / uSize + 0.5;
+      // Derivatives that ignore the jump of atan() behind the body (avoids a mip seam).
+      float dpx = dFdx(phi);
+      float dpy = dFdy(phi);
+      dpx -= 6.2831853 * floor(dpx / 6.2831853 + 0.5);
+      dpy -= 6.2831853 * floor(dpy / 6.2831853 + 0.5);
+      gx = (rot * vec2(dpx * uRadius, dFdx(t))) / uSize;
+      gy = (rot * vec2(dpy * uRadius, dFdy(t))) / uSize;
+      if (uFlip > 0.5) {
+        gx.x = -gx.x;
+        gy.x = -gy.x;
+      }
+      // One full turn in image coordinates. Where a long image overlaps itself behind the
+      // body, both ends are blended by distance to their edges, so the join is invisible.
+      vec2 turn = (rot * vec2(6.2831853 * uRadius, 0.0)) / uSize;
+      vec2 base = local;
+      vec4 acc = vec4(0.0);
+      float wsum = 0.0;
+      float wbest = 0.0;
+      for (int k = -1; k <= 1; k++) {
+        vec2 l = base + float(k) * turn;
+        if (l.x < 0.0 || l.x > 1.0 || l.y < 0.0 || l.y > 1.0) continue;
+        float w = max(edgeWeight(l), 1e-4);
+        vec2 uv = vec2(uFlip > 0.5 ? 1.0 - l.x : l.x, l.y);
+        acc += w * textureGrad(uMap, uv, gx, gy);
+        wsum += w;
+        if (w > wbest) {
+          wbest = w;
+          local = l; // for the selection outline
+        }
+      }
+      if (wsum <= 0.0) discard;
+      c = acc / wsum;
+    }
     c.a *= uOpacity * fade;
     if (uHighlight > 0.5 && fade > 0.5) {
       // Dashed outline marking the selected image (display only, never exported).
-      vec2 cm = vec2(lx, ly) * uSize;
+      vec2 cm = local * uSize;
       float edge = min(min(cm.x, uSize.x - cm.x), min(cm.y, uSize.y - cm.y));
       if (edge < 0.35) {
         float dash = step(0.5, fract((cm.x + cm.y) / 2.0));
@@ -84,6 +153,16 @@ export class Baker {
         uOpacity: { value: 1 },
         uFlip: { value: 0 },
         uHighlight: { value: 0 },
+        uMode: { value: 0 },
+        uAxisOrigin: { value: new THREE.Vector3() },
+        uAxisDir: { value: new THREE.Vector3() },
+        uAxisA: { value: new THREE.Vector3() },
+        uAxisRight: { value: new THREE.Vector3() },
+        uRadius: { value: 1 },
+        uCenterT: { value: 0 },
+        uRot: { value: new THREE.Vector2(1, 0) },
+        uRadial: { value: new THREE.Vector2() },
+        uSide: { value: 0 },
       },
       transparent: true,
       depthTest: false,
@@ -188,6 +267,20 @@ export class Baker {
       u.uOpacity.value = d.opacity;
       u.uFlip.value = d.flipX ? 1 : 0;
       u.uHighlight.value = d.id === highlightId ? 1 : 0;
+      const wrap = d.mode === 'wrap';
+      u.uMode.value = wrap ? 1 : 0;
+      if (wrap) {
+        const w = wrapFrame(d, asset.aspect);
+        u.uAxisOrigin.value.fromArray(w.origin);
+        u.uAxisDir.value.fromArray(w.dir);
+        u.uAxisA.value.fromArray(w.A);
+        u.uAxisRight.value.fromArray(w.right);
+        u.uRadius.value = w.radius;
+        u.uCenterT.value = w.tc;
+        u.uRot.value.set(w.cos, w.sin);
+        u.uRadial.value.fromArray(w.radialRange);
+        u.uSide.value = w.side;
+      }
       r.render(this.scene, this.camera);
     });
     target.texture.generateMipmaps = wantsMips;
