@@ -100,7 +100,7 @@ async function addFiles(files, arm) {
     try {
       last = addAsset(await loadImageFile(file), file.name.replace(/\.[^.]+$/, ''));
     } catch (err) {
-      alert(err.message);
+      $('view-hint').textContent = err.message;
     }
   }
   if (last && arm) {
@@ -491,12 +491,9 @@ $('export-go').addEventListener('click', async (e) => {
       },
       (msg) => ($('export-progress').textContent = msg),
     );
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'jumpsuit-collage-pattern.zip';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    $('export-progress').textContent = `Downloaded (${(blob.size / 1e6).toFixed(1)} MB).`;
+    const size = `${(blob.size / 1e6).toFixed(1)} MB`;
+    const saved = await saveFile('jumpsuit-collage-pattern.zip', blob);
+    $('export-progress').textContent = saved ? `Saved (${size}).` : 'Download cancelled.';
   } catch (err) {
     console.error(err);
     $('export-progress').textContent = `Export failed: ${err.message}`;
@@ -505,6 +502,29 @@ $('export-go').addEventListener('click', async (e) => {
     dirty = true;
   }
 });
+
+// When hosted as a claude.ai artifact, pages can't start downloads themselves; the
+// host's save dialog is used instead. Elsewhere, fall back to a normal download.
+const downloadsReady = window.claude?.use ? window.claude.use('downloads').catch(() => null) : Promise.resolve(null);
+
+async function saveFile(filename, blob) {
+  const downloads = await downloadsReady;
+  if (downloads) {
+    try {
+      await downloads.save({ filename, data: blob });
+      return true;
+    } catch (err) {
+      if (err?.code === 'declined') return false;
+      throw new Error(err?.message || 'The file could not be saved.');
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return true;
+}
 
 // ---------------------------------------------------------------- loop ---
 function resize() {
