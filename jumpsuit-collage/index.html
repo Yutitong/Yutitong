@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jumpsuit Collage</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Jumpsuit Collage</h1>
+      <div class="segmented" role="tablist" aria-label="View">
+        <button data-view="3d">3D</button>
+        <button data-view="split" class="active">Split</button>
+        <button data-view="pattern">Pattern</button>
+      </div>
+      <div class="spacer"></div>
+      <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+      <button id="export-open" class="primary">Download pattern</button>
+    </header>
+
+    <main class="layout">
+      <aside class="panel left">
+        <section>
+          <h2>Images</h2>
+          <label class="dropzone" id="dropzone">
+            <input type="file" id="file-input" accept="image/*" multiple hidden />
+            <strong>Add images</strong>
+            <span>Click or drop files here</span>
+          </label>
+          <div class="library" id="library"></div>
+          <p class="hint">Pick an image, then click the jumpsuit to place it — or drag it straight onto the model.</p>
+        </section>
+        <section>
+          <h2>Text sticker</h2>
+          <div class="row">
+            <input type="text" id="text-input" placeholder="Your text" maxlength="40" />
+            <input type="color" id="text-color" value="#1d1d1f" title="Text colour" />
+          </div>
+          <button id="text-add">Add to library</button>
+        </section>
+        <section>
+          <h2>Fabric</h2>
+          <label class="row">Base colour <input type="color" id="base-color" value="#f4efe6" /></label>
+          <label class="row"><input type="checkbox" id="show-seams" checked /> Show seams on model</label>
+        </section>
+      </aside>
+
+      <div class="stage" id="stage" data-view="split">
+        <canvas id="canvas"></canvas>
+        <div class="view" id="view-3d">
+          <div class="view-hint" id="view-hint">Drag to orbit · Scroll to zoom</div>
+        </div>
+        <div class="view" id="view-pattern">
+          <div class="view-hint">Pattern pieces on fabric · Drag to pan · Scroll to zoom</div>
+        </div>
+      </div>
+
+      <aside class="panel right">
+        <section id="inspector" class="disabled">
+          <h2>Selected image</h2>
+          <label>Width <output id="size-out"></output>
+            <input type="range" id="size" min="2" max="120" step="0.5" /></label>
+          <label>Rotation <output id="rotation-out"></output>
+            <input type="range" id="rotation" min="-180" max="180" step="1" /></label>
+          <label>Opacity <output id="opacity-out"></output>
+            <input type="range" id="opacity" min="0" max="1" step="0.01" /></label>
+          <label>Wrap depth <output id="depth-out"></output>
+            <input type="range" id="depth" min="1" max="40" step="0.5" /></label>
+          <div class="buttons">
+            <button id="flip">Flip</button>
+            <button id="mirror">Mirror copy</button>
+            <button id="duplicate">Duplicate</button>
+            <button id="forward">Bring forward</button>
+            <button id="backward">Send backward</button>
+            <button id="delete" class="danger">Delete</button>
+          </div>
+          <p class="hint">Shift + scroll resizes, Alt + scroll rotates the selected image on the model.</p>
+        </section>
+        <section>
+          <h2>Layers</h2>
+          <ol class="layers" id="layers"></ol>
+          <p class="hint" id="layers-empty">No images placed yet.</p>
+        </section>
+      </aside>
+    </main>
+
+    <dialog id="export-dialog">
+      <form method="dialog">
+        <h2>Download print-ready pattern</h2>
+        <p>Every piece is exported at true scale with your collage printed on it, as PNG + SVG, plus a fabric layout and outline data in one ZIP.</p>
+        <label>Resolution
+          <select id="export-dpi">
+            <option value="100">100 DPI (fast preview)</option>
+            <option value="150" selected>150 DPI (fabric printing)</option>
+            <option value="200">200 DPI</option>
+            <option value="300">300 DPI (large files)</option>
+          </select>
+        </label>
+        <label>Seam allowance
+          <select id="export-sa">
+            <option value="1">1.0 cm</option>
+            <option value="1.5" selected>1.5 cm</option>
+            <option value="2">2.0 cm</option>
+            <option value="2.5">2.5 cm</option>
+          </select>
+        </label>
+        <label class="row"><input type="checkbox" id="export-cut" checked /> Cut line</label>
+        <label class="row"><input type="checkbox" id="export-seam" checked /> Seam line (dashed)</label>
+        <label class="row"><input type="checkbox" id="export-labels" checked /> Piece names &amp; grainlines</label>
+        <p class="progress" id="export-progress"></p>
+        <div class="buttons end">
+          <button value="cancel" formnovalidate>Close</button>
+          <button id="export-go" class="primary" value="default">Download ZIP</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
