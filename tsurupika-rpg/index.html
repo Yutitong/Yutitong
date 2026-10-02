@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ツルピカ丸の大冒険</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap">
+<style>
+  /* Layout: one CRT-like screen centered on a dark cabinet, touch pad below on phones */
+  :root {
+    --cabinet: #14121c;
+    --bezel: #2a2636;
+    --bezel-edge: #3d3750;
+    --ink: #f2ecd8;
+    --dim: #9a93ad;
+    --pad: #3a3448;
+    --pad-press: #5c537a;
+    --accent: #e8b84a;
+    --pixel: "DotGothic16", "MS Gothic", "Osaka-Mono", monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--cabinet);
+    color: var(--ink);
+    font-family: var(--pixel);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-inline: 16px;
+    padding-block: 12px;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  #wrap {
+    width: 100%;
+    max-width: min(800px, calc((100dvh - 210px) * 512 / 448));
+    min-width: 260px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  @media (pointer: fine) {
+    #wrap { max-width: min(860px, calc((100dvh - 80px) * 512 / 448)); }
+  }
+  #bezel {
+    background: var(--bezel);
+    border: 2px solid var(--bezel-edge);
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5), inset 0 0 0 2px #000;
+  }
+  #screen {
+    display: block;
+    width: 100%;
+    aspect-ratio: 512 / 448;
+    max-width: 100%;
+    background: #000;
+    image-rendering: pixelated;
+    border-radius: 3px;
+    outline: none;
+  }
+  #screen:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+  #bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--dim);
+    letter-spacing: .04em;
+  }
+  #bar kbd {
+    font-family: var(--pixel);
+    background: var(--pad);
+    color: var(--ink);
+    border-radius: 3px;
+    padding: 0 5px;
+  }
+  #mute {
+    font-family: var(--pixel);
+    font-size: 13px;
+    background: var(--pad);
+    color: var(--ink);
+    border: 1px solid var(--bezel-edge);
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  #mute:focus-visible { outline: 2px solid var(--accent); }
+  #pad { display: none; }
+  @media (pointer: coarse) {
+    #keys { display: none; }
+    #pad {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-block: 4px;
+    }
+  }
+  .dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 52px);
+    grid-template-rows: repeat(3, 52px);
+  }
+  .dpad button, .ab button {
+    font-family: var(--pixel);
+    color: var(--ink);
+    background: var(--pad);
+    border: 2px solid var(--bezel-edge);
+    font-size: 18px;
+    touch-action: none;
+  }
+  .dpad button.on, .ab button.on { background: var(--pad-press); }
+  .dpad [data-k="up"] { grid-area: 1 / 2; border-radius: 8px 8px 0 0; }
+  .dpad [data-k="left"] { grid-area: 2 / 1; border-radius: 8px 0 0 8px; }
+  .dpad [data-k="right"] { grid-area: 2 / 3; border-radius: 0 8px 8px 0; }
+  .dpad [data-k="down"] { grid-area: 3 / 2; border-radius: 0 0 8px 8px; }
+  .dpad .hub { grid-area: 2 / 2; background: var(--pad); }
+  .ab { display: flex; gap: 14px; align-items: flex-end; }
+  .ab button { width: 64px; height: 64px; border-radius: 50%; font-size: 20px; }
+  .ab [data-k="ok"] { background: #7a3b3b; margin-bottom: 26px; }
+  .ab [data-k="ok"].on { background: #a65252; }
+  .ab .menu { width: 56px; height: 30px; border-radius: 15px; font-size: 13px; align-self: center; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bezel"><canvas id="screen" width="512" height="448" tabindex="0" aria-label="ゲーム画面"></canvas></div>
+  <div id="bar">
+    <span id="keys">移動 <kbd>←↑↓→</kbd> 決定 <kbd>Z</kbd>/<kbd>Enter</kbd> 取消・メニュー <kbd>X</kbd>/<kbd>Esc</kbd></span>
+    <button id="mute" type="button">♪ 音 ON</button>
+  </div>
+  <div id="pad" aria-hidden="true">
+    <div class="dpad">
+      <button data-k="up">▲</button>
+      <button data-k="left">◀</button>
+      <span class="hub"></span>
+      <button data-k="right">▶</button>
+      <button data-k="down">▼</button>
+    </div>
+    <div class="ab">
+      <button class="menu" data-k="menu">MENU</button>
+      <button data-k="cancel">B</button>
+      <button data-k="ok">A</button>
+    </div>
+  </div>
+</div>
+<script src="js/audio.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/maps.js"></script>
+<script src="js/story.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
