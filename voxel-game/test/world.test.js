@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, PRIORITY, GROUND_ID, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
+import { World, PRIORITY, GROUND_ID, WATER_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
 import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman } from '../src/humanoid.js';
 import { WALK_SPEED, RUN_SPEED } from '../src/character.js';
 import { CHUNK, chunkKeyAt, cellIndex } from '../src/grid.js';
@@ -21,14 +21,16 @@ function assertConsistent(w) {
     if (e.id === GROUND_ID) continue;
     for (const [x, y, z, color] of w.cellsOf(e)) {
       assert.equal(w.ownerAt(x, y, z), e.id);
-      assert.equal(w.colorAt(x, y, z), color);
+      const shown = w.colorAt(x, y, z);
+      // 水面の高さにある消灯セルは、水面の色を見せる
+      if (!(color === 0 && shown & WATER_FLAG)) assert.equal(shown, color);
     }
     expected += e.colors.length;
   }
   // 木は形が決まっていて動かないので別に調べる（treeCellsConsistent）
   const trees = new Set([...w.entities.values()].filter((e) => e.tree).map((e) => e.id));
   let owned = 0;
-  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && !trees.has(o)) owned++;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && o !== WATER_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
 }
 
@@ -234,7 +236,7 @@ test('同じシードなら同じ世界ができる', () => {
 });
 
 test('広い世界を長く歩き回っても重なりは起きない', () => {
-  const w = new World({ seed: 7 }); // 森が濃すぎず、NPC と木箱がいるシード
+  const w = new World({ seed: 4 }); // 出発地点の近くに NPC と木箱がいるシード
   const p = spawnPlayer(w);
   ensureAround(w, p.pos[0], p.pos[2], 3);
   let seed = 42;
@@ -294,7 +296,7 @@ test('木: 大きさも種類もいろいろで、大木は 8m を超える', ()
   for (const t of trees) {
     // 幹は地面から立っている
     let ground = false;
-    for (let i = 0; i < t.xs.length; i++) if (t.ys[i] === 1 && t.clumpOf[i] === -1) ground = true;
+    for (let i = 0; i < t.xs.length; i++) if (t.ys[i] === t.spec.y && t.clumpOf[i] === -1) ground = true;
     assert.ok(ground);
   }
 });
@@ -345,12 +347,118 @@ test('木の幹にはぶつかって止まる', () => {
   ensureAround(w, 0, 0, 6);
   const tree = [...w.trees.values()].find((t) => t.spec.scale > 0.8);
   const { x, z } = tree.spec;
-  assert.equal(w.ownerAt(x, 3, z), tree.id);
+  const y = tree.spec.y + 3;
+  assert.equal(w.ownerAt(x, y, z), tree.id);
   // 幹に向かって進む小さな物は、木に止められる
   let start = x - 1;
-  while (w.ownerAt(start, 3, z) !== EMPTY) start--;
-  const b = w.spawn({ kind: 'player', name: 'p', priority: PRIORITY.PLAYER, pos: [start, 3, z], voxels: [[0, 0, 0, 1]] });
+  while (w.ownerAt(start, y, z) !== EMPTY) start--;
+  const b = w.spawn({ kind: 'player', name: 'p', priority: PRIORITY.PLAYER, pos: [start, y, z], voxels: [[0, 0, 0, 1]] });
   const r = w.tryMove(b.id, [1, 0, 0]);
   assert.equal(r.ok, false);
   assert.equal(r.blocker.id, tree.id);
+});
+
+// ---- 地形 --------------------------------------------------------------------
+
+// x がある値を超えると地面の高さが変わる世界
+const steps = (heights, waterLevel = 0) => new World({
+  generate: false,
+  waterLevel,
+  heightAt: (x) => {
+    for (const [from, h] of [...heights].reverse()) if (x >= from) return h;
+    return heights[0][1];
+  },
+});
+
+test('地形: 地面の下はすべて地面、水面より下で地面より上は水', () => {
+  const w = new World({ seed: 5 });
+  ensureAround(w, 0, 0, 4);
+  let water = 0;
+  for (const c of w.chunks.values()) {
+    for (let col = 0; col < 256; col++) {
+      const lx = col % 16, lz = Math.floor(col / 16);
+      const h = c.height[col];
+      for (let y = 0; y < h; y++) assert.equal(c.owner[cellIndex(lx, y, lz)], GROUND_ID);
+      if (c.water[col]) {
+        water++;
+        assert.ok(h < c.water[col]);
+        assert.equal(c.owner[cellIndex(lx, c.water[col] - 1, lz)] !== EMPTY, true);
+      }
+    }
+  }
+  assert.ok(water > 0, '池か川がある');
+});
+
+test('地形: 起伏があり、ほとんどの場所は歩いて登れる傾き', () => {
+  let min = Infinity, max = -Infinity, steep = 0, n = 0;
+  const w = new World({ seed: 20261004 });
+  for (let x = -400; x < 400; x += 5) {
+    for (let z = -400; z < 400; z += 5) {
+      const h = w.heightAt(x, z);
+      min = Math.min(min, h);
+      max = Math.max(max, h);
+      if (Math.abs(w.heightAt(x + 1, z) - h) > 2) steep++;
+      n++;
+    }
+  }
+  assert.ok(max - min > 25, `高低差 ${max - min}`);
+  assert.ok(steep / n < 0.02, `急な所 ${steep / n}`);
+});
+
+test('2段までの段差は歩いて登り、3段以上は登れない', () => {
+  const up2 = steps([[0, 1], [16, 3]]);
+  const p = spawnPlayer(up2);
+  for (let i = 0; i < 60; i++) step(up2, walkInput(1, 0));
+  assert.equal(p.pos[1], 3);
+  assert.ok(p.pos[0] >= 16);
+  assertConsistent(up2);
+
+  const up3 = steps([[0, 1], [16, 4]]);
+  const q = spawnPlayer(up3);
+  for (let i = 0; i < 60; i++) step(up3, walkInput(1, 0));
+  assert.equal(q.pos[1], 1);
+  assert.ok(q.pos[0] + 8 < 16);
+});
+
+test('高い所から歩き出すと落ちて着地し、膝を曲げる', () => {
+  const w = steps([[0, 12], [16, 1]]);
+  const p = spawnPlayer(w);
+  assert.equal(p.pos[1], 12);
+  let crouched = 0;
+  for (let i = 0; i < 60; i++) {
+    step(w, walkInput(1, 0));
+    crouched = Math.max(crouched, p.pose.crouch);
+  }
+  assert.equal(p.pos[1], 1);
+  assert.ok(crouched > 0.5);
+  assertConsistent(w);
+});
+
+test('浅い水は歩いて渡れ、通ったあとは水が戻る。胸より深い水には入らない', () => {
+  // 岸はゆるやかに下がって水深3になり、また上がる。水面の高さ 6
+  const w = steps([[0, 6], [14, 5], [16, 4], [18, 3], [36, 4], [38, 5], [40, 6]], 6);
+  const p = spawnPlayer(w);
+  for (let i = 0; i < 120; i++) step(w, walkInput(1, 0));
+  assert.ok(p.pos[0] >= 40, `x ${p.pos[0]}`);
+  for (let x = 18; x < 36; x++) {
+    for (let y = 3; y < 6; y++) assert.equal(w.ownerAt(x, y, 4), WATER_ID);
+  }
+  assertConsistent(w);
+
+  const deep = steps([[0, 14], [16, 2]], 14); // 水深 12
+  const q = spawnPlayer(deep);
+  const events = [];
+  for (let i = 0; i < 60; i++) events.push(...step(deep, walkInput(1, 0)));
+  assert.ok(q.pos[0] + 4 < 16); // 体の中心は岸に残る
+  assert.equal(q.pos[1], 14);
+  assert.ok(events.some((ev) => ev.type === 'block' && ev.target?.name === '深い水'));
+});
+
+test('木箱は足場のない所（水の上）へは押せない', () => {
+  const w = steps([[0, 6], [20, 3]], 6);
+  const p = spawnPlayer(w);
+  const box = w.spawn({ kind: 'box', name: '木箱', priority: PRIORITY.BOX, needsSupport: true, pos: [p.pos[0] + 11, 6, p.pos[2] + 2], voxels: [[0, 0, 0, 1], [0, 1, 0, 1]] });
+  for (let i = 0; i < 80; i++) step(w, walkInput(1, 0));
+  assert.equal(box.pos[0], 19); // 岸の端で止まる（水の上に浮かない）
+  assertConsistent(w);
 });

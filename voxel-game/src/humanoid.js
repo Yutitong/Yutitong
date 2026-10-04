@@ -5,7 +5,8 @@
 // ボクセルに塗りつぶす（ラスタライズする）。
 // 関節は連続的に曲がるが、表示は 15cm のボクセル単位なのでドット感は残る。
 //
-// キャラは常に 9×15×9 の直方体（当たり判定）を占有する。
+// キャラは常に 9×15×9 の箱の中の円柱（当たり判定）を占有する。円柱なのでどちらを向いても同じで、
+// 斜面でも角が地面に引っかかりにくい。
 // アニメーションはこの直方体の中で「どのボクセルを何色で点灯するか」を切り替えるだけ。
 // 色 0 は「占有しているが消灯」を表す。
 
@@ -30,19 +31,26 @@ export const BODY = {
   head: [1.45, 1.55, 1.5], // 頭の半径（横・縦・前後）
 };
 
-// 直方体のセルの並び（x が最も速く変わる）。全キャラ共通。
-export const HUMAN_OFFSETS = (() => {
-  const o = new Int16Array(N * 3);
-  let k = 0;
+// 当たり判定の円柱に入るセル（箱の中の番号）と、その相対位置。全キャラ共通。
+export const HUMAN_RADIUS = 4.6;
+export const HUMAN_MASK = (() => {
+  const idx = [];
   for (let y = 0; y < H; y++) {
     for (let z = 0; z < D; z++) {
       for (let x = 0; x < W; x++) {
-        o[k++] = x;
-        o[k++] = y;
-        o[k++] = z;
+        if (Math.hypot(x + 0.5 - CX, z + 0.5 - CZ) <= HUMAN_RADIUS) idx.push(x + W * (z + D * y));
       }
     }
   }
+  return Int32Array.from(idx);
+})();
+export const HUMAN_OFFSETS = (() => {
+  const o = new Int16Array(HUMAN_MASK.length * 3);
+  HUMAN_MASK.forEach((i, k) => {
+    o[k * 3] = i % W;
+    o[k * 3 + 1] = Math.floor(i / (W * D));
+    o[k * 3 + 2] = Math.floor(i / W) % D;
+  });
   return o;
 })();
 
@@ -58,6 +66,8 @@ export function createPose() {
     sway: 0, // 立っているときの重心移動 -1..1
     headYaw: 0, // 首を振る角度
     blink: false,
+    crouch: 0, // 段差を登った直後・着地したときに膝を曲げる 0..1
+    air: 0, // 落ちている 0..1
   };
 }
 
@@ -89,10 +99,13 @@ function buildParts(p, pal) {
   // 脚: 太ももの振り角 a と膝の曲がり k。振り出している脚（遊脚）ほど膝が大きく曲がる。
   const A = lerp(0.42, 0.72, r) * w * (1 - 0.35 * push);
   const kSwing = lerp(1.0, 1.9, r) * w;
-  const kStance = lerp(0.08, 0.4, r) * w + 0.04 + 0.25 * push;
+  const kStance = lerp(0.08, 0.4, r) * w + 0.04 + 0.25 * push + 0.35 * p.air;
+  // しゃがむ: 腿を前に出し、膝を曲げる（骨盤が下がり、足は地面に残る）
+  const squatA = p.crouch * 0.5;
+  const squatK = p.crouch * 1.0;
   const legs = [
-    { side: -1, a: A * s, k: kStance + kSwing * Math.max(0, c) ** 2 },
-    { side: 1, a: -A * s, k: kStance + kSwing * Math.max(0, -c) ** 2 },
+    { side: -1, a: A * s + squatA, k: kStance + squatK + kSwing * Math.max(0, c) ** 2 },
+    { side: 1, a: -A * s + squatA, k: kStance + squatK + kSwing * Math.max(0, -c) ** 2 },
   ];
   for (const leg of legs) {
     leg.height = B.thigh * Math.cos(leg.a) + B.shin * Math.cos(leg.a - leg.k) + B.ankle;
@@ -122,7 +135,7 @@ function buildParts(p, pal) {
   }
 
   // 胴: 前傾（歩き < 走り < 押す）と、呼吸での胸のふくらみ
-  const lean = 0.05 * w + 0.2 * r * w + 0.35 * push;
+  const lean = 0.05 * w + 0.2 * r * w + 0.35 * push + 0.25 * p.crouch;
   const pelvis = [sway, hipY + 0.35, 0];
   const up = (len) => add(pelvis, tilt([0, len, 0], lean));
   const breathLift = p.breath * 0.3;
@@ -138,7 +151,7 @@ function buildParts(p, pal) {
     const shoulder = add(neckBase, [side * B.shoulderHalf, -0.6 + breathLift, side * twist]);
     const swingA = side * armAmp * s + push * 1.3; // side=-1（左）は右脚と同じ向き
     const elbowBend = lerp(lerp(0.2, 0.5, Math.max(0, side * s) * w), 1.55, r * w) * (1 - push) + push * 0.35;
-    const elbow = add(shoulder, swingDown(B.upperArm, swingA, side * 0.06));
+    const elbow = add(shoulder, swingDown(B.upperArm, swingA, side * (0.06 + 0.45 * p.air))); // 落ちるときは腕が開く
     const hand = add(elbow, swingDown(B.forearm, swingA + elbowBend));
     capsule(shoulder, elbow, 0.66, 0.6, pal.shirt, 0.15);
     capsule(elbow, hand, 0.6, 0.55, pal.skin, 0.15);
@@ -187,6 +200,14 @@ function distToSegment(px, py, pz, a, b) {
 // 体の座標を直方体の座標に移す（向き yaw で回してから中心へ）
 function toBox(p, cos, sin) {
   return [CX + p[0] * cos + p[2] * sin, p[1], CZ - p[0] * sin + p[2] * cos];
+}
+
+// 当たり判定の円柱のセルだけの色（HUMAN_OFFSETS と同じ並び）
+const full = new Uint32Array(N);
+export function humanColors(palette, pose, out = new Uint32Array(HUMAN_MASK.length)) {
+  rasterizeHuman(palette, pose, full);
+  for (let k = 0; k < HUMAN_MASK.length; k++) out[k] = full[HUMAN_MASK[k]];
+  return out;
 }
 
 // palette と pose から、直方体の各セルの色（0 = 消灯）を out に書き込んで返す

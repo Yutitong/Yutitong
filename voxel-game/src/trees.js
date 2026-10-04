@@ -7,6 +7,7 @@
 
 import { mulberry32, hash3, noise3, noise2, shade } from './rng.js';
 import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt, cellIndex } from './grid.js';
+import { BASE } from './terrain.js';
 
 export const REGION = 24; // この区画ごとに最大1本の木を置く（ボクセル）
 export const MAX_REACH = 30; // 幹の中心から葉先までの最大の水平距離（ボクセル）
@@ -271,12 +272,15 @@ function regionSpec(world, rx, rz) {
     const x = rx * REGION + 3 + Math.floor(rng() * (REGION - 6));
     const z = rz * REGION + 3 + Math.floor(rng() * (REGION - 6));
     const nearSpawn = Math.abs(x - 8) < 18 && Math.abs(z - 8) < 18;
-    if (!nearSpawn) {
-      const kind = noise2(rx * 0.12 + 50, rz * 0.12, world.seed + 3);
+    const y = world.heightAt(x, z); // 幹の根元の高さ
+    if (!nearSpawn && y > world.waterLevel + 1) {
+      // 水辺は広葉樹とシラカバ、高い所はスギが多い
+      const elev = (y - BASE) / 30;
+      const kind = noise2(rx * 0.12 + 50, rz * 0.12, world.seed + 3) - elev * 0.18;
       const species = kind < 0.4 ? 'conifer' : kind > 0.64 ? 'birch' : rng() < 0.5 ? 'broad' : 'round';
       const young = rng() < 0.22;
       spec = {
-        key, x, z, species,
+        key, x, y, z, species,
         scale: young ? 0.38 + rng() * 0.2 : 0.8 + rng() * 0.32,
         seed: hash3(rx, rz, world.seed + 99),
       };
@@ -321,10 +325,12 @@ function getTree(world, spec) {
 function finalize(shape, spec) {
   const xs = [], ys = [], zs = [], color = [], clumpOf = [];
   const claimed = new Set();
+  // 形は根元が y = 1 の座標で作ってあるので、地面の高さ spec.y に合わせて持ち上げる
+  const lift = spec.y - 1;
   const push = (x, y, z, c, clump) => {
-    const wx = x + spec.x, wz = z + spec.z;
-    if (Math.abs(x) > MAX_REACH - 1 || Math.abs(z) > MAX_REACH - 1 || y < 1 || y >= HEIGHT) return -1;
-    xs.push(wx); ys.push(y); zs.push(wz); color.push(c); clumpOf.push(clump);
+    const wx = x + spec.x, wz = z + spec.z, wy = y + lift;
+    if (Math.abs(x) > MAX_REACH - 1 || Math.abs(z) > MAX_REACH - 1 || y < 1 || wy >= HEIGHT) return -1;
+    xs.push(wx); ys.push(wy); zs.push(wz); color.push(c); clumpOf.push(clump);
     return xs.length - 1;
   };
   for (const [key, [x, y, z, c]] of shape.wood) {
@@ -354,7 +360,7 @@ function finalize(shape, spec) {
     }
     // 葉の色は世界座標で引けるようにしておく
     const base = new Map();
-    for (const [, [x, y, z, c]] of cl.base) base.set(cellKey(x + spec.x, y, z + spec.z), c);
+    for (const [, [x, y, z, c]] of cl.base) base.set(cellKey(x + spec.x, y + lift, z + spec.z), c);
     const heightRatio = cl.center[1] / 80;
     return {
       cells: Int32Array.from(cells), base, ox: 0, oz: 0, level: 0,
@@ -366,7 +372,7 @@ function finalize(shape, spec) {
     spec, clumps,
     xs: Int32Array.from(xs), ys: Int16Array.from(ys), zs: Int32Array.from(zs),
     color: Uint32Array.from(color), clumpOf: Int16Array.from(clumpOf),
-    buckets: new Map(), height: ys.reduce((m, y) => Math.max(m, y + 1), 0),
+    buckets: new Map(), height: ys.reduce((m, y) => Math.max(m, y - lift), 0),
   };
   const lists = new Map();
   for (let i = 0; i < xs.length; i++) {

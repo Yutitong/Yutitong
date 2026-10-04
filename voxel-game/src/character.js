@@ -3,7 +3,7 @@
 // 体の位置は1ボクセル単位でしか動かないが、速度・向き・歩行周期は連続的に変わる。
 // アニメーションは毎ティック姿勢から描き直すので、移動のコマとは切り離されている。
 
-import { createPose, rasterizeHuman } from './humanoid.js';
+import { createPose, humanColors } from './humanoid.js';
 
 export const WALK_SPEED = 9; // ボクセル/秒（≈ 1.35 m/s）
 export const RUN_SPEED = 21; // ≈ 3.2 m/s
@@ -13,6 +13,9 @@ const DECEL = 45;
 const TURN_RATE = 9; // ラジアン/秒
 const STRIDE_WALK = 11; // 1周期（左右1歩ずつ）で進むボクセル数
 const STRIDE_RUN = 18;
+export const MAX_STEP = 2; // 歩いて登り降りできる段差（ボクセル ≈ 30cm）
+const GRAVITY = 65; // ボクセル/秒²（≈ 9.8 m/s²）
+const DOWN = [0, -1, 0];
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -44,15 +47,62 @@ export function initCharacter(e, rng = Math.random) {
   e.blinkLeft = 0;
   e.lookIn = 2 + rng() * 3;
   e.headTarget = 0;
+  e.vy = 0; // 落ちる速さ（ボクセル/秒）
+  e.fall = 0; // まだ使っていない落下量
+  e.fallen = 0; // 今回の落下で落ちたボクセル数
   e.look = new Uint32Array(e.colors.length);
   return e;
 }
 
+// 足元が空いていれば重力で落ちる。着地したら落ちた高さに応じて膝を曲げる。
+function applyGravity(world, e, dt) {
+  if (world.canMove(e.id, DOWN)) {
+    e.vy = Math.min(e.vy + GRAVITY * dt, 40);
+    e.fall += e.vy * dt;
+    for (let n = 0; n < 2 && e.fall >= 1; n++) {
+      if (!world.tryMove(e.id, DOWN, { push: false }).ok) break;
+      e.fall -= 1;
+      e.fallen++;
+    }
+    return true;
+  }
+  if (e.fallen > MAX_STEP) e.pose.crouch = Math.min(1, e.fallen / 10); // 着地
+  e.vy = 0;
+  e.fall = 0;
+  e.fallen = 0;
+  return false;
+}
+
+// 1歩進む。地面の段差が MAX_STEP 以下なら登り、降りる段差も MAX_STEP までは足を下ろす。
+function stepOnce(world, e, d3) {
+  // 行き先の足元が胸より深い水なら入らない（岸から深みへ踏み出さない）
+  const cx = e.pos[0] + d3[0] + 4, cz = e.pos[2] + d3[2] + 4;
+  const level = world.waterAt(cx, cz);
+  if (level && level - world.groundAt(cx, cz) >= e.wade) {
+    return { ok: false, pushed: [], blocker: world.deepWater, via: e, reason: 'priority' };
+  }
+  let r = world.tryMove(e.id, d3);
+  if (!r.ok && r.via === e && r.blocker?.ground) {
+    for (let h = 1; h <= MAX_STEP; h++) {
+      const up = world.tryMove(e.id, [d3[0], h, d3[2]], { push: false });
+      if (up.ok) {
+        e.pose.crouch = Math.max(e.pose.crouch, 0.3 * h); // 段を上がった直後は膝が曲がっている
+        return up;
+      }
+    }
+  }
+  if (r.ok && e.vy === 0) {
+    for (let h = 0; h < MAX_STEP && world.canMove(e.id, DOWN); h++) world.tryMove(e.id, DOWN, { push: false });
+  }
+  return r;
+}
+
 // 1ティック分キャラを動かす。
 // input: { dir: [dx, dz]（各 -1..1、8方向）または null, run: boolean }
-// act(e, dir3) は1ボクセルの移動を試み、tryMove の結果を返す。
-export function updateCharacter(world, e, input, dt, rng, act) {
+// report(e, result) は移動の結果（押し出し・止められた）を出来事として記録する。
+export function updateCharacter(world, e, input, dt, rng, report) {
   const pose = e.pose;
+  const airborne = applyGravity(world, e, dt);
   const dir = input.dir && (input.dir[0] || input.dir[1]) ? input.dir : null;
 
   // 向き: 行きたい方向へ一定の速さで回る。大きく向きを変えるときは減速する。
@@ -74,7 +124,8 @@ export function updateCharacter(world, e, input, dt, rng, act) {
   if (dir && sameDir(dir, e.blockedDir)) {
     e.waitBlocked -= dt;
     if (e.waitBlocked <= 0) {
-      const free = stepAxes(dir, e.diagToggle).some((d3) => world.canMove(e.id, d3));
+      const free = stepAxes(dir, e.diagToggle).some((d3) =>
+        [0, 1, 2].slice(0, MAX_STEP + 1).some((h) => world.canMove(e.id, [d3[0], h, d3[2]])));
       if (free) e.blockedDir = null;
       else e.waitBlocked = 0.3;
     }
@@ -95,12 +146,13 @@ export function updateCharacter(world, e, input, dt, rng, act) {
       let moved = null;
       let last = null;
       for (const d3 of stepAxes(e.moveDir, e.diagToggle)) {
-        last = act(e, d3);
+        last = stepOnce(world, e, d3);
         if (last.ok) {
           moved = last;
           break;
         }
       }
+      report(e, moved ?? last);
       if (moved) {
         e.travel -= cost;
         e.diagToggle = !e.diagToggle;
@@ -128,6 +180,8 @@ export function updateCharacter(world, e, input, dt, rng, act) {
   const stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * pose.run;
   pose.phase = (pose.phase + (Math.max(e.speed, strain ? 2.5 : 0) * dt) / stride) % 1;
   pose.push = approach(pose.push, e.pushing > 0 ? 1 : 0, dt * 6);
+  pose.crouch = approach(pose.crouch, 0, dt * 3);
+  pose.air = approach(pose.air, airborne && e.vy > 12 ? 1 : 0, dt * 6);
 
   // 立ち止まっているとき: 呼吸・まばたき・周りを見る・重心移動
   const still = 1 - pose.walk;
@@ -157,6 +211,6 @@ export function updateCharacter(world, e, input, dt, rng, act) {
   pose.headYaw = approach(pose.headYaw, e.headTarget, dt * 2.5);
 
   // 姿勢からボクセルを描き直し、変わったセルだけ塗り替える
-  rasterizeHuman(e.palette, pose, e.look);
+  humanColors(e.palette, pose, e.look);
   world.recolor(e, e.look);
 }

@@ -1,12 +1,12 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, HEIGHT, VOXEL_METERS, TICK_SECONDS, cellIndex, floorDiv } from './world.js';
+import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, cellIndex, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
-const VIEW_RADIUS = 7; // 描画するチャンクの半径
+const VIEW_RADIUS = 6; // 描画するチャンクの半径
 const LOAD_BUDGET_MS = 6; // 1フレームでチャンク作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
@@ -50,75 +50,45 @@ scene.add(sun);
 // セルが変わったら、そのセルのインスタンスだけ書き換える。
 
 const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
+// 水面は隙間なく並べ、少し低く薄くする
+const waterBox = new THREE.BoxGeometry(1, 0.8, 1).translate(0, -0.1, 0);
 const cutaway = { uHead: { value: new THREE.Vector3() } };
-const material = new THREE.MeshLambertMaterial({ vertexColors: true });
-material.onBeforeCompile = (shader) => {
-  shader.uniforms.uHead = cutaway.uHead;
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;')
-    .replace('#include <color_vertex>', 'vColor = pow(color, vec3(2.2));') // 色は sRGB で持っている
-    .replace('#include <begin_vertex>', `
-      vec3 transformed = vec3(position);
-      float show = iCell.w;
-      // カメラとプレイヤーの頭の間にある、頭より高いボクセル（木の葉など）は消して見通す
-      vec3 wc = (modelMatrix * vec4(iCell.xyz, 1.0)).xyz;
-      vec3 seg = uHead - cameraPosition;
-      float t = clamp(dot(wc - cameraPosition, seg) / dot(seg, seg), 0.0, 1.0);
-      float d = length(wc - (cameraPosition + seg * t));
-      if (t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
-      transformed = transformed * show + iCell.xyz;
-    `);
-};
 
-const CELLS = CHUNK * CHUNK * HEIGHT;
+// ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
+function voxelMaterial(options) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, ...options });
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uHead = cutaway.uHead;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;')
+      .replace('#include <color_vertex>', 'vColor = pow(color, vec3(2.2));') // 色は sRGB で持っている
+      .replace('#include <begin_vertex>', `
+        vec3 transformed = vec3(position);
+        float show = iCell.w;
+        // カメラとプレイヤーの頭の間にある、頭より高いボクセル（木の葉など）は消して見通す
+        vec3 wc = (modelMatrix * vec4(iCell.xyz, 1.0)).xyz;
+        vec3 seg = uHead - cameraPosition;
+        float t = clamp(dot(wc - cameraPosition, seg) / dot(seg, seg), 0.0, 1.0);
+        float d = length(wc - (cameraPosition + seg * t));
+        if (t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
+        transformed = transformed * show + iCell.xyz;
+      `);
+  };
+  return m;
+}
+const solidMaterial = voxelMaterial();
+const waterMaterial = voxelMaterial({ transparent: true, opacity: 0.72, depthWrite: false });
+
 const views = new Map(); // チャンク key → 描画の状態
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
-function writeCell(v, chunk, i) {
-  const c = chunk.color[i];
-  let slot = v.slotOf[i];
-  if (!c) {
-    if (slot >= 0 && v.cell[slot * 4 + 3] !== 0) {
-      v.cell[slot * 4 + 3] = 0;
-      v.hidden++;
-      v.touch(slot);
-    }
-    return true;
-  }
-  if (slot < 0) {
-    if (v.count >= v.capacity) return false; // 入りきらない → 作り直す
-    slot = v.count++;
-    v.slotOf[i] = slot;
-    const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = Math.floor(i / (CHUNK * CHUNK));
-    v.cell.set([lx + 0.5, y + 0.5, lz + 0.5, 1], slot * 4);
-  } else if (v.cell[slot * 4 + 3] === 0) {
-    v.cell[slot * 4 + 3] = 1;
-    v.hidden--;
-  }
-  const f = highlight.has(chunk.owner[i]) ? 0.35 : 0;
-  v.rgb[slot * 3] = ((c >> 16) & 255) * (1 - f) + 255 * f;
-  v.rgb[slot * 3 + 1] = ((c >> 8) & 255) * (1 - f) + 255 * f;
-  v.rgb[slot * 3 + 2] = (c & 255) * (1 - f) + 255 * f;
-  v.touch(slot);
-  return true;
-}
-
-// チャンクの描画を一から作る（初回・入りきらないとき・隠れたインスタンスが増えたとき）
-function buildView(chunk) {
-  const old = views.get(chunk.key);
-  if (old) {
-    scene.remove(old.mesh);
-    old.mesh.geometry.dispose();
-  }
-  const limit = CHUNK * CHUNK * chunk.top;
-  let lit = 0;
-  for (let i = 0; i < limit; i++) if (chunk.color[i]) lit++;
-  const capacity = Math.max(512, Math.ceil(lit * 1.25 / 256) * 256);
+// 1つのメッシュ（不透明 / 水）。セル番号 → インスタンス番号の対応を持つ
+function makeLayer(chunk, capacity, shape, material) {
   const geo = new THREE.InstancedBufferGeometry();
   // 箱の形はチャンクごとに複製する（共有すると、片付けたチャンクと一緒に消されてしまう）
-  geo.setIndex(box.index.clone());
-  geo.setAttribute('position', box.attributes.position.clone());
-  geo.setAttribute('normal', box.attributes.normal.clone());
+  geo.setIndex(shape.index.clone());
+  geo.setAttribute('position', shape.attributes.position.clone());
+  geo.setAttribute('normal', shape.attributes.normal.clone());
   const cellAttr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
   const rgbAttr = new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true);
   cellAttr.setUsage(THREE.DynamicDrawUsage);
@@ -128,33 +98,98 @@ function buildView(chunk) {
   const mesh = new THREE.Mesh(geo, material);
   mesh.position.set(chunk.cx * CHUNK, 0, chunk.cz * CHUNK);
   mesh.frustumCulled = false;
+  if (material.transparent) mesh.renderOrder = 1;
   scene.add(mesh);
-  const v = {
+  return {
     mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array,
-    slotOf: new Int32Array(CELLS).fill(-1), count: 0, hidden: 0, capacity, lo: Infinity, hi: -1,
+    slots: new Map(), count: 0, hidden: 0, capacity, lo: Infinity, hi: -1,
     touch(slot) {
       if (slot < this.lo) this.lo = slot;
       if (slot > this.hi) this.hi = slot;
     },
+    hide(i) {
+      const slot = this.slots.get(i);
+      if (slot === undefined || this.cell[slot * 4 + 3] === 0) return;
+      this.cell[slot * 4 + 3] = 0;
+      this.hidden++;
+      this.touch(slot);
+    },
+    dispose() {
+      scene.remove(mesh);
+      geo.dispose();
+    },
+  };
+}
+
+// セル i の色を、そのセルの層（不透明 / 水）に書く。入りきらなければ false
+function writeCell(v, chunk, i) {
+  const c = chunk.color[i];
+  const water = (c & WATER_FLAG) !== 0;
+  const layer = water ? v.water : v.solid;
+  (water ? v.solid : v.water).hide(i);
+  if (!c) {
+    layer.hide(i);
+    return true;
+  }
+  let slot = layer.slots.get(i);
+  if (slot === undefined) {
+    if (layer.count >= layer.capacity) return false;
+    slot = layer.count++;
+    layer.slots.set(i, slot);
+    const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = Math.floor(i / (CHUNK * CHUNK));
+    layer.cell.set([lx + 0.5, y + 0.5, lz + 0.5, 1], slot * 4);
+  } else if (layer.cell[slot * 4 + 3] === 0) {
+    layer.cell[slot * 4 + 3] = 1;
+    layer.hidden--;
+  }
+  const f = highlight.has(chunk.owner[i]) ? 0.35 : 0;
+  layer.rgb[slot * 3] = ((c >> 16) & 255) * (1 - f) + 255 * f;
+  layer.rgb[slot * 3 + 1] = ((c >> 8) & 255) * (1 - f) + 255 * f;
+  layer.rgb[slot * 3 + 2] = (c & 255) * (1 - f) + 255 * f;
+  layer.touch(slot);
+  return true;
+}
+
+// チャンクの描画を一から作る（初回・入りきらないとき・隠れたインスタンスが増えたとき）
+function buildView(chunk) {
+  const old = views.get(chunk.key);
+  if (old) {
+    old.solid.dispose();
+    old.water.dispose();
+  }
+  const limit = CHUNK * CHUNK * chunk.top;
+  let solid = 0;
+  let water = 0;
+  for (let i = 0; i < limit; i++) {
+    const c = chunk.color[i];
+    if (!c) continue;
+    if (c & WATER_FLAG) water++;
+    else solid++;
+  }
+  const cap = (n, min) => Math.max(min, Math.ceil((n * 1.25) / 256) * 256);
+  const v = {
+    solid: makeLayer(chunk, cap(solid, 512), box, solidMaterial),
+    water: makeLayer(chunk, cap(water, 64), waterBox, waterMaterial),
   };
   views.set(chunk.key, v);
   for (let i = 0; i < limit; i++) if (chunk.color[i]) writeCell(v, chunk, i);
-  upload(v, true);
+  upload(v.solid, true);
+  upload(v.water, true);
   chunk.changed.length = 0;
   return v;
 }
 
-function upload(v, all) {
-  v.geo.instanceCount = v.count;
-  for (const [attr, size] of [[v.cellAttr, 4], [v.rgbAttr, 3]]) {
-    if (!all && v.hi >= v.lo) {
+function upload(layer, all) {
+  layer.geo.instanceCount = layer.count;
+  for (const [attr, size] of [[layer.cellAttr, 4], [layer.rgbAttr, 3]]) {
+    if (!all && layer.hi >= layer.lo) {
       attr.clearUpdateRanges?.();
-      attr.addUpdateRange?.(v.lo * size, (v.hi - v.lo + 1) * size);
+      attr.addUpdateRange?.(layer.lo * size, (layer.hi - layer.lo + 1) * size);
     }
-    if (all || v.hi >= v.lo) attr.needsUpdate = true;
+    if (all || layer.hi >= layer.lo) attr.needsUpdate = true;
   }
-  v.lo = Infinity;
-  v.hi = -1;
+  layer.lo = Infinity;
+  layer.hi = -1;
 }
 
 // 変わったセルだけ描き直す
@@ -168,8 +203,13 @@ function updateView(chunk) {
     }
   }
   chunk.changed.length = 0;
-  if (v.hidden > 2000 && v.hidden > v.count / 2) buildView(chunk);
-  else upload(v, false);
+  const wasteful = (l) => l.hidden > 2000 && l.hidden > l.count / 2;
+  if (wasteful(v.solid) || wasteful(v.water)) {
+    buildView(chunk);
+    return;
+  }
+  upload(v.solid, false);
+  upload(v.water, false);
 }
 
 // プレイヤーの周りのチャンクを近い順に少しずつ作り、変わったチャンクを描き直す。遠いチャンクは片付ける。
@@ -199,8 +239,8 @@ function syncChunks() {
   world.dirty.clear();
   for (const [key, v] of views) {
     if (!near(world.chunks.get(key))) {
-      scene.remove(v.mesh);
-      v.geo.dispose();
+      v.solid.dispose();
+      v.water.dispose();
       views.delete(key);
     }
   }
@@ -358,6 +398,7 @@ function describe(ev) {
     return { cls: 'push', text: `${a.name} が ${t.name} を押し出した`, rule: `${fmtP(a.priority)} > ${fmtP(t.priority)}` };
   }
   if (ev.reason === 'edge') return { cls: 'block', text: `${a.name} は世界の端で止まった`, rule: '' };
+  if (ev.reason === 'support') return { cls: 'block', text: `${a.name} は ${ev.via.name} を押せない（先に足場がない）`, rule: '' };
   if (ev.via !== a) {
     const why = ev.reason === 'depth' ? `${ev.via.name} の後ろに ${t.name}` : `${ev.via.name} の先に ${t.name}`;
     return { cls: 'block', text: `${a.name} は ${ev.via.name} を押せない（${why}）`, rule: ev.reason === 'depth' ? '1段まで' : `${fmtP(a.priority)} ≤ ${fmtP(t.priority)}` };
