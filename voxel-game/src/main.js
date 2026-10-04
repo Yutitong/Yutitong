@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, cellIndex, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
+import { spawnDragon } from './dragon.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
@@ -13,6 +14,7 @@ const SKY = 0xa9c9e8;
 const world = new World({ seed: 20261004 });
 const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
+const dragon = spawnDragon(world, player.pos);
 
 // ---- three.js のセットアップ ----------------------------------------------
 
@@ -30,7 +32,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enablePan = false;
 controls.minDistance = 25;
-controls.maxDistance = 220;
+controls.maxDistance = 420;
 controls.maxPolarAngle = Math.PI * 0.47;
 
 const center = (e) => new THREE.Vector3(e.pos[0] + HUMAN_SIZE[0] / 2, e.pos[1] + HUMAN_SIZE[1] / 2, e.pos[2] + HUMAN_SIZE[2] / 2);
@@ -52,15 +54,16 @@ scene.add(sun);
 const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
 // 水面は隙間なく並べ、少し低く薄くする
 const waterBox = new THREE.BoxGeometry(1, 0.8, 1).translate(0, -0.1, 0);
-const cutaway = { uHead: { value: new THREE.Vector3() } };
+const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
 
 // ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
 function voxelMaterial(options) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, ...options });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHead = cutaway.uHead;
+    shader.uniforms.uCut = cutaway.uCut;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;')
+      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;')
       .replace('#include <color_vertex>', 'vColor = pow(color, vec3(2.2));') // 色は sRGB で持っている
       .replace('#include <begin_vertex>', `
         vec3 transformed = vec3(position);
@@ -70,7 +73,7 @@ function voxelMaterial(options) {
         vec3 seg = uHead - cameraPosition;
         float t = clamp(dot(wc - cameraPosition, seg) / dot(seg, seg), 0.0, 1.0);
         float d = length(wc - (cameraPosition + seg * t));
-        if (t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
+        if (uCut > 0.5 && t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
         transformed = transformed * show + iCell.xyz;
       `);
   };
@@ -213,9 +216,10 @@ function updateView(chunk) {
 }
 
 // プレイヤーの周りのチャンクを近い順に少しずつ作り、変わったチャンクを描き直す。遠いチャンクは片付ける。
+// 描画の中心はカメラの注視点（龍を追っているときは龍のまわり）
 function syncChunks() {
-  const pcx = floorDiv(player.pos[0], CHUNK);
-  const pcz = floorDiv(player.pos[2], CHUNK);
+  const pcx = floorDiv(Math.floor(controls.target.x), CHUNK);
+  const pcz = floorDiv(Math.floor(controls.target.z), CHUNK);
   const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= VIEW_RADIUS;
   const start = performance.now();
   outer: for (let r = 0; r <= VIEW_RADIUS; r++) {
@@ -271,7 +275,7 @@ function bounds(e) {
 function syncHitboxes() {
   if (!hitboxGroup.visible) return;
   for (const e of world.entities.values()) {
-    if (e.kind === 'terrain') continue;
+    if (e.kind === 'terrain' || !e.offsets.length) continue;
     const far = Math.max(Math.abs(e.pos[0] - player.pos[0]), Math.abs(e.pos[2] - player.pos[2])) > VIEW_RADIUS * CHUNK;
     let line = hitboxes.get(e.id);
     if (far) {
@@ -450,6 +454,15 @@ function setPaused(v) {
 }
 pauseBtn.addEventListener('click', () => setPaused(!paused));
 stepBtn.addEventListener('click', () => tick());
+document.getElementById('watchDragon').addEventListener('change', (e) => {
+  watchDragon = e.target.checked;
+  cutaway.uCut.value = watchDragon ? 0 : 1;
+  if (watchDragon && camera.position.distanceTo(controls.target) < 200) {
+    // 龍の全体が入るように引く
+    const offset = camera.position.clone().sub(controls.target).setLength(240);
+    camera.position.copy(controls.target).add(offset);
+  }
+});
 document.getElementById('hitbox').addEventListener('change', (e) => {
   hitboxGroup.visible = e.target.checked;
   syncHitboxes();
@@ -486,11 +499,18 @@ function tick() {
   chunkLabel.textContent = world.chunks.size;
 }
 
-// カメラはプレイヤーをなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）
+// カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）
 const followed = new THREE.Vector3();
+let watchDragon = false;
 function follow(dt) {
-  followed.copy(center(player));
-  const k = 1 - Math.exp(-dt * 8);
+  if (watchDragon) {
+    // 龍の胴のなかほどを見る
+    const mid = dragon.spine()[120]?.c ?? dragon.head;
+    followed.set(mid[0], mid[1], mid[2]);
+  } else {
+    followed.copy(center(player));
+  }
+  const k = 1 - Math.exp(-dt * (watchDragon ? 3 : 8));
   const delta = followed.sub(controls.target).multiplyScalar(k);
   controls.target.add(delta);
   camera.position.add(delta);
@@ -510,6 +530,10 @@ function frame(now) {
   controls.update();
   syncChunks();
   cutaway.uHead.value.copy(controls.target).y += 6;
+  // 霧はカメラからの距離に合わせて遠ざける（引いて見ても世界の端が霧に隠れるように）
+  const dist = camera.position.distanceTo(controls.target);
+  scene.fog.near = dist + 60;
+  scene.fog.far = dist + 190;
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

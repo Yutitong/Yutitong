@@ -394,6 +394,7 @@ export function paintTreesInto(world, chunk) {
     if (!list) continue;
     for (const i of list) {
       const ci = cellIndex(tree.xs[i] - x0, tree.ys[i], tree.zs[i] - z0);
+      chunk.ensure(tree.ys[i]);
       if (chunk.owner[ci] !== 0) continue;
       chunk.owner[ci] = tree.id;
       chunk.color[ci] = tree.color[i];

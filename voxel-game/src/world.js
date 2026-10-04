@@ -9,7 +9,7 @@
 
 import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, humanColors } from './humanoid.js';
 import { initCharacter, updateCharacter } from './character.js';
-import { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex } from './grid.js';
+import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
 import { hash3, mulberry32, shade } from './rng.js';
 import { terrainHeight, groundColor, waterColor, WATER_LEVEL } from './terrain.js';
 import { paintTreesInto, updateWind } from './trees.js';
@@ -52,12 +52,25 @@ class Chunk {
     this.cx = cx;
     this.cz = cz;
     this.key = chunkKey(cx, cz);
-    this.owner = new Int32Array(CHUNK * CHUNK * HEIGHT); // 持ち主 id（0 = 空き）
-    this.color = new Uint32Array(CHUNK * CHUNK * HEIGHT); // 表示色（0 = 消灯）
+    // 持ち主 id（0 = 空き）と表示色（0 = 消灯）。使った高さの分だけ持ち、必要になったら上に継ぎ足す
+    this.owner = new Int32Array(LAYER * 16);
+    this.color = new Uint32Array(LAYER * 16);
     this.height = new Uint8Array(CHUNK * CHUNK); // 列ごとの地面の高さ
     this.water = new Uint8Array(CHUNK * CHUNK); // 列ごとの水面の高さ（0 = 水なし）
     this.top = 1; // これより上のセルはすべて空（描画で調べる範囲を減らす）
     this.changed = []; // 前回描画してから変わったセル（描画側が読んで空にする）
+  }
+
+  // 高さ y のセルまで書けるように配列を広げる（16 段ずつ）
+  ensure(y) {
+    if ((y + 1) * LAYER <= this.owner.length) return;
+    const size = Math.min(HEIGHT, Math.ceil((y + 1) / 16) * 16) * LAYER;
+    const owner = new Int32Array(size);
+    const color = new Uint32Array(size);
+    owner.set(this.owner);
+    color.set(this.color);
+    this.owner = owner;
+    this.color = color;
   }
 }
 
@@ -117,13 +130,13 @@ export class World {
   ownerAt(x, y, z) {
     if (y < 0 || y >= HEIGHT) return -1;
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-    return c.owner[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)];
+    return c.owner[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? EMPTY;
   }
 
   colorAt(x, y, z) {
     if (y < 0 || y >= HEIGHT) return 0;
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-    return c.color[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)];
+    return c.color[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? 0;
   }
 
   // 地面の高さ（その列で最初の空でないセルの1つ上）
@@ -147,6 +160,7 @@ export class World {
     const i = cellIndex(lx, y, lz);
     const col = lx + CHUNK * lz;
     const level = c.water[col];
+    c.ensure(y);
     if (level && y < level && y >= c.height[col]) {
       if (owner === EMPTY) owner = WATER_ID;
       if (color === 0 && y === level - 1) color = waterColor(x, z, level - c.height[col]) | WATER_FLAG;
@@ -346,8 +360,9 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     // 何かにぶつかったら次は別の方向へ
     if (events.slice(before).some((ev) => ev.type === 'block')) e.aiLeft = 0;
   }
-  // 葉の揺れは1ティックおき（1秒に12.5回）で十分
+  // 葉の揺れと龍は1ティックおき（1秒に12.5回）に、交互に動かす
   if (p && world.tickCount % 2 === 0) updateWind(world, world.time, p.pos[0], p.pos[2], WIND_RADIUS);
+  if (p && world.dragon && world.tickCount % 2 === 1) world.dragon.update(dt * 2, p.pos);
   return events;
 }
 
@@ -373,6 +388,7 @@ function fillTerrain(world, c) {
       const x = c.cx * CHUNK + lx, z = c.cz * CHUNK + lz;
       const col = lx + CHUNK * lz;
       c.height[col] = h;
+      c.ensure(Math.max(h, W));
       for (let y = 0; y < h; y++) {
         const i = cellIndex(lx, y, lz);
         c.owner[i] = GROUND_ID;

@@ -462,3 +462,39 @@ test('木箱は足場のない所（水の上）へは押せない', () => {
   assert.equal(box.pos[0], 19); // 岸の端で止まる（水の上に浮かない）
   assertConsistent(w);
 });
+
+// ---- 龍 ----------------------------------------------------------------------
+
+test('龍: 全長 300 ボクセル以上で、木や地面の上を飛び、ほかの物のセルを上書きしない', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const w = new World({ seed: 20261004 });
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 4);
+  const d = spawnDragon(w, p.pos);
+  // 龍以外の持ち主を覚えておく
+  const snapshot = () => new Map([...w.chunks].map(([k, c]) => [k, Array.from(c.owner, (o) => (o === d.id ? 0 : o))]));
+  const before = snapshot();
+  let minGap = Infinity;
+  for (let i = 0; i < 120; i++) {
+    d.update(0.08, p.pos);
+    minGap = Math.min(minGap, d.head[1] - d.clearance(d.head[0], d.head[2]));
+  }
+  // ほかの物のセルは1つも変わっていない（龍が空けたセルは空き）
+  for (const [k, owners] of before) {
+    const now = w.chunks.get(k).owner;
+    owners.forEach((o, i) => {
+      if (o !== 0) assert.equal(now[i], o);
+    });
+  }
+  // 龍のセルの数と、世界の中の龍のセルの数が一致する
+  let owned = 0;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o === d.id) owned++;
+  assert.equal(owned, d.size);
+  assert.ok(d.size > 15000, `cells ${d.size}`);
+  // 体の端から端まで
+  const pts = d.spine();
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(...[0, 1, 2].map((a) => pts[i].c[a] - pts[i - 1].c[a]));
+  assert.ok(len > 300, `length ${len}`);
+  assert.ok(minGap >= 9, `gap ${minGap}`);
+});

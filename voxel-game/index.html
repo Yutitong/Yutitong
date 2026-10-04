@@ -235,9 +235,11 @@
         <li><span class="sw" style="background:linear-gradient(90deg,#3cc4b0 25%,#9b7bff 25% 50%,#ff6f6f 50% 75%,#f0f0f0 75%)"></span>NPC<span class="p">2</span></li>
         <li><span class="sw" style="background:#b5824c"></span>木箱<span class="p">1</span></li>
         <li><span class="sw" style="background:#5aaec4"></span>水<span class="p">0</span></li>
+        <li><span class="sw" style="background:linear-gradient(90deg,#2e8b6e 60%,#e9cf7f 60% 80%,#d2452c 80%)"></span>龍（空いた所だけを飛ぶ）<span class="p">—</span></li>
       </ul>
       <p class="rule-text">動く側の優先度が<strong>相手より高い</strong>ときだけ押し出せる。同じか低ければ止まる。押し出しは<strong>1段まで</strong>（箱の後ろに物があると押せない）。</p>
       <p class="rule-text">地形はなだらかな丘と川・池。2段（30cm）までの段差は歩いて登り降りでき、それより高い所からは落ちる。水は一番弱く、人が入ると場所をゆずる（胸より深い所には入らない）。</p>
+      <p class="rule-text">空には全長およそ 60m の龍がいる。頭が飛んだ道すじを胴がなぞり、うねりながら森の上を回る。龍は空いているセルにしか入らず、何も押し出さない。</p>
       <p class="rule-text">木は高さ 8〜13m。幹から枝分かれした先に葉の塊がつき、突風が通ると葉の塊が風下へ1ボクセルずれる。カメラとの間にある樹冠は消してプレイヤーを見せる。</p>
       <p class="rule-text">キャラは身長15ボクセル（1ボクセル ≈ 15cm）。膝・肘・腰・首の角度から体の形を作り、毎ティック15cmの粒に描き直す。当たり判定は常に 9×15×9 の箱で、アニメーションしても変わらない。</p>
     </section>
@@ -248,6 +250,7 @@
         <button type="button" class="btn" id="pause" aria-pressed="false">一時停止</button>
         <button type="button" class="btn" id="step" disabled>1ティック進める</button>
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
+        <label class="check"><input type="checkbox" id="watchDragon">カメラで龍を追う</label>
       </div>
       <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準、2つ同時で斜め）、<kbd>Shift</kbd> で走る、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
