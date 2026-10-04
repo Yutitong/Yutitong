@@ -1,13 +1,17 @@
-// 描画と入力。world.js の cells / colors をそのまま「ディスプレイ」として映す。
+// 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, buildDemo, step } from './world.js';
+import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, HEIGHT, VOXEL_METERS, cellIndex, floorDiv } from './world.js';
+import { HUMAN_SIZE } from './humanoid.js';
 
-const TICK_MS = 125; // 1秒に8回更新
-const VOXEL_SIZE = 0.9; // 1未満にして隙間を作り、LEDの粒のように見せる
+const TICK_MS = 80; // 1秒に12.5回更新（1ボクセル = 15cm なので歩く速さ ≈ 1.9m/s）
+const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
+const VIEW_RADIUS = 5; // 描画するチャンクの半径
+const SKY = 0xa9c9e8;
 
-const world = new World(20, 6, 20);
-buildDemo(world);
+const world = new World({ seed: 20261004 });
+const player = spawnPlayer(world);
+ensureAround(world, player.pos[0], player.pos[2], VIEW_RADIUS);
 
 // ---- three.js のセットアップ ----------------------------------------------
 
@@ -17,76 +21,136 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 stage.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0f1c);
+scene.background = new THREE.Color(SKY);
+scene.fog = new THREE.Fog(SKY, 110, 190);
 
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
-camera.position.set(-6, 24, 26);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 400);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 1, 0);
 controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI * 0.47;
+controls.enablePan = false;
+controls.minDistance = 25;
+controls.maxDistance = 140;
+controls.maxPolarAngle = Math.PI * 0.46;
+
+const center = (e) => new THREE.Vector3(e.pos[0] + HUMAN_SIZE[0] / 2, e.pos[1] + HUMAN_SIZE[1] / 2, e.pos[2] + HUMAN_SIZE[2] / 2);
+controls.target.copy(center(player));
+camera.position.copy(controls.target).add(new THREE.Vector3(-28, 42, 58));
 controls.update();
 
-scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x1a1f33, 1.6));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(8, 20, 6);
+scene.add(new THREE.HemisphereLight(0xeaf2ff, 0x4a5a3a, 1.5));
+const sun = new THREE.DirectionalLight(0xfff3dd, 1.9);
+sun.position.set(0.6, 1, 0.35);
 scene.add(sun);
 
-// 点灯しているボクセル
-const capacity = world.sx * world.sy * world.sz;
-const voxels = new THREE.InstancedMesh(
-  new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE),
-  new THREE.MeshLambertMaterial(),
-  capacity,
-);
-voxels.setColorAt(0, new THREE.Color()); // instanceColor を用意しておく
-scene.add(voxels);
+const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
+const material = new THREE.MeshLambertMaterial();
 
-// 消灯しているボクセル（表示用の小さな点）
-const ghostPositions = new Float32Array(capacity * 3);
-const ghostGeometry = new THREE.BufferGeometry();
-ghostGeometry.setAttribute('position', new THREE.BufferAttribute(ghostPositions, 3));
-const ghosts = new THREE.Points(
-  ghostGeometry,
-  new THREE.PointsMaterial({ color: 0x46507a, size: 0.09, sizeAttenuation: true }),
-);
-scene.add(ghosts);
-
-const ox = -world.sx / 2 + 0.5;
-const oz = -world.sz / 2 + 0.5;
+// チャンクごとの InstancedMesh
+const meshes = new Map();
 const matrix = new THREE.Matrix4();
 const color = new THREE.Color();
 const flash = new THREE.Color(0xffffff);
+let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
-// cells / colors を読んで画面を更新する。highlight にある物体は一瞬明るくする。
-function refresh(highlight = new Set()) {
+function buildChunkMesh(chunk) {
   let lit = 0;
-  let dark = 0;
-  for (let y = 0; y < world.sy; y++) {
-    for (let z = 0; z < world.sz; z++) {
-      for (let x = 0; x < world.sx; x++) {
-        const i = world.index(x, y, z);
-        const id = world.cells[i];
-        if (id) {
-          matrix.makeTranslation(x + ox, y + 0.5, z + oz);
-          voxels.setMatrixAt(lit, matrix);
-          color.setHex(world.colors[i]);
-          if (highlight.has(id)) color.lerp(flash, 0.35);
-          voxels.setColorAt(lit, color);
-          lit++;
-        } else if (y > 0) {
-          ghostPositions.set([x + ox, y + 0.5, z + oz], dark * 3);
-          dark++;
-        }
+  for (const c of chunk.color) if (c) lit++;
+  let mesh = meshes.get(chunk.key);
+  if (!mesh || mesh.instanceMatrix.count < lit) {
+    if (mesh) {
+      scene.remove(mesh);
+      mesh.dispose();
+    }
+    const capacity = Math.max(512, 1 << Math.ceil(Math.log2(lit)));
+    mesh = new THREE.InstancedMesh(geometry, material, capacity);
+    mesh.position.set(chunk.cx * CHUNK, 0, chunk.cz * CHUNK);
+    mesh.frustumCulled = false;
+    meshes.set(chunk.key, mesh);
+    scene.add(mesh);
+  }
+  let n = 0;
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let z = 0; z < CHUNK; z++) {
+      for (let x = 0; x < CHUNK; x++) {
+        const i = cellIndex(x, y, z);
+        if (!chunk.color[i]) continue;
+        matrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
+        mesh.setMatrixAt(n, matrix);
+        color.setHex(chunk.color[i]);
+        if (highlight.has(chunk.owner[i])) color.lerp(flash, 0.35);
+        mesh.setColorAt(n, color);
+        n++;
       }
     }
   }
-  voxels.count = lit;
-  voxels.instanceMatrix.needsUpdate = true;
-  voxels.instanceColor.needsUpdate = true;
-  ghostGeometry.setDrawRange(0, dark);
-  ghostGeometry.attributes.position.needsUpdate = true;
-  litCount.textContent = lit;
+  mesh.count = n;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+// プレイヤーの周りのチャンクを用意し、変わったチャンクだけ描き直す。遠いチャンクは片付ける。
+function syncChunks() {
+  const pcx = floorDiv(player.pos[0], CHUNK);
+  const pcz = floorDiv(player.pos[2], CHUNK);
+  ensureAround(world, player.pos[0], player.pos[2], VIEW_RADIUS);
+  const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= VIEW_RADIUS;
+  for (const key of world.dirty) {
+    const chunk = world.chunks.get(key);
+    if (near(chunk)) buildChunkMesh(chunk);
+  }
+  world.dirty.clear();
+  for (const [key, mesh] of meshes) {
+    const chunk = world.chunks.get(key);
+    if (!near(chunk)) {
+      scene.remove(mesh);
+      mesh.dispose();
+      meshes.delete(key);
+    }
+  }
+  for (const chunk of world.chunks.values()) {
+    if (near(chunk) && !meshes.has(chunk.key)) buildChunkMesh(chunk);
+  }
+}
+
+// 当たり判定の直方体（動く物だけ）
+const hitboxGroup = new THREE.Group();
+hitboxGroup.visible = false;
+scene.add(hitboxGroup);
+const hitboxes = new Map();
+const hitboxMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 });
+
+function bounds(e) {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const [x, y, z] of e.voxels) {
+    min[0] = Math.min(min[0], x); max[0] = Math.max(max[0], x + 1);
+    min[1] = Math.min(min[1], y); max[1] = Math.max(max[1], y + 1);
+    min[2] = Math.min(min[2], z); max[2] = Math.max(max[2], z + 1);
+  }
+  return { min, size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] };
+}
+
+function syncHitboxes() {
+  if (!hitboxGroup.visible) return;
+  for (const e of world.entities.values()) {
+    if (e.kind === 'terrain') continue;
+    const far = Math.max(Math.abs(e.pos[0] - player.pos[0]), Math.abs(e.pos[2] - player.pos[2])) > VIEW_RADIUS * CHUNK;
+    let line = hitboxes.get(e.id);
+    if (far) {
+      if (line) line.visible = false;
+      continue;
+    }
+    if (!line) {
+      const { min, size } = bounds(e);
+      const box = new THREE.BoxGeometry(...size);
+      box.translate(min[0] + size[0] / 2, min[1] + size[1] / 2, min[2] + size[2] / 2);
+      line = new THREE.LineSegments(new THREE.EdgesGeometry(box), hitboxMaterial);
+      hitboxes.set(e.id, line);
+      hitboxGroup.add(line);
+    }
+    line.visible = true;
+    line.position.set(...e.pos);
+  }
 }
 
 function resize() {
@@ -94,9 +158,6 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  // 縦長の画面でも世界全体が入るように距離を調整する
-  const dist = 36 * Math.max(1, 1.1 / camera.aspect);
-  camera.position.sub(controls.target).setLength(dist).add(controls.target);
 }
 new ResizeObserver(resize).observe(stage);
 
@@ -161,7 +222,8 @@ for (const btn of document.querySelectorAll('[data-dir]')) {
 
 const logList = document.getElementById('log');
 const tickLabel = document.getElementById('tick');
-const litCount = document.getElementById('lit');
+const posLabel = document.getElementById('pos');
+const chunkLabel = document.getElementById('chunks');
 const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
@@ -178,9 +240,8 @@ function describe(ev) {
   return { cls: 'block', text: `${a.name} は ${t.name} に止められた`, rule: `${fmtP(a.priority)} ≤ ${fmtP(t.priority)}` };
 }
 
-// NPC が壁にぶつかるたびに書くと流れてしまうので、プレイヤーが関わる出来事と押し出しだけ記録する
+// NPC が木にぶつかるたびに書くと流れてしまうので、プレイヤーが関わる出来事だけ記録する
 function shouldLog(ev) {
-  if (ev.type === 'push') return true;
   return ev.actor.kind === 'player' || ev.target?.kind === 'player';
 }
 
@@ -223,7 +284,19 @@ function setPaused(v) {
 }
 pauseBtn.addEventListener('click', () => setPaused(!paused));
 stepBtn.addEventListener('click', () => tick());
-document.getElementById('ghost').addEventListener('change', (e) => (ghosts.visible = e.target.checked));
+document.getElementById('hitbox').addEventListener('change', (e) => {
+  hitboxGroup.visible = e.target.checked;
+  syncHitboxes();
+});
+
+function markOwners(ids) {
+  // 光らせる / 光を消す物体のチャンクを描き直し対象にする
+  for (const id of ids) {
+    const e = world.entities.get(id);
+    if (!e) continue;
+    for (const [x, , z] of world.cellsOf(e)) world.dirty.add(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+  }
+}
 
 function tick() {
   const rel = pending ?? held[held.length - 1];
@@ -234,24 +307,43 @@ function tick() {
     if (ev.type === 'push') pushed.add(ev.target.id);
     if (shouldLog(ev)) log(ev);
   }
+  markOwners(highlight);
+  highlight = pushed;
+  markOwners(highlight);
+  syncChunks();
+  syncHitboxes();
   tickLabel.textContent = world.tickCount;
-  refresh(pushed);
+  posLabel.textContent = `${(player.pos[0] * VOXEL_METERS).toFixed(1)}, ${(player.pos[2] * VOXEL_METERS).toFixed(1)} m`;
+  chunkLabel.textContent = world.chunks.size;
+}
+
+// カメラはプレイヤーをなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）
+const followed = new THREE.Vector3();
+function follow(dt) {
+  followed.copy(center(player));
+  const k = 1 - Math.exp(-dt * 8);
+  const delta = followed.sub(controls.target).multiplyScalar(k);
+  controls.target.add(delta);
+  camera.position.add(delta);
 }
 
 let last = performance.now();
 let acc = 0;
 function frame(now) {
-  acc += Math.min(now - last, 500);
+  const dt = Math.min(now - last, 500);
   last = now;
+  acc += dt;
   while (acc >= TICK_MS) {
     acc -= TICK_MS;
     if (!paused) tick();
   }
+  follow(dt / 1000);
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 
 resize();
-refresh();
+syncChunks();
+tick();
 requestAnimationFrame(frame);
