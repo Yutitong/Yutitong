@@ -1,10 +1,10 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, HEIGHT, VOXEL_METERS, cellIndex, floorDiv } from './world.js';
+import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, HEIGHT, VOXEL_METERS, TICK_SECONDS, cellIndex, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
 
-const TICK_MS = 80; // 1秒に12.5回更新（1ボクセル = 15cm なので歩く速さ ≈ 1.9m/s）
+const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
 const VIEW_RADIUS = 5; // 描画するチャンクの半径
 const SKY = 0xa9c9e8;
@@ -122,10 +122,11 @@ const hitboxMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparen
 function bounds(e) {
   const min = [Infinity, Infinity, Infinity];
   const max = [-Infinity, -Infinity, -Infinity];
-  for (const [x, y, z] of e.voxels) {
-    min[0] = Math.min(min[0], x); max[0] = Math.max(max[0], x + 1);
-    min[1] = Math.min(min[1], y); max[1] = Math.max(max[1], y + 1);
-    min[2] = Math.min(min[2], z); max[2] = Math.max(max[2], z + 1);
+  for (let o = 0; o < e.offsets.length; o += 3) {
+    for (let a = 0; a < 3; a++) {
+      min[a] = Math.min(min[a], e.offsets[o + a]);
+      max[a] = Math.max(max[a], e.offsets[o + a] + 1);
+    }
   }
   return { min, size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] };
 }
@@ -163,7 +164,8 @@ new ResizeObserver(resize).observe(stage);
 
 // ---- 入力 -------------------------------------------------------------------
 
-// 画面上の向き（前後左右）を、カメラの向きに最も近い世界の軸に合わせる
+// 画面上の向き（前後左右）を、カメラの向きに最も近い世界の軸に合わせる。
+// 2つのキーを同時に押すと斜め（8方向）。Shift を押している間は走る。
 const KEYMAP = {
   KeyW: 'f', ArrowUp: 'f',
   KeyS: 'b', ArrowDown: 'b',
@@ -171,7 +173,8 @@ const KEYMAP = {
   KeyD: 'r', ArrowRight: 'r',
 };
 const held = [];
-let pending = null;
+let running = false;
+let runButton = false;
 
 function worldDir(rel) {
   const fx = controls.target.x - camera.position.x;
@@ -182,8 +185,20 @@ function worldDir(rel) {
   return [d[0], 0, d[1]];
 }
 
+function playerInput() {
+  let dx = 0;
+  let dz = 0;
+  for (const rel of held) {
+    const [x, , z] = worldDir(rel);
+    dx += x;
+    dz += z;
+  }
+  dx = Math.sign(dx);
+  dz = Math.sign(dz);
+  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton };
+}
+
 function press(rel) {
-  pending = rel;
   if (!held.includes(rel)) held.push(rel);
 }
 function release(rel) {
@@ -192,6 +207,7 @@ function release(rel) {
 }
 
 window.addEventListener('keydown', (e) => {
+  running = e.shiftKey;
   if (KEYMAP[e.code]) {
     e.preventDefault();
     if (!e.repeat) press(KEYMAP[e.code]);
@@ -203,9 +219,20 @@ window.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('keyup', (e) => {
+  running = e.shiftKey;
   if (KEYMAP[e.code]) release(KEYMAP[e.code]);
 });
-window.addEventListener('blur', () => (held.length = 0));
+window.addEventListener('blur', () => {
+  held.length = 0;
+  running = false;
+});
+
+const runBtn = document.querySelector('[data-run]');
+runBtn.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  runButton = !runButton;
+  runBtn.setAttribute('aria-pressed', String(runButton));
+});
 
 for (const btn of document.querySelectorAll('[data-dir]')) {
   const rel = btn.dataset.dir;
@@ -224,6 +251,7 @@ const logList = document.getElementById('log');
 const tickLabel = document.getElementById('tick');
 const posLabel = document.getElementById('pos');
 const chunkLabel = document.getElementById('chunks');
+const speedLabel = document.getElementById('speed');
 const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
@@ -299,9 +327,7 @@ function markOwners(ids) {
 }
 
 function tick() {
-  const rel = pending ?? held[held.length - 1];
-  pending = null;
-  const events = step(world, rel ? worldDir(rel) : null);
+  const events = step(world, playerInput());
   const pushed = new Set();
   for (const ev of events) {
     if (ev.type === 'push') pushed.add(ev.target.id);
@@ -314,6 +340,7 @@ function tick() {
   syncHitboxes();
   tickLabel.textContent = world.tickCount;
   posLabel.textContent = `${(player.pos[0] * VOXEL_METERS).toFixed(1)}, ${(player.pos[2] * VOXEL_METERS).toFixed(1)} m`;
+  speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
 }
 

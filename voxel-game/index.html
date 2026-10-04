@@ -104,6 +104,8 @@
   .dpad [data-dir="l"] { grid-area: 2 / 1; }
   .dpad [data-dir="r"] { grid-area: 2 / 3; }
   .dpad [data-dir="b"] { grid-area: 3 / 2; }
+  .dpad [data-run] { grid-area: 2 / 2; font-size: 14px; }
+  .dpad [data-run][aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 
   .panel {
     min-width: 0;
@@ -207,6 +209,7 @@
     <div class="readout">
       <span>TICK <b id="tick">0</b></span>
       <span>座標 <b id="pos">0, 0 m</b></span>
+      <span>速さ <b id="speed">0.0 m/s</b></span>
       <span>チャンク <b id="chunks">0</b></span>
     </div>
     <div class="dpad" aria-label="移動">
@@ -214,6 +217,7 @@
       <button type="button" data-dir="l" aria-label="左へ">◀</button>
       <button type="button" data-dir="r" aria-label="右へ">▶</button>
       <button type="button" data-dir="b" aria-label="後ろへ">▼</button>
+      <button type="button" data-run aria-pressed="false" aria-label="走る（切り替え）">走</button>
     </div>
   </div>
 
@@ -232,7 +236,7 @@
         <li><span class="sw" style="background:#b5824c"></span>木箱<span class="p">1</span></li>
       </ul>
       <p class="rule-text">動く側の優先度が<strong>相手より高い</strong>ときだけ押し出せる。同じか低ければ止まる。押し出しは<strong>1段まで</strong>（箱の後ろに物があると押せない）。</p>
-      <p class="rule-text">キャラは身長14ボクセル（1ボクセル ≈ 15cm）。歩くたびに手足のボクセルが8コマで切り替わる。当たり判定は常に 9×14×9 の箱で、アニメーションしても変わらない。</p>
+      <p class="rule-text">キャラは身長15ボクセル（1ボクセル ≈ 15cm）。膝・肘・腰・首の角度から体の形を作り、毎ティック15cmの粒に描き直す。当たり判定は常に 9×15×9 の箱で、アニメーションしても変わらない。</p>
     </section>
 
     <section>
@@ -242,7 +246,7 @@
         <button type="button" class="btn" id="step" disabled>1ティック進める</button>
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
       </div>
-      <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準）、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
+      <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準、2つ同時で斜め）、<kbd>Shift</kbd> で走る、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
 
     <section>

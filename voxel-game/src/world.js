@@ -7,13 +7,15 @@
 //
 // 世界は水平方向にどこまでも続く。16×16 の柱（チャンク）単位で、必要になったときに作る。
 
-import { HUMAN_SIZE, PALETTES, FACING_DIRS, WALK_CYCLE, facingOf, humanoidVoxels } from './humanoid.js';
+import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, rasterizeHuman } from './humanoid.js';
+import { initCharacter, updateCharacter } from './character.js';
 
 export const EMPTY = 0;
 export const GROUND_ID = 1;
 export const CHUNK = 16; // チャンクの一辺（ボクセル）
 export const HEIGHT = 32; // 世界の高さ（ボクセル）。y = 0 が地面
 export const VOXEL_METERS = 0.15;
+export const TICK_SECONDS = 0.04; // 1秒に25回更新
 
 // 数値が大きいほど強い。動く側の優先度 > 相手の優先度 のときだけ押し出せる。
 export const PRIORITY = {
@@ -27,7 +29,10 @@ export const PRIORITY = {
 // Infinity にすると連鎖押し出しになる。
 export const MAX_PUSH_DEPTH = 1;
 
-export const DIRS = FACING_DIRS;
+// 8方向（[dx, dz]）
+export const DIRS8 = [
+  [0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1],
+];
 
 // ---- 乱数・ハッシュ（同じ座標からは常に同じ世界ができる） -----------------------
 
@@ -51,6 +56,11 @@ export function mulberry32(seed) {
 
 // ---- 世界 ------------------------------------------------------------------------
 
+const floorDiv = (a, b) => Math.floor(a / b);
+// チャンクの番号を1つの数値にまとめる（文字列を作らずに Map を引くため）
+export const chunkKey = (cx, cz) => (cx + 32768) * 65536 + (cz + 32768);
+const cellIndex = (lx, y, lz) => lx + CHUNK * (lz + CHUNK * y);
+
 class Chunk {
   constructor(cx, cz) {
     this.cx = cx;
@@ -61,10 +71,16 @@ class Chunk {
   }
 }
 
-const floorDiv = (a, b) => Math.floor(a / b);
-// チャンクの番号を1つの数値にまとめる（文字列を作らずに Map を引くため）
-export const chunkKey = (cx, cz) => (cx + 32768) * 65536 + (cz + 32768);
-const cellIndex = (lx, y, lz) => lx + CHUNK * (lz + CHUNK * y);
+// [[dx, dy, dz, color], ...] を、セルの相対位置（offsets）と色（colors）の配列に分ける
+function packVoxels(voxels) {
+  const offsets = new Int16Array(voxels.length * 3);
+  const colors = new Uint32Array(voxels.length);
+  voxels.forEach(([x, y, z, c], k) => {
+    offsets.set([x, y, z], k * 3);
+    colors[k] = c;
+  });
+  return { offsets, colors };
+}
 
 export class World {
   // generate: false にすると地面だけの世界になる（テスト用）
@@ -74,7 +90,10 @@ export class World {
     this.chunks = new Map();
     this.dirty = new Set(); // 描画を更新すべきチャンクの key
     this.entities = new Map();
-    this.entities.set(GROUND_ID, { id: GROUND_ID, kind: 'terrain', name: '地面', priority: PRIORITY.TERRAIN, pos: [0, 0, 0], voxels: [] });
+    this.entities.set(GROUND_ID, {
+      id: GROUND_ID, kind: 'terrain', name: '地面', priority: PRIORITY.TERRAIN,
+      pos: [0, 0, 0], offsets: new Int16Array(0), colors: new Uint32Array(0),
+    });
     this.nextId = GROUND_ID + 1;
     this.tickCount = 0;
     this.player = null;
@@ -116,11 +135,13 @@ export class World {
   }
 
   // voxels: [[dx, dy, dz, color], ...]（pos からの相対位置。color 0 は占有するが消灯）
-  // 置けない場合は null を返す
-  spawn({ kind, name, priority, pos, voxels, ...extra }) {
-    const e = { id: this.nextId, kind, name, priority, pos: [...pos], voxels, ...extra };
-    for (const [x, y, z] of this.cellsOf(e)) {
-      if (this.ownerAt(x, y, z) !== EMPTY) return null;
+  // または offsets / colors を直接渡す。置けない場合は null を返す。
+  spawn({ voxels, offsets, colors, ...spec }) {
+    if (voxels) ({ offsets, colors } = packVoxels(voxels));
+    const e = { id: this.nextId, ...spec, pos: [...spec.pos], offsets, colors };
+    for (let k = 0; k < colors.length; k++) {
+      const o = k * 3;
+      if (this.ownerAt(e.pos[0] + offsets[o], e.pos[1] + offsets[o + 1], e.pos[2] + offsets[o + 2]) !== EMPTY) return null;
     }
     this.nextId++;
     this.entities.set(e.id, e);
@@ -128,36 +149,40 @@ export class World {
     return e;
   }
 
-  spawnHuman({ kind, name, priority, pos, palette, facing = 0, ...extra }) {
-    return this.spawn({
-      kind, name, priority, pos, palette, facing, frame: 0,
-      voxels: humanoidVoxels(palette, facing, 0),
-      ...extra,
-    });
+  // 人型キャラ: 9×15×9 の直方体を占有し、中の見た目は姿勢から描く
+  spawnHuman({ palette, yaw = 0, ...spec }, rng = Math.random) {
+    const pose = { ...createPose(), yaw };
+    const e = this.spawn({ ...spec, palette, yaw, offsets: HUMAN_OFFSETS, colors: rasterizeHuman(palette, pose) });
+    return e && initCharacter(e, rng);
   }
 
+  // [[x, y, z, color], ...]（絶対座標）
   cellsOf(e, pos = e.pos) {
-    return e.voxels.map(([dx, dy, dz, color]) => [pos[0] + dx, pos[1] + dy, pos[2] + dz, color]);
+    const out = [];
+    for (let k = 0; k < e.colors.length; k++) {
+      const o = k * 3;
+      out.push([pos[0] + e.offsets[o], pos[1] + e.offsets[o + 1], pos[2] + e.offsets[o + 2], e.colors[k]]);
+    }
+    return out;
   }
 
   paint(e, on) {
-    for (const [x, y, z, color] of this.cellsOf(e)) {
-      this.setCell(x, y, z, on ? e.id : EMPTY, on ? color : 0);
+    const { offsets, colors, pos } = e;
+    for (let k = 0; k < colors.length; k++) {
+      const o = k * 3;
+      this.setCell(pos[0] + offsets[o], pos[1] + offsets[o + 1], pos[2] + offsets[o + 2], on ? e.id : EMPTY, on ? colors[k] : 0);
     }
   }
 
-  // 見た目だけを差し替える（占有するセルは同じであること）。色だけを書き換える。
-  setLook(e, voxels) {
-    if (voxels === e.voxels) return;
-    e.voxels = voxels;
-    this.paint(e, true);
-  }
-
-  // 人型キャラの向きとコマを変える。当たり判定の直方体は変わらないので衝突は起きない。
-  pose(e, facing, frame) {
-    e.facing = facing;
-    e.frame = frame % WALK_CYCLE.length;
-    this.setLook(e, humanoidVoxels(e.palette, e.facing, e.frame));
+  // 見た目だけを差し替える。占有するセルは同じなので、色が変わったセルだけ書き換える。
+  recolor(e, colors) {
+    const { offsets, pos } = e;
+    for (let k = 0; k < colors.length; k++) {
+      if (colors[k] === e.colors[k]) continue;
+      e.colors[k] = colors[k];
+      const o = k * 3;
+      this.setCell(pos[0] + offsets[o], pos[1] + offsets[o + 1], pos[2] + offsets[o + 2], e.id, colors[k]);
+    }
   }
 
   // 物体を dir 方向に1マス動かす。必要なら優先度の低い物を押し出す。
@@ -179,12 +204,19 @@ export class World {
     return { ok: true, pushed: group.filter((e) => e !== mover) };
   }
 
+  // 実際には動かさずに、動けるかどうかだけ調べる
+  canMove(id, dir) {
+    const e = this.entities.get(id);
+    return this.planMove(e, dir, e.priority, 0, new Set());
+  }
+
   planMove(e, dir, power, depth, plan) {
     plan.add(e.id);
-    const next = [e.pos[0] + dir[0], e.pos[1] + dir[1], e.pos[2] + dir[2]];
+    const { offsets, pos } = e;
+    const nx = pos[0] + dir[0], ny = pos[1] + dir[1], nz = pos[2] + dir[2];
     const seen = new Set();
-    for (const [x, y, z] of this.cellsOf(e, next)) {
-      const owner = this.ownerAt(x, y, z);
+    for (let o = 0; o < offsets.length; o += 3) {
+      const owner = this.ownerAt(nx + offsets[o], ny + offsets[o + 1], nz + offsets[o + 2]);
       if (owner === -1) {
         this._fail = { blocker: null, via: e, reason: 'edge' };
         return false;
@@ -210,22 +242,25 @@ export class World {
 
 export const SIM_RADIUS = 80; // プレイヤーからこの距離（ボクセル）以内の NPC だけ動かす
 
-function randomDir(rng) {
-  return DIRS[Math.floor(rng() * DIRS.length)];
+// NPC の考え: 歩く・立ち止まる・ときどき走る
+function npcInput(e, rng, dt) {
+  e.aiLeft = (e.aiLeft ?? 0) - dt;
+  if (e.aiLeft <= 0) {
+    if (rng() < 0.3) {
+      e.aiDir = null; // 立ち止まってあたりを見る
+      e.aiLeft = 1.5 + rng() * 4;
+    } else {
+      e.aiDir = DIRS8[Math.floor(rng() * 8)];
+      e.aiRun = rng() < 0.15;
+      e.aiLeft = 1 + rng() * (e.aiRun ? 2 : 5);
+    }
+  }
+  return { dir: e.aiDir, run: e.aiRun };
 }
 
-// 人型キャラを1歩進める。進めたらコマを1つ進め、止まったら立ち姿に戻す。
-function walk(world, e, dir, act) {
-  const facing = facingOf(dir);
-  if (facing !== e.facing) world.pose(e, facing, e.frame);
-  const ok = act(e, dir);
-  world.pose(e, facing, ok ? e.frame + 1 : 0);
-  return ok;
-}
-
-// playerDir: [dx, 0, dz] または null（立ち止まる）
+// playerInput: { dir: [dx, dz] | null, run: boolean }
 // 戻り値はこのティックで起きた出来事のリスト
-export function step(world, playerDir, rng = Math.random) {
+export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   world.tickCount++;
   const events = [];
   const act = (e, dir) => {
@@ -235,36 +270,19 @@ export function step(world, playerDir, rng = Math.random) {
     } else {
       events.push({ type: 'block', actor: e, target: r.blocker, via: r.via, reason: r.reason });
     }
-    return r.ok;
+    return r;
   };
 
   const p = world.player;
-  if (p) {
-    if (playerDir) walk(world, p, playerDir, act);
-    else if (p.frame !== 0) world.pose(p, p.facing, 0);
-  }
+  if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, act);
 
   for (const e of [...world.entities.values()]) {
     if (e.kind !== 'npc') continue;
     if (p && Math.max(Math.abs(e.pos[0] - p.pos[0]), Math.abs(e.pos[2] - p.pos[2])) > SIM_RADIUS) continue;
-    if (e.rest > 0) {
-      e.rest--;
-      if (e.rest === 0) e.dir = randomDir(rng);
-      else if (e.frame !== 0) world.pose(e, e.facing, 0);
-      continue;
-    }
-    if (e.wait > 0) {
-      e.wait--;
-      continue;
-    }
-    e.wait = e.slowness;
-    if (!e.dir) e.dir = randomDir(rng);
-    if (rng() < 0.02) {
-      e.rest = 10 + Math.floor(rng() * 30); // ときどき立ち止まる
-      continue;
-    }
-    if (rng() < 0.03) e.dir = randomDir(rng);
-    if (!walk(world, e, e.dir, act)) e.dir = randomDir(rng);
+    const before = events.length;
+    updateCharacter(world, e, npcInput(e, rng, dt), dt, rng, act);
+    // 何かにぶつかったら次は別の方向へ
+    if (events.slice(before).some((ev) => ev.type === 'block')) e.aiLeft = 0;
   }
   return events;
 }
@@ -331,7 +349,7 @@ function rockVoxels(rng) {
 
 function treeVoxels(rng) {
   const v = [];
-  const top = 9 + Math.floor(rng() * 4);
+  const top = 10 + Math.floor(rng() * 4);
   for (let y = 0; y < top; y++) {
     for (let z = 3; z <= 5; z++) for (let x = 3; x <= 5; x++) v.push([x, y, z, shade(0x7a5534, 0.9 + rng() * 0.2)]);
   }
@@ -371,9 +389,8 @@ function generateChunk(world, c) {
       const palette = PALETTES.npc[Math.floor(rng() * PALETTES.npc.length)];
       const e = world.spawnHuman({
         kind: 'npc', name: `NPC-${world.counts.npc + 1}`, priority: PRIORITY.NPC,
-        pos: place(HUMAN_SIZE[0]), palette, facing: Math.floor(rng() * 4),
-        slowness: 1, wait: 0, rest: 0, dir: null,
-      });
+        pos: place(HUMAN_SIZE[0]), palette, yaw: Math.floor(rng() * 8) * (Math.PI / 4),
+      }, rng);
       if (e) world.counts.npc++;
     }
   }
@@ -385,7 +402,7 @@ export function spawnPlayer(world) {
   world.player = world.spawnHuman({
     kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
     pos: [Math.floor((CHUNK - HUMAN_SIZE[0]) / 2), 1, Math.floor((CHUNK - HUMAN_SIZE[2]) / 2)],
-    palette: PALETTES.player, facing: 0,
+    palette: PALETTES.player, yaw: 0,
   });
   return world.player;
 }
