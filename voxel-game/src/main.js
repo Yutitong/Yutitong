@@ -6,12 +6,13 @@ import { HUMAN_SIZE } from './humanoid.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
-const VIEW_RADIUS = 5; // 描画するチャンクの半径
+const VIEW_RADIUS = 7; // 描画するチャンクの半径
+const LOAD_BUDGET_MS = 6; // 1フレームでチャンク作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
 const player = spawnPlayer(world);
-ensureAround(world, player.pos[0], player.pos[2], VIEW_RADIUS);
+ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 
 // ---- three.js のセットアップ ----------------------------------------------
 
@@ -22,19 +23,19 @@ stage.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 110, 190);
+scene.fog = new THREE.Fog(SKY, 150, 280);
 
-const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 400);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 600);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enablePan = false;
 controls.minDistance = 25;
-controls.maxDistance = 140;
-controls.maxPolarAngle = Math.PI * 0.46;
+controls.maxDistance = 220;
+controls.maxPolarAngle = Math.PI * 0.47;
 
 const center = (e) => new THREE.Vector3(e.pos[0] + HUMAN_SIZE[0] / 2, e.pos[1] + HUMAN_SIZE[1] / 2, e.pos[2] + HUMAN_SIZE[2] / 2);
 controls.target.copy(center(player));
-camera.position.copy(controls.target).add(new THREE.Vector3(-28, 42, 58));
+camera.position.copy(controls.target).add(new THREE.Vector3(-34, 40, 66));
 controls.update();
 
 scene.add(new THREE.HemisphereLight(0xeaf2ff, 0x4a5a3a, 1.5));
@@ -42,73 +43,169 @@ const sun = new THREE.DirectionalLight(0xfff3dd, 1.9);
 sun.position.set(0.6, 1, 0.35);
 scene.add(sun);
 
-const geometry = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-const material = new THREE.MeshLambertMaterial();
+// ---- ボクセルの描画 ---------------------------------------------------------
+//
+// チャンクごとに1つのメッシュ。ボクセル1つ = 箱1つ（インスタンス）で、
+// 各インスタンスは「チャンク内の位置・表示するか」と「色」だけを持つ。
+// セルが変わったら、そのセルのインスタンスだけ書き換える。
 
-// チャンクごとの InstancedMesh
-const meshes = new Map();
-const matrix = new THREE.Matrix4();
-const color = new THREE.Color();
-const flash = new THREE.Color(0xffffff);
+const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
+const cutaway = { uHead: { value: new THREE.Vector3() } };
+const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+material.onBeforeCompile = (shader) => {
+  shader.uniforms.uHead = cutaway.uHead;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;')
+    .replace('#include <color_vertex>', 'vColor = pow(color, vec3(2.2));') // 色は sRGB で持っている
+    .replace('#include <begin_vertex>', `
+      vec3 transformed = vec3(position);
+      float show = iCell.w;
+      // カメラとプレイヤーの頭の間にある、頭より高いボクセル（木の葉など）は消して見通す
+      vec3 wc = (modelMatrix * vec4(iCell.xyz, 1.0)).xyz;
+      vec3 seg = uHead - cameraPosition;
+      float t = clamp(dot(wc - cameraPosition, seg) / dot(seg, seg), 0.0, 1.0);
+      float d = length(wc - (cameraPosition + seg * t));
+      if (t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
+      transformed = transformed * show + iCell.xyz;
+    `);
+};
+
+const CELLS = CHUNK * CHUNK * HEIGHT;
+const views = new Map(); // チャンク key → 描画の状態
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
-function buildChunkMesh(chunk) {
-  let lit = 0;
-  for (const c of chunk.color) if (c) lit++;
-  let mesh = meshes.get(chunk.key);
-  if (!mesh || mesh.instanceMatrix.count < lit) {
-    if (mesh) {
-      scene.remove(mesh);
-      mesh.dispose();
+function writeCell(v, chunk, i) {
+  const c = chunk.color[i];
+  let slot = v.slotOf[i];
+  if (!c) {
+    if (slot >= 0 && v.cell[slot * 4 + 3] !== 0) {
+      v.cell[slot * 4 + 3] = 0;
+      v.hidden++;
+      v.touch(slot);
     }
-    const capacity = Math.max(512, 1 << Math.ceil(Math.log2(lit)));
-    mesh = new THREE.InstancedMesh(geometry, material, capacity);
-    mesh.position.set(chunk.cx * CHUNK, 0, chunk.cz * CHUNK);
-    mesh.frustumCulled = false;
-    meshes.set(chunk.key, mesh);
-    scene.add(mesh);
+    return true;
   }
-  let n = 0;
-  for (let y = 0; y < HEIGHT; y++) {
-    for (let z = 0; z < CHUNK; z++) {
-      for (let x = 0; x < CHUNK; x++) {
-        const i = cellIndex(x, y, z);
-        if (!chunk.color[i]) continue;
-        matrix.makeTranslation(x + 0.5, y + 0.5, z + 0.5);
-        mesh.setMatrixAt(n, matrix);
-        color.setHex(chunk.color[i]);
-        if (highlight.has(chunk.owner[i])) color.lerp(flash, 0.35);
-        mesh.setColorAt(n, color);
-        n++;
-      }
-    }
+  if (slot < 0) {
+    if (v.count >= v.capacity) return false; // 入りきらない → 作り直す
+    slot = v.count++;
+    v.slotOf[i] = slot;
+    const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = Math.floor(i / (CHUNK * CHUNK));
+    v.cell.set([lx + 0.5, y + 0.5, lz + 0.5, 1], slot * 4);
+  } else if (v.cell[slot * 4 + 3] === 0) {
+    v.cell[slot * 4 + 3] = 1;
+    v.hidden--;
   }
-  mesh.count = n;
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  const f = highlight.has(chunk.owner[i]) ? 0.35 : 0;
+  v.rgb[slot * 3] = ((c >> 16) & 255) * (1 - f) + 255 * f;
+  v.rgb[slot * 3 + 1] = ((c >> 8) & 255) * (1 - f) + 255 * f;
+  v.rgb[slot * 3 + 2] = (c & 255) * (1 - f) + 255 * f;
+  v.touch(slot);
+  return true;
 }
 
-// プレイヤーの周りのチャンクを用意し、変わったチャンクだけ描き直す。遠いチャンクは片付ける。
+// チャンクの描画を一から作る（初回・入りきらないとき・隠れたインスタンスが増えたとき）
+function buildView(chunk) {
+  const old = views.get(chunk.key);
+  if (old) {
+    scene.remove(old.mesh);
+    old.mesh.geometry.dispose();
+  }
+  const limit = CHUNK * CHUNK * chunk.top;
+  let lit = 0;
+  for (let i = 0; i < limit; i++) if (chunk.color[i]) lit++;
+  const capacity = Math.max(512, Math.ceil(lit * 1.25 / 256) * 256);
+  const geo = new THREE.InstancedBufferGeometry();
+  // 箱の形はチャンクごとに複製する（共有すると、片付けたチャンクと一緒に消されてしまう）
+  geo.setIndex(box.index.clone());
+  geo.setAttribute('position', box.attributes.position.clone());
+  geo.setAttribute('normal', box.attributes.normal.clone());
+  const cellAttr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
+  const rgbAttr = new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true);
+  cellAttr.setUsage(THREE.DynamicDrawUsage);
+  rgbAttr.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('iCell', cellAttr);
+  geo.setAttribute('color', rgbAttr);
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.position.set(chunk.cx * CHUNK, 0, chunk.cz * CHUNK);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  const v = {
+    mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array,
+    slotOf: new Int32Array(CELLS).fill(-1), count: 0, hidden: 0, capacity, lo: Infinity, hi: -1,
+    touch(slot) {
+      if (slot < this.lo) this.lo = slot;
+      if (slot > this.hi) this.hi = slot;
+    },
+  };
+  views.set(chunk.key, v);
+  for (let i = 0; i < limit; i++) if (chunk.color[i]) writeCell(v, chunk, i);
+  upload(v, true);
+  chunk.changed.length = 0;
+  return v;
+}
+
+function upload(v, all) {
+  v.geo.instanceCount = v.count;
+  for (const [attr, size] of [[v.cellAttr, 4], [v.rgbAttr, 3]]) {
+    if (!all && v.hi >= v.lo) {
+      attr.clearUpdateRanges?.();
+      attr.addUpdateRange?.(v.lo * size, (v.hi - v.lo + 1) * size);
+    }
+    if (all || v.hi >= v.lo) attr.needsUpdate = true;
+  }
+  v.lo = Infinity;
+  v.hi = -1;
+}
+
+// 変わったセルだけ描き直す
+function updateView(chunk) {
+  const v = views.get(chunk.key);
+  if (!v) return;
+  for (const i of chunk.changed) {
+    if (!writeCell(v, chunk, i)) {
+      buildView(chunk);
+      return;
+    }
+  }
+  chunk.changed.length = 0;
+  if (v.hidden > 2000 && v.hidden > v.count / 2) buildView(chunk);
+  else upload(v, false);
+}
+
+// プレイヤーの周りのチャンクを近い順に少しずつ作り、変わったチャンクを描き直す。遠いチャンクは片付ける。
 function syncChunks() {
   const pcx = floorDiv(player.pos[0], CHUNK);
   const pcz = floorDiv(player.pos[2], CHUNK);
-  ensureAround(world, player.pos[0], player.pos[2], VIEW_RADIUS);
   const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= VIEW_RADIUS;
+  const start = performance.now();
+  outer: for (let r = 0; r <= VIEW_RADIUS; r++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        if (world.chunks.has(chunkKey(pcx + dx, pcz + dz))) continue;
+        if (performance.now() - start > LOAD_BUDGET_MS) break outer;
+        world.chunkAt(pcx + dx, pcz + dz);
+      }
+    }
+  }
   for (const key of world.dirty) {
     const chunk = world.chunks.get(key);
-    if (near(chunk)) buildChunkMesh(chunk);
+    if (!near(chunk)) {
+      chunk.changed.length = 0;
+      continue;
+    }
+    if (views.has(key)) updateView(chunk);
   }
   world.dirty.clear();
-  for (const [key, mesh] of meshes) {
-    const chunk = world.chunks.get(key);
-    if (!near(chunk)) {
-      scene.remove(mesh);
-      mesh.dispose();
-      meshes.delete(key);
+  for (const [key, v] of views) {
+    if (!near(world.chunks.get(key))) {
+      scene.remove(v.mesh);
+      v.geo.dispose();
+      views.delete(key);
     }
   }
   for (const chunk of world.chunks.values()) {
-    if (near(chunk) && !meshes.has(chunk.key)) buildChunkMesh(chunk);
+    if (near(chunk) && !views.has(chunk.key)) buildView(chunk);
   }
 }
 
@@ -318,11 +415,16 @@ document.getElementById('hitbox').addEventListener('change', (e) => {
 });
 
 function markOwners(ids) {
-  // 光らせる / 光を消す物体のチャンクを描き直し対象にする
+  // 光らせる / 光を消す物体のセルを描き直し対象にする
   for (const id of ids) {
     const e = world.entities.get(id);
     if (!e) continue;
-    for (const [x, , z] of world.cellsOf(e)) world.dirty.add(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+    for (const [x, y, z] of world.cellsOf(e)) {
+      const chunk = world.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+      if (!chunk) continue;
+      chunk.changed.push(cellIndex(x - chunk.cx * CHUNK, y, z - chunk.cz * CHUNK));
+      world.dirty.add(chunk.key);
+    }
   }
 }
 
@@ -336,7 +438,6 @@ function tick() {
   markOwners(highlight);
   highlight = pushed;
   markOwners(highlight);
-  syncChunks();
   syncHitboxes();
   tickLabel.textContent = world.tickCount;
   posLabel.textContent = `${(player.pos[0] * VOXEL_METERS).toFixed(1)}, ${(player.pos[2] * VOXEL_METERS).toFixed(1)} m`;
@@ -366,6 +467,8 @@ function frame(now) {
   }
   follow(dt / 1000);
   controls.update();
+  syncChunks();
+  cutaway.uHead.value.copy(controls.target).y += 6;
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

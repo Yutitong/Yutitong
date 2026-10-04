@@ -9,12 +9,15 @@
 
 import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, rasterizeHuman } from './humanoid.js';
 import { initCharacter, updateCharacter } from './character.js';
+import { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex } from './grid.js';
+import { hash3, mulberry32, shade } from './rng.js';
+import { paintTreesInto, updateWind } from './trees.js';
 
+export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 export const EMPTY = 0;
 export const GROUND_ID = 1;
-export const CHUNK = 16; // チャンクの一辺（ボクセル）
-export const HEIGHT = 32; // 世界の高さ（ボクセル）。y = 0 が地面
 export const VOXEL_METERS = 0.15;
+export const WIND_RADIUS = 140; // プレイヤーからこの距離（ボクセル）以内の木だけ風で揺らす
 export const TICK_SECONDS = 0.04; // 1秒に25回更新
 
 // 数値が大きいほど強い。動く側の優先度 > 相手の優先度 のときだけ押し出せる。
@@ -34,32 +37,7 @@ export const DIRS8 = [
   [0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1],
 ];
 
-// ---- 乱数・ハッシュ（同じ座標からは常に同じ世界ができる） -----------------------
-
-export function hash3(a, b, c) {
-  let h = Math.imul(a, 0x27d4eb2d) ^ Math.imul(b, 0x165667b1) ^ Math.imul(c, 0x9e3779b9);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
-export function mulberry32(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
-  };
-}
-
 // ---- 世界 ------------------------------------------------------------------------
-
-const floorDiv = (a, b) => Math.floor(a / b);
-// チャンクの番号を1つの数値にまとめる（文字列を作らずに Map を引くため）
-export const chunkKey = (cx, cz) => (cx + 32768) * 65536 + (cz + 32768);
-const cellIndex = (lx, y, lz) => lx + CHUNK * (lz + CHUNK * y);
 
 class Chunk {
   constructor(cx, cz) {
@@ -68,6 +46,8 @@ class Chunk {
     this.key = chunkKey(cx, cz);
     this.owner = new Int32Array(CHUNK * CHUNK * HEIGHT); // 持ち主 id（0 = 空き）
     this.color = new Uint32Array(CHUNK * CHUNK * HEIGHT); // 表示色（0 = 消灯）
+    this.top = 1; // これより上のセルはすべて空（描画で調べる範囲を減らす）
+    this.changed = []; // 前回描画してから変わったセル（描画側が読んで空にする）
   }
 }
 
@@ -98,6 +78,9 @@ export class World {
     this.tickCount = 0;
     this.player = null;
     this.counts = { npc: 0, crate: 0 }; // 名前の通し番号
+    this.trees = new Map(); // 区画 → 木
+    this.treeSpecs = new Map(); // 区画 → 木の設計図（なければ null）
+    this.time = 0;
   }
 
   chunkAt(cx, cz) {
@@ -107,7 +90,10 @@ export class World {
       c = new Chunk(cx, cz);
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
       fillGround(this, c);
-      if (this.generate) generateChunk(this, c);
+      if (this.generate) {
+        paintTreesInto(this, c); // 木は隣の区画から枝を伸ばしてくることもあるので先に塗る
+        generateChunk(this, c);
+      }
       this.dirty.add(key);
     }
     return c;
@@ -131,6 +117,8 @@ export class World {
     const i = cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK);
     c.owner[i] = owner;
     c.color[i] = color;
+    if (owner && y >= c.top) c.top = y + 1;
+    c.changed.push(i);
     this.dirty.add(c.key);
   }
 
@@ -262,6 +250,7 @@ function npcInput(e, rng, dt) {
 // 戻り値はこのティックで起きた出来事のリスト
 export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   world.tickCount++;
+  world.time += dt;
   const events = [];
   const act = (e, dir) => {
     const r = world.tryMove(e.id, dir);
@@ -284,6 +273,8 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     // 何かにぶつかったら次は別の方向へ
     if (events.slice(before).some((ev) => ev.type === 'block')) e.aiLeft = 0;
   }
+  // 葉の揺れは1ティックおき（1秒に12.5回）で十分
+  if (p && world.tickCount % 2 === 0) updateWind(world, world.time, p.pos[0], p.pos[2], WIND_RADIUS);
   return events;
 }
 
@@ -309,13 +300,6 @@ function fillGround(world, c) {
     }
   }
 }
-
-const shade = (rgb, f) => {
-  const r = Math.min(255, Math.round(((rgb >> 16) & 255) * f));
-  const g = Math.min(255, Math.round(((rgb >> 8) & 255) * f));
-  const b = Math.min(255, Math.round((rgb & 255) * f));
-  return (r << 16) | (g << 8) | b;
-};
 
 function crateVoxels() {
   const v = [];
@@ -347,25 +331,6 @@ function rockVoxels(rng) {
   return v;
 }
 
-function treeVoxels(rng) {
-  const v = [];
-  const top = 10 + Math.floor(rng() * 4);
-  for (let y = 0; y < top; y++) {
-    for (let z = 3; z <= 5; z++) for (let x = 3; x <= 5; x++) v.push([x, y, z, shade(0x7a5534, 0.9 + rng() * 0.2)]);
-  }
-  const cy = top + 2;
-  for (let y = top - 2; y <= top + 5; y++) {
-    for (let z = 0; z < 9; z++) {
-      for (let x = 0; x < 9; x++) {
-        const d = ((x - 4) / 4.4) ** 2 + ((y - cy) / 3.6) ** 2 + ((z - 4) / 4.4) ** 2;
-        const trunk = x >= 3 && x <= 5 && z >= 3 && z <= 5 && y < top;
-        if (d <= 1 && !trunk && rng() > 0.08) v.push([x, y, z, shade(0x3f8a3a, 0.8 + rng() * 0.35)]);
-      }
-    }
-  }
-  return v;
-}
-
 // チャンクの中に物を置く。物はそのチャンクの内側に収まるように置く。
 function generateChunk(world, c) {
   if (c.cx === 0 && c.cz === 0) return; // 出発地点は空けておく
@@ -374,36 +339,48 @@ function generateChunk(world, c) {
   const oz = c.cz * CHUNK;
   const place = (size) => [ox + Math.floor(rng() * (CHUNK - size + 1)), 1, oz + Math.floor(rng() * (CHUNK - size + 1))];
 
-  // 半分くらいのチャンクは何もない野原にする
-  const tries = rng() < 0.45 ? 0 : 1 + Math.floor(rng() * 1.6);
+  // 半分くらいのチャンクは何もない野原にする（木は trees.js が別に置く）
+  const tries = rng() < 0.5 ? 0 : 1 + Math.floor(rng() * 1.6);
   for (let t = 0; t < tries; t++) {
     const r = rng();
-    if (r < 0.28) {
-      world.spawn({ kind: 'terrain', name: '木', priority: PRIORITY.TERRAIN, pos: place(9), voxels: treeVoxels(rng) });
-    } else if (r < 0.48) {
+    if (r < 0.3) {
       world.spawn({ kind: 'terrain', name: '岩', priority: PRIORITY.TERRAIN, pos: place(8), voxels: rockVoxels(rng) });
-    } else if (r < 0.78) {
+    } else if (r < 0.75) {
       const e = world.spawn({ kind: 'box', name: `木箱-${world.counts.crate + 1}`, priority: PRIORITY.BOX, pos: place(5), voxels: crateVoxels() });
       if (e) world.counts.crate++;
-    } else if (r < 0.9) {
+    } else if (r < 0.92) {
       const palette = PALETTES.npc[Math.floor(rng() * PALETTES.npc.length)];
-      const e = world.spawnHuman({
-        kind: 'npc', name: `NPC-${world.counts.npc + 1}`, priority: PRIORITY.NPC,
-        pos: place(HUMAN_SIZE[0]), palette, yaw: Math.floor(rng() * 8) * (Math.PI / 4),
-      }, rng);
-      if (e) world.counts.npc++;
+      const yaw = Math.floor(rng() * 8) * (Math.PI / 4);
+      // 森の中は木の枝で場所がふさがりやすいので、何か所か試す
+      for (let k = 0; k < 4; k++) {
+        const e = world.spawnHuman({
+          kind: 'npc', name: `NPC-${world.counts.npc + 1}`, priority: PRIORITY.NPC,
+          pos: place(HUMAN_SIZE[0]), palette, yaw,
+        }, rng);
+        if (e) {
+          world.counts.npc++;
+          break;
+        }
+      }
     }
   }
 }
 
-// 出発地点にプレイヤーを置く
+// 出発地点の近くの空いている場所にプレイヤーを置く
 export function spawnPlayer(world) {
-  world.chunkAt(0, 0);
-  world.player = world.spawnHuman({
-    kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
-    pos: [Math.floor((CHUNK - HUMAN_SIZE[0]) / 2), 1, Math.floor((CHUNK - HUMAN_SIZE[2]) / 2)],
-    palette: PALETTES.player, yaw: 0,
-  });
+  const x0 = Math.floor((CHUNK - HUMAN_SIZE[0]) / 2);
+  const z0 = Math.floor((CHUNK - HUMAN_SIZE[2]) / 2);
+  for (let r = 0; r < 40 && !world.player; r++) {
+    for (let dz = -r; dz <= r && !world.player; dz++) {
+      for (let dx = -r; dx <= r && !world.player; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        world.player = world.spawnHuman({
+          kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
+          pos: [x0 + dx * 4, 1, z0 + dz * 4], palette: PALETTES.player, yaw: 0,
+        });
+      }
+    }
+  }
   return world.player;
 }
 
@@ -416,4 +393,3 @@ export function ensureAround(world, x, z, radius) {
   }
 }
 
-export { cellIndex, floorDiv };

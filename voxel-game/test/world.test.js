@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { World, PRIORITY, GROUND_ID, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
 import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman } from '../src/humanoid.js';
 import { WALK_SPEED, RUN_SPEED } from '../src/character.js';
+import { CHUNK, chunkKeyAt, cellIndex } from '../src/grid.js';
 
 const X = [1, 0, 0];
 
@@ -24,8 +25,10 @@ function assertConsistent(w) {
     }
     expected += e.colors.length;
   }
+  // 木は形が決まっていて動かないので別に調べる（treeCellsConsistent）
+  const trees = new Set([...w.entities.values()].filter((e) => e.tree).map((e) => e.id));
   let owned = 0;
-  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID) owned++;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
 }
 
@@ -231,7 +234,7 @@ test('同じシードなら同じ世界ができる', () => {
 });
 
 test('広い世界を長く歩き回っても重なりは起きない', () => {
-  const w = new World({ seed: 3 });
+  const w = new World({ seed: 7 }); // 森が濃すぎず、NPC と木箱がいるシード
   const p = spawnPlayer(w);
   ensureAround(w, p.pos[0], p.pos[2], 3);
   let seed = 42;
@@ -259,4 +262,95 @@ test('動かせない物にぶつかったら足踏みせずに立ち止まる',
   }
   assert.ok(maxWalk < 0.5, `walk ${maxWalk}`);
   assert.equal(p.pose.push, 0);
+});
+
+// ---- 木 ----------------------------------------------------------------------
+
+// 木のセルは、作られたチャンクの中では木自身か、先に塗られた別の木のもの
+function treeCells(w, tree) {
+  let owned = 0;
+  let lit = 0;
+  for (let i = 0; i < tree.xs.length; i++) {
+    const c = w.chunks.get(chunkKeyAt(tree.xs[i], tree.zs[i]));
+    if (!c) continue;
+    const ci = cellIndex(tree.xs[i] - c.cx * CHUNK, tree.ys[i], tree.zs[i] - c.cz * CHUNK);
+    if (c.owner[ci] !== tree.id) continue;
+    owned++;
+    assert.equal(c.color[ci], tree.color[i]);
+    if (c.color[ci]) lit++;
+  }
+  return { owned, lit };
+}
+
+test('木: 大きさも種類もいろいろで、大木は 8m を超える', () => {
+  const w = new World({ seed: 5 });
+  ensureAround(w, 0, 0, 8);
+  const trees = [...w.trees.values()];
+  assert.ok(trees.length > 20);
+  const species = new Set(trees.map((t) => t.spec.species));
+  assert.ok(species.size >= 3, [...species].join());
+  const heights = trees.map((t) => t.height);
+  assert.ok(Math.max(...heights) > 55 && Math.min(...heights) < 40, heights.join());
+  for (const t of trees) {
+    // 幹は地面から立っている
+    let ground = false;
+    for (let i = 0; i < t.xs.length; i++) if (t.ys[i] === 1 && t.clumpOf[i] === -1) ground = true;
+    assert.ok(ground);
+  }
+});
+
+test('木: チャンクを作る順番が違っても同じ森になる', () => {
+  const order = [];
+  for (let cz = -3; cz <= 3; cz++) for (let cx = -3; cx <= 3; cx++) order.push([cx, cz]);
+  const a = new World({ seed: 9 });
+  const b = new World({ seed: 9 });
+  for (const [cx, cz] of order) a.chunkAt(cx, cz);
+  for (const [cx, cz] of [...order].reverse()) b.chunkAt(cx, cz);
+  const who = (w, id) => {
+    const e = w.entities.get(id);
+    return e ? `${e.name.replace(/-\d+$/, '')}@${e.pos}` : 'empty'; // 木箱などの通し番号は作る順で変わる
+  };
+  for (const [cx, cz] of order) {
+    const ca = a.chunkAt(cx, cz);
+    const cb = b.chunkAt(cx, cz);
+    assert.deepEqual(cb.color, ca.color);
+    for (let i = 0; i < ca.owner.length; i += 7) assert.equal(who(b, cb.owner[i]), who(a, ca.owner[i]));
+  }
+});
+
+test('木: 風で葉の色（点灯）は変わるが、占有するセルは変わらない', () => {
+  const w = new World({ seed: 5 });
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 3);
+  const treeIds = () => new Set([...w.trees.values()].map((t) => t.id));
+  const treeOwners = () => [...w.chunks.values()].map((c) => {
+    const ids = treeIds();
+    return Array.from(c.owner, (o) => (ids.has(o) ? o : 0));
+  });
+  const ownersBefore = treeOwners();
+  const before = [...w.trees.values()].map((t) => treeCells(w, t));
+  let shifted = 0;
+  for (let i = 0; i < 200; i++) {
+    step(w, idle);
+    for (const t of w.trees.values()) for (const cl of t.clumps) if (cl.ox || cl.oz) shifted++;
+  }
+  assert.ok(shifted > 0);
+  treeOwners().slice(0, ownersBefore.length).forEach((o, k) => assert.deepEqual(o, ownersBefore[k]));
+  const after = [...w.trees.values()].map((t) => treeCells(w, t));
+  after.forEach((a, k) => assert.equal(a.owned, before[k].owned));
+});
+
+test('木の幹にはぶつかって止まる', () => {
+  const w = new World({ seed: 5 });
+  ensureAround(w, 0, 0, 6);
+  const tree = [...w.trees.values()].find((t) => t.spec.scale > 0.8);
+  const { x, z } = tree.spec;
+  assert.equal(w.ownerAt(x, 3, z), tree.id);
+  // 幹に向かって進む小さな物は、木に止められる
+  let start = x - 1;
+  while (w.ownerAt(start, 3, z) !== EMPTY) start--;
+  const b = w.spawn({ kind: 'player', name: 'p', priority: PRIORITY.PLAYER, pos: [start, 3, z], voxels: [[0, 0, 0, 1]] });
+  const r = w.tryMove(b.id, [1, 0, 0]);
+  assert.equal(r.ok, false);
+  assert.equal(r.blocker.id, tree.id);
 });
