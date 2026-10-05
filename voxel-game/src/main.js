@@ -1,11 +1,12 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, floorDiv } from './world.js';
+import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { FarTerrain } from './far.js';
 import { LAYER } from './grid.js';
+import { ALPHA_SHIFT } from './terrain.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
@@ -56,19 +57,21 @@ scene.add(sun);
 // セルが変わったら、そのセルのインスタンスだけ書き換える。
 
 const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-// 水面（滝の段で側面も見えるので、ほかのボクセルと同じ大きさ）
-const waterBox = new THREE.BoxGeometry(1, 1, 1);
+// 水面は上の面だけの板（となりの水面との境目が透けて格子に見えないように）。滝は箱で描く
+const waterTop = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0.4, 0);
+const fallBox = new THREE.BoxGeometry(1, 1, 1);
 const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
 
 // ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
-function voxelMaterial(options) {
-  const m = new THREE.MeshLambertMaterial({ vertexColors: true, ...options });
+function voxelMaterial(options, alpha = false) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, vertexAlphas: alpha, ...options });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHead = cutaway.uHead;
     shader.uniforms.uCut = cutaway.uCut;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;')
-      .replace('#include <color_vertex>', 'vColor = pow(color, vec3(2.2));') // 色は sRGB で持っている
+      // 色は sRGB で持っている（水は不透明度も持つ）
+      .replace('#include <color_vertex>', alpha ? 'vColor = vec4(pow(color.rgb, vec3(2.2)), color.a);' : 'vColor = pow(color, vec3(2.2));')
       .replace('#include <begin_vertex>', `
         vec3 transformed = vec3(position);
         float show = iCell.w;
@@ -84,7 +87,10 @@ function voxelMaterial(options) {
   return m;
 }
 const solidMaterial = voxelMaterial();
-const waterMaterial = voxelMaterial({ transparent: true, opacity: 0.72, depthWrite: false });
+// 水は、セルごとの不透明度で描く（澄んだ浅瀬はよく透け、深い淵は濃い）
+const waterMaterial = voxelMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide }, true);
+const fallMaterial = voxelMaterial({ transparent: true, depthWrite: false }, true);
+const WATER_ALPHA = 0.72; // 不透明度を持たない水の色の既定値
 
 const views = new Map(); // チャンク key → 描画の状態
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
@@ -97,7 +103,8 @@ function makeLayer(chunk, capacity, shape, material) {
   geo.setAttribute('position', shape.attributes.position.clone());
   geo.setAttribute('normal', shape.attributes.normal.clone());
   const cellAttr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
-  const rgbAttr = new THREE.InstancedBufferAttribute(new Uint8Array(capacity * 3), 3, true);
+  const ch = material.transparent ? 4 : 3; // 水は不透明度も持つ
+  const rgbAttr = new THREE.InstancedBufferAttribute(new Uint8Array(capacity * ch), ch, true);
   cellAttr.setUsage(THREE.DynamicDrawUsage);
   rgbAttr.setUsage(THREE.DynamicDrawUsage);
   geo.setAttribute('iCell', cellAttr);
@@ -108,7 +115,7 @@ function makeLayer(chunk, capacity, shape, material) {
   if (material.transparent) mesh.renderOrder = 1;
   scene.add(mesh);
   return {
-    mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array,
+    mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array, ch,
     slots: new Map(), count: 0, hidden: 0, capacity, lo: Infinity, hi: -1,
     touch(slot) {
       if (slot < this.lo) this.lo = slot;
@@ -132,8 +139,8 @@ function makeLayer(chunk, capacity, shape, material) {
 function writeCell(v, chunk, i) {
   const c = chunk.color[i];
   const water = (c & WATER_FLAG) !== 0;
-  const layer = water ? v.water : v.solid;
-  (water ? v.solid : v.water).hide(i);
+  const layer = !water ? v.solid : chunk.owner[i] === FALL_ID ? v.fall : v.water;
+  for (const other of [v.solid, v.water, v.fall]) if (other !== layer) other.hide(i);
   if (!c) {
     layer.hide(i);
     return true;
@@ -150,9 +157,14 @@ function writeCell(v, chunk, i) {
     layer.hidden--;
   }
   const f = highlight.has(chunk.owner[i]) ? 0.35 : 0;
-  layer.rgb[slot * 3] = ((c >> 16) & 255) * (1 - f) + 255 * f;
-  layer.rgb[slot * 3 + 1] = ((c >> 8) & 255) * (1 - f) + 255 * f;
-  layer.rgb[slot * 3 + 2] = (c & 255) * (1 - f) + 255 * f;
+  const k = slot * layer.ch;
+  layer.rgb[k] = ((c >> 16) & 255) * (1 - f) + 255 * f;
+  layer.rgb[k + 1] = ((c >> 8) & 255) * (1 - f) + 255 * f;
+  layer.rgb[k + 2] = (c & 255) * (1 - f) + 255 * f;
+  if (layer.ch === 4) {
+    const a = (c >>> ALPHA_SHIFT) & 15;
+    layer.rgb[k + 3] = Math.round((a ? a / 15 : WATER_ALPHA) * 255);
+  }
   layer.touch(slot);
   return true;
 }
@@ -163,32 +175,39 @@ function buildView(chunk) {
   if (old) {
     old.solid.dispose();
     old.water.dispose();
+    old.fall.dispose();
   }
   const limit = Math.min(chunk.color.length, LAYER * (chunk.top - chunk.base));
   let solid = 0;
   let water = 0;
+  let fall = 0;
   for (let i = 0; i < limit; i++) {
     const c = chunk.color[i];
     if (!c) continue;
-    if (c & WATER_FLAG) water++;
+    if (c & WATER_FLAG) {
+      if (chunk.owner[i] === FALL_ID) fall++;
+      else water++;
+    }
     else solid++;
   }
   const cap = (n, min) => Math.max(min, Math.ceil((n * 1.25) / 256) * 256);
   const v = {
     solid: makeLayer(chunk, cap(solid, 512), box, solidMaterial),
-    water: makeLayer(chunk, cap(water, 64), waterBox, waterMaterial),
+    water: makeLayer(chunk, cap(water, 64), waterTop, waterMaterial),
+    fall: makeLayer(chunk, cap(fall, 64), fallBox, fallMaterial),
   };
   views.set(chunk.key, v);
   for (let i = 0; i < limit; i++) if (chunk.color[i]) writeCell(v, chunk, i);
   upload(v.solid, true);
   upload(v.water, true);
+  upload(v.fall, true);
   chunk.changed.length = 0;
   return v;
 }
 
 function upload(layer, all) {
   layer.geo.instanceCount = layer.count;
-  for (const [attr, size] of [[layer.cellAttr, 4], [layer.rgbAttr, 3]]) {
+  for (const [attr, size] of [[layer.cellAttr, 4], [layer.rgbAttr, layer.ch]]) {
     if (!all && layer.hi >= layer.lo) {
       attr.clearUpdateRanges?.();
       attr.addUpdateRange?.(layer.lo * size, (layer.hi - layer.lo + 1) * size);
@@ -211,12 +230,13 @@ function updateView(chunk) {
   }
   chunk.changed.length = 0;
   const wasteful = (l) => l.hidden > 2000 && l.hidden > l.count / 2;
-  if (wasteful(v.solid) || wasteful(v.water)) {
+  if (wasteful(v.solid) || wasteful(v.water) || wasteful(v.fall)) {
     buildView(chunk);
     return;
   }
   upload(v.solid, false);
   upload(v.water, false);
+  upload(v.fall, false);
 }
 
 // プレイヤーの周りのチャンクを近い順に少しずつ作り、変わったチャンクを描き直す。遠いチャンクは片付ける。
@@ -251,6 +271,7 @@ function syncChunks() {
     if (!chunk || !near(chunk)) {
       v.solid.dispose();
       v.water.dispose();
+      v.fall.dispose();
       views.delete(key);
     }
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, PRIORITY, GROUND_ID, WATER_ID, ROCK_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
+import { World, PRIORITY, GROUND_ID, WATER_ID, ROCK_ID, PLANT_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
 import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman, rasterizeTool, CHOP_IMPACT } from '../src/humanoid.js';
 import { WALK_SPEED, RUN_SPEED, SPRINT_SPEED } from '../src/character.js';
 import { CHUNK, chunkKeyAt } from '../src/grid.js';
@@ -31,7 +31,7 @@ function assertConsistent(w) {
   // 毎回形を描き直す物（龍・炎・斧・倒れていく木）は offsets を持たないので数えない
   const trees = new Set([...w.entities.values()].filter((e) => e.tree || !e.offsets.length).map((e) => e.id));
   let owned = 0;
-  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && o !== WATER_ID && o !== ROCK_ID && !trees.has(o)) owned++;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o > PLANT_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
 }
 
@@ -564,6 +564,70 @@ test('川: 山の中の水面は平地より高く、段の所は滝のしぶき
   }
   assert.ok(high > 20 && foam > 0, `水面 ${high} しぶき ${foam}`);
   assert.ok(rock > 0, '岩');
+});
+
+// 出発地点の山の川で、上流〜中流の段（滝）の落ち口を探し、まわりを作って水を流す
+async function riverAtStep() {
+  const { WaterSim } = await import('../src/water.js');
+  const w = new World({ seed: 20261004 });
+  w.terrain.prepare(0, -1);
+  const pts = w.terrain.cell(0, -1).rivers[0].pts;
+  const k = pts.findIndex((q, i) => i > 3 && q.f > 0.3 && q.f < 0.8 && pts[i + 1]?.step >= 2);
+  const lip = pts[k];
+  ensureAround(w, lip.x, lip.z, 5);
+  const sim = new WaterSim(w);
+  const pos = [lip.x - 4, 0, lip.z - 4];
+  for (let i = 0; i < 120; i++) sim.update(0.08, pos);
+  return { w, sim, pts, k, lip, up: pts[k - 1], next: pts[k + 1], pos };
+}
+
+test('水: 川の水は下流へ流れ、段では白い水が落ち、泡が流れに乗って動く', async () => {
+  const { sim, pts, k } = await riverAtStep();
+  // 淵の中ほどの流れは、川の下る向き
+  let along = 0, n = 0;
+  for (let m = k - 6; m < k; m++) {
+    const a = pts[m], b = pts[m + 1];
+    const [vx, vz] = sim.velocity(Math.floor(a.x), Math.floor(a.z));
+    along += (vx * (b.x - a.x) + vz * (b.z - a.z)) / Math.hypot(b.x - a.x, b.z - a.z);
+    n++;
+  }
+  assert.ok(along / n > 0.5, `下流向きの速さ ${(along / n).toFixed(2)}`);
+  assert.ok(sim.falls.size > 10, `滝のセル ${sim.falls.size}`);
+  assert.ok(sim.parts.length > 50);
+  // 泡は下流へ動く
+  const before = sim.parts.slice(0, 40).map((p) => ({ p, x: p.x, z: p.z }));
+  sim.update(0.08, [pts[k].x - 4, 0, pts[k].z - 4]);
+  assert.ok(before.some(({ p, x, z }) => Math.hypot(p.x - x, p.z - z) > 0.05));
+});
+
+test('水: 落ち口をせき止めると、上流の淵の水位が上がっていく', async () => {
+  const { w, sim, lip, up, next, pos } = await riverAtStep();
+  const level0 = sim.level(Math.floor(up.x), Math.floor(up.z));
+  const dx = next.x - lip.x, dz = next.z - lip.z, l = Math.hypot(dx, dz);
+  for (let s = -lip.w - 4; s <= lip.w + 4; s += 0.5) {
+    for (let a = -1; a <= 1; a += 0.5) {
+      const x = Math.floor(lip.x - (dz / l) * s + (dx / l) * a), z = Math.floor(lip.z + (dx / l) * s + (dz / l) * a);
+      for (let y = w.groundAt(x, z); y < lip.S + 8; y++) if (w.ownerAt(x, y, z) !== ROCK_ID) w.setCell(x, y, z, ROCK_ID, 0x777777);
+    }
+  }
+  for (let i = 0; i < 250; i++) sim.update(0.08, pos);
+  const level1 = sim.level(Math.floor(up.x), Math.floor(up.z));
+  assert.ok(level1 - level0 > 1.5, `水位 ${level0.toFixed(2)} → ${level1.toFixed(2)}`);
+  // 水のセルは水位に合っていて、ほかの物を上書きしていない
+  const x = Math.floor(up.x), z = Math.floor(up.z);
+  assert.equal(w.waterAt(x, z), Math.max(w.groundAt(x, z) + 1, Math.round(level1)));
+});
+
+test('渓流: 直径 3m を超える大岩と苔、川沿いの木は川の上へ傾く', async () => {
+  const { w } = await riverAtStep();
+  const rocks = [...w.terrain.cell(0, -1).rivers.flatMap((r) => r.rocks)];
+  assert.ok(rocks.some((r) => r.r * 2 * 0.15 > 3), '大岩');
+  assert.ok(rocks.filter((r) => r.r > 4).length > 20);
+  const leaning = [...w.treeSpecs.values()].filter((s) => s?.lean);
+  assert.ok(leaning.length > 0, '川へ傾く木');
+  let plants = 0;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o === PLANT_ID) plants++;
+  assert.ok(plants > 50, `シダ ${plants}`);
 });
 
 test('山の上のチャンクは地表のまわりから上だけを持つ。それより下は地面として扱う', () => {

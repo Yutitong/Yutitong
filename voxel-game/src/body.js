@@ -51,11 +51,13 @@ export function redrawBody(world, id, prev, shape, away) {
     if (!stamp || stamp.length !== chunk.owner.length) stamp = stampOf(chunk);
     const i = chunk.index(x - cx * CHUNK, y, z - cz * CHUNK);
     const owner = chunk.owner[i];
-    if (owner === 0) {
+    const other = owner === 0 || owner === id ? null : world.entities.get(owner);
+    if (owner === 0 || other?.yields) {
+      // 空いている所と、いつでも場所をゆずる物（滝の水・炎など）の所に入る
       chunk.owner[i] = id;
       if (y >= chunk.top) chunk.top = y + 1;
     } else if (owner !== id) {
-      if (MOVABLE.has(world.entities.get(owner)?.kind)) {
+      if (MOVABLE.has(other?.kind)) {
         let list = blocked.get(owner);
         if (!list) blocked.set(owner, (list = []));
         list.push(chunk, i, color, ck);

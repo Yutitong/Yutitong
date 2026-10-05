@@ -152,7 +152,7 @@ export class FarTerrain {
         let top = col.top;
         let color;
         if (col.water > col.h) {
-          color = waterColor(x, z, col.water - col.h, col.water > w.waterLevel);
+          color = waterColor(x, z, col.water - col.h, col.water > w.waterLevel) & 0xffffff;
         } else {
           color = groundColor(w.seed, x, col.h - 1, z, col, Math.round((slope / L.cell) * 2.2));
           const forest = !trees && w.terrain ? forestDensity(w, x, z, col) : 0;

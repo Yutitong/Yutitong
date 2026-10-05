@@ -182,7 +182,7 @@ class TreeShape {
 }
 
 // 広葉樹: 太い幹が途中で数本の大枝に分かれ、さらに枝分かれした先に葉の塊がつく
-function buildBroadleaf(t, scale, vase) {
+function buildBroadleaf(t, scale, vase, lean = null) {
   const rng = t.rng;
   const H = (52 + rng() * 22) * scale;
   const tr = Math.max(0.7, (1.8 + rng() * 0.8) * scale);
@@ -190,6 +190,11 @@ function buildBroadleaf(t, scale, vase) {
   const bark = t.bark();
   const base = [0.5, 0.6, 0.5];
   const top = [0.5 + (rng() - 0.5) * 4 * scale, hb, 0.5 + (rng() - 0.5) * 4 * scale];
+  if (lean) {
+    // 川の方へ幹が傾く
+    top[0] += lean[0] * H * 0.2;
+    top[2] += lean[1] * H * 0.2;
+  }
   const mid = lerp3(base, top, 0.5);
   mid[0] += (rng() - 0.5) * 1.5 * scale;
   mid[2] += (rng() - 0.5) * 1.5 * scale;
@@ -225,7 +230,9 @@ function buildBroadleaf(t, scale, vase) {
   };
   const limbs = 3 + Math.floor(rng() * 3);
   for (let i = 0; i < limbs; i++) {
-    const az = (i / limbs) * Math.PI * 2 + rng() * 0.9;
+    let az = (i / limbs) * Math.PI * 2 + rng() * 0.9;
+    // 傾いた木は、半分ほどの大枝を川の上へ伸ばす
+    if (lean && i % 2 === 0) az = Math.atan2(lean[1], lean[0]) + (rng() - 0.5) * 1.4;
     const elev = vase ? 0.95 + rng() * 0.35 : 0.45 + rng() * 0.4;
     const start = [top[0], top[1] - rng() * hb * 0.15, top[2]];
     grow(start, az, elev, (H - hb) * (0.32 + rng() * 0.12), tr * 0.7, 0);
@@ -321,27 +328,34 @@ export function regionSpec(world, rx, rz, store = true) {
   const forest = noise2(rx * 0.17, rz * 0.17, world.seed);
   const p = 0.06 + 0.86 * smoothstep(0.4, 0.68, forest);
   let spec = null;
-  if (rng() < p) {
-    const x = rx * REGION + 3 + Math.floor(rng() * (REGION - 6));
-    const z = rz * REGION + 3 + Math.floor(rng() * (REGION - 6));
+  const roll = rng();
+  const x = rx * REGION + 3 + Math.floor(rng() * (REGION - 6));
+  const z = rz * REGION + 3 + Math.floor(rng() * (REGION - 6));
+  // 渓流沿いは森が濃く、木は川の上へ枝を張り出す
+  const col = roll < Math.max(p, 0.85) ? world.sample(x, z, {}) : null;
+  const riparian = col && col.edge < 26 && col.f < 0.95;
+  if (col && roll < (riparian ? Math.max(p, 0.85) : p)) {
     const nearSpawn = Math.abs(x - 8) < 18 && Math.abs(z - 8) < 18;
-    const col = world.sample(x, z, {});
     const y = col.h; // 幹の根元の高さ
-    // 山の高い所は木がまばらになり、上の方には生えない（森林限界）。川の中や川岸、急な崖にも生えない
+    // 山の高い所は木がまばらになり、上の方には生えない（森林限界）。川の中・川岸・岩の転がる所、急な崖にも生えない
     const alt = y - BASE;
     const line = 190 + 60 * noise2(rx * 0.3, rz * 0.3, world.seed + 7);
-    const steep = alt > 40 && Math.abs(world.heightAt(x + 4, z) - world.heightAt(x - 4, z)) + Math.abs(world.heightAt(x, z + 4) - world.heightAt(x, z - 4)) > 14;
-    const ok = !nearSpawn && y > world.waterLevel + 1 && !col.water && !col.channel && !col.bank && !steep && rng() < smoothstep(line, line - 90, alt);
+    const slope = Math.abs(world.heightAt(x + 4, z) - world.heightAt(x - 4, z)) + Math.abs(world.heightAt(x, z + 4) - world.heightAt(x, z - 4));
+    const steep = alt > 40 && slope > (riparian ? 22 : 14);
+    const ok = !nearSpawn && y > world.waterLevel + 1 && !col.water && !col.channel && !col.bank && col.edge > 6
+      && !steep && rng() < smoothstep(line, line - 90, alt);
     if (ok) {
       // 水辺は広葉樹とシラカバ、高い所はスギが多い
       const elev = Math.min(4, (y - BASE) / 30);
-      const kind = noise2(rx * 0.12 + 50, rz * 0.12, world.seed + 3) - elev * 0.18;
-      const species = kind < 0.4 ? 'conifer' : kind > 0.64 ? 'birch' : rng() < 0.5 ? 'broad' : 'round';
+      const kind = noise2(rx * 0.12 + 50, rz * 0.12, world.seed + 3) - elev * 0.18 + (riparian ? 0.25 : 0);
+      const species = kind < 0.4 ? 'conifer' : kind > 0.8 ? 'birch' : rng() < 0.5 ? 'broad' : 'round';
       const young = rng() < 0.22;
       spec = {
         key, x, y, z, species,
         scale: young ? 0.38 + rng() * 0.2 : 0.8 + rng() * 0.32,
         seed: hash3(rx, rz, world.seed + 99),
+        // 川の方へ傾く（近いほど大きく）
+        lean: riparian && col.edge < 20 ? [col.toX * (0.9 - col.edge / 30), col.toZ * (0.9 - col.edge / 30)] : null,
       };
     }
   }
@@ -377,7 +391,7 @@ function getTree(world, spec) {
   const shape = new TreeShape(spec.seed, PALETTES[spec.species]);
   if (spec.species === 'conifer') buildConifer(shape, spec.scale);
   else if (spec.species === 'birch') buildBirch(shape, spec.scale);
-  else buildBroadleaf(shape, spec.scale, spec.species === 'broad');
+  else buildBroadleaf(shape, spec.scale, spec.species === 'broad', spec.lean);
   tree = finalize(shape, spec);
   const e = {
     id: world.nextId++, kind: 'terrain', name: NAMES[spec.species], priority: Infinity,
