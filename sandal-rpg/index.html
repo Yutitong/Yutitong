@@ -163,7 +163,7 @@ function sfx(k){if(!soundOn)return;try{switch(k){
 }}catch(e){}}
 
 // ---------------------------------------------------------------- ruins club BGM (beat-synced)
-const BGM_URL='ruins-bgm.mp3',BPM=123,BEAT0=.28,SPB=60/BPM;
+const BGM_URL='ruins-bgm.mp3',BPM=91,BEAT0=.345,SPB=60/BPM;
 const BGM={buf:null,el:null,src:null,an:null,gain:null,lp:null,loading:false,playing:false,offset:0,startedAt:0,want:'off',tv:-1,tf:-1,freq:null,level:0,bass:0,elVol:0,offT:0,shown:false};
 function bgmGraph(){const a=ac();if(!a)return null;if(!BGM.gain){BGM.lp=a.createBiquadFilter();BGM.lp.type='lowpass';BGM.lp.frequency.value=20000;BGM.an=a.createAnalyser();BGM.an.fftSize=512;BGM.an.smoothingTimeConstant=.55;BGM.gain=a.createGain();BGM.gain.gain.value=0;BGM.lp.connect(BGM.an);BGM.an.connect(BGM.gain);BGM.gain.connect(a.destination);BGM.freq=new Uint8Array(BGM.an.frequencyBinCount)}return a}
 async function bgmLoad(){if(BGM.loading)return;BGM.loading=true;const a=bgmGraph();if(!a){BGM.loading=false;return}
@@ -187,7 +187,7 @@ function updateBgm(dt){
   else if(BGM.playing){BGM.bass=.7;BGM.level=.55}else{BGM.bass=0;BGM.level=0}
 }
 function beatInfo(){if(!BGM.playing||BGM.want==='off')return{ph:0,pulse:0,n:0,on:false};const b=(bgmPos()-BEAT0)/SPB+64,n=Math.floor(b),ph=b-n;return{ph,pulse:Math.pow(1-ph,3)*(.45+BGM.bass*.8),n,on:true}}
-function nowPlaying(){const w=el('div','win np');w.innerHTML='♪ NOW PLAYING　<b>遺跡クラブ・ナイト</b>';setTimeout(()=>{w.style.opacity='0';w.style.transform='translateY(-1cqw)'},3200);setTimeout(()=>w.remove(),4200)}
+function nowPlaying(){const w=el('div','win np');w.innerHTML='♪ NOW PLAYING　<b>Flip it n zip</b>';setTimeout(()=>{w.style.opacity='0';w.style.transform='translateY(-1cqw)'},3200);setTimeout(()=>w.remove(),4200)}
 
 // ---------------------------------------------------------------- pixel sprites
 // Uppercase letters are base colors; lowercase are auto-derived shadows; I/D/T are auto highlights.
@@ -1472,7 +1472,7 @@ function clubLasers(g,now){const bi=beatInfo();if(REDUCED||!bi.on||bi.n%8>1)retu
 function drawClubFloor(m,camX,camY){
   const C=m.club;if(!C.floor||!clubOn())return;const bi=beatInfo(),pal=C.soft?SOFTPAL:CLUBPAL,g=ctx,[x0,y0,x1,y1]=C.floor;g.save();g.globalCompositeOperation='lighter';
   for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++){if(tileAtM(m,tx,ty)!=='R')continue;const sx=tx*TILE-camX,sy=ty*TILE-camY;if(sx<-32||sy<-32||sx>CW||sy>CH)continue;
-    const k=hsh(tx,ty,bi.n>>1);g.fillStyle=hexA(pal[Math.floor(k*pal.length)],k>.4?.12+.3*bi.pulse:.04);g.fillRect(sx+2,sy+2,28,28)}g.restore()}
+    const k=hsh(tx,ty,bi.n);g.fillStyle=hexA(pal[Math.floor(k*pal.length)],k>.4?.12+.3*bi.pulse:.04);g.fillRect(sx+2,sy+2,28,28)}g.restore()}
 function drawClub(m,camX,camY,now){
   const C=m.club,on=clubOn(),bi=beatInfo(),lv=on?.45+BGM.level*.8:.18,pal=C.soft?SOFTPAL:CLUBPAL,g=ctx;
   g.save();g.globalCompositeOperation='lighter';
