@@ -71,6 +71,20 @@ function radiusAt(s) {
   return Math.max(1.2, 6.2 * (1 - (t - 0.4) / 0.6) ** 0.9); // 尾へ細くなる
 }
 
+// 頭からの距離 s の輪にかかる切り傷。V 字の切り口: 真ん中が一番深い（deep の所まで削れる）
+function cutsNear(wounds, s, r, margin) {
+  const cuts = [];
+  for (const w of wounds) {
+    const half = 2.5 + 2 * w.f; // 深くなるほど切り口も広がる
+    if (Math.abs(s - w.s) > half + margin) continue;
+    const deep = r - 2 * r * w.f;
+    // 斜面の傾き。面からの距離は、面に直角に測る（斜面でも肉の層が薄くならないように）
+    const slope = (r - deep) / half;
+    cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), ws: w.s, half, deep, norm: Math.sqrt(1 + slope * slope) });
+  }
+  return cuts;
+}
+
 // 円周を n 等分した点の cos / sin（何度も使うので覚えておく）
 const rings = new Map();
 function ringTable(n) {
@@ -603,15 +617,7 @@ export class Dragon {
       const SLAB = SLAB_MIN + r * bend;
       const cap = (from > 0 && s - from < SPINE_STEP * 1.5) || (to < DRAGON_LENGTH && to - s < SPINE_STEP * 1.5);
       // この輪にかかる切り傷: 向き th の側から V 字に削れている。真ん中が一番深い
-      const cuts = [];
-      for (const w of this.wounds) {
-        const half = 2.5 + 2 * w.f; // 深くなるほど切り口も広がる
-        if (Math.abs(s - w.s) > half + SLAB) continue;
-        const deep = r - 2 * r * w.f;
-        // 斜面の傾き。面からの距離は、面に直角に測る（斜面でも肉の層が薄くならないように）
-        const slope = (r - deep) / half;
-        cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), ws: w.s, half, deep, norm: Math.sqrt(1 + slope * slope) });
-      }
+      const cuts = cutsNear(this.wounds, s, r, SLAB);
       const r2 = r * r;
       const inner = Math.max(0, r - SHELL);
       const inner2 = cuts.length || cap ? -1 : inner * inner; // 切り傷も切り口もなければ、中の空洞はすぐに飛ばせる
@@ -830,15 +836,62 @@ export class Dragon {
     const v = sub(p, best.c);
     if (Math.hypot(...v) > r + 2.5) return null; // 足・ひれ・鬣などは削らない
     const th = Math.atan2(dot(v, best.B), dot(v, best.N));
-    let w = this.wounds.find((q) => Math.abs(q.s - best.s) < 3.5 && Math.abs(wrap(q.th - th)) < 0.8);
+    // 近くに切り傷があれば、それを深くする（少しずれた所に当たっても、同じ傷が深くなる）
+    let w = null;
+    let wd = Infinity;
+    for (const q of this.wounds) {
+      const ds = Math.abs(q.s - best.s);
+      if (ds > 2.5 + 2 * q.f + 1 || Math.abs(wrap(q.th - th)) > 1.3) continue;
+      if (ds < wd) {
+        wd = ds;
+        w = q;
+      }
+    }
     if (!w) {
       w = { s: best.s, th, f: 0 };
       this.wounds.push(w);
     }
+    const before = w.f;
     w.f = Math.min(1, w.f + depth / (2 * r));
-    if (w.s < SEVER_MIN) w.f = Math.min(w.f, 0.85);
-    if (w.f >= 1) return { s: w.s, f: 1, severed: this.sever(w.s) };
+    // 傷がいくつも重なって胴の断面がすべて削れたら、そこで切り落とされたことにする
+    // （見た目だけ切れて、体はつながったまま、ということが起きないように）
+    const through = w.f >= 1 ? w.s : this.cutThrough(w.s);
+    if (through !== null && through < SEVER_MIN) {
+      w.f = before; // 首は切り落とせない: これ以上は深くならない
+      return { s: w.s, f: w.f, severed: null };
+    }
+    if (through !== null) return { s: through, f: 1, severed: this.sever(through) };
     return { s: w.s, f: w.f, severed: null };
+  }
+
+  // s0 のまわりで、切り傷のせいで胴の断面がすべて削れている所の s（なければ null）
+  cutThrough(s0) {
+    for (let s = s0 - 6; s <= s0 + 6; s += 0.4) {
+      if (s < 3 || s > this.length) continue;
+      const r = radiusAt(s);
+      const cuts = cutsNear(this.wounds, s, r, 0);
+      if (!cuts.length) continue;
+      let gone = true;
+      for (let u = -r + 0.3; u <= r - 0.3 && gone; u += 0.5) {
+        const L = Math.sqrt(Math.max(0, r * r - u * u)) - 0.3;
+        for (let v = -L; v <= L; v += 0.5) {
+          let removed = false;
+          for (const q of cuts) {
+            const ds = Math.abs(s - q.ws);
+            if (ds <= q.half && u * q.cu0 + v * q.su0 > q.deep + (r - q.deep) * (ds / q.half)) {
+              removed = true;
+              break;
+            }
+          }
+          if (!removed) {
+            gone = false;
+            break;
+          }
+        }
+      }
+      if (gone) return s;
+    }
+    return null;
   }
 
   // 頭から距離 sCut の所で切り落とす。尾の側は別の物（龍の尾）になって地面へ落ちる

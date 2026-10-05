@@ -751,3 +751,51 @@ test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷
   }
   assert.ok(tested >= 12, `調べた所 ${tested}`);
 });
+
+test('龍: いろいろな角度から切りつけても、切り落とされるまでは胴が分かれて見えない', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  for (const [trial, sTarget] of [[0, 200], [1, 40]]) {
+    const w = new World({ generate: false });
+    const d = new Dragon(w, [0, 60, 0]);
+    w.dragon = d;
+    d.land(40, 300, 0.3 * trial);
+    d.walkTime = 1e9;
+    d.nextBreath = 1e9;
+    let seed = trial + 7;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+    for (let i = 0; i < 60; i++) {
+      d.update(0.08, [0, 0, 0]);
+      if (i % 3 === 0 && d.length > sTarget) {
+        const { c, N, B } = d.pts[Math.round((sTarget + (rnd() - 0.5) * 4) / 0.8)];
+        const a = rnd() * Math.PI * 2;
+        d.wound([0, 1, 2].map((k) => c[k] + (N[k] * Math.cos(a) + B[k] * Math.sin(a)) * 7));
+      }
+      if (i % 4 !== 3) continue;
+      // 龍のセルが 1 つの塊になっているか（26 近傍）
+      const cells = new Set();
+      for (const c of w.chunks.values()) c.owner.forEach((o, j) => { if (o === d.id) cells.add(`${c.cx * 16 + (j % 16)},${Math.floor(j / 256)},${c.cz * 16 + (Math.floor(j / 16) % 16)}`); });
+      const seen = new Set();
+      const parts = [];
+      for (const key of cells) {
+        if (seen.has(key)) continue;
+        let n = 0;
+        const q = [key];
+        seen.add(key);
+        while (q.length) {
+          const [x, y, z] = q.pop().split(',').map(Number);
+          n++;
+          for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+            const kk = `${x + dx},${y + dy},${z + dz}`;
+            if (cells.has(kk) && !seen.has(kk)) {
+              seen.add(kk);
+              q.push(kk);
+            }
+          }
+        }
+        if (n > 50) parts.push(n);
+      }
+      assert.equal(parts.length, 1, `s = ${sTarget} 付近、${i} フレーム目: ${parts.join(' / ')}`);
+    }
+    if (sTarget < 60) assert.equal(d.length, 400, '首は切り落とせない');
+  }
+});
