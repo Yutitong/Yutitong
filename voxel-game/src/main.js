@@ -6,7 +6,7 @@ import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
-const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
+const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
 const VIEW_RADIUS = 6; // 描画するチャンクの半径
 const LOAD_BUDGET_MS = 6; // 1フレームでチャンク作りに使ってよい時間
 const SKY = 0xa9c9e8;
@@ -52,7 +52,7 @@ scene.add(sun);
 // セルが変わったら、そのセルのインスタンスだけ書き換える。
 
 const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-// 水面は隙間なく並べ、少し低く薄くする
+// 水面は少し低く薄くする
 const waterBox = new THREE.BoxGeometry(1, 0.8, 1).translate(0, -0.1, 0);
 const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
 
