@@ -5,6 +5,7 @@ import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOX
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { FarTerrain } from './far.js';
+import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
 import { ALPHA_SHIFT } from './terrain.js';
 
@@ -383,6 +384,9 @@ let running = false;
 let runButton = false;
 let chopHeld = false; // F を押している間は振り続ける
 let chopPending = false; // 次のティックで1回振る
+let placeHeld = false; // G を押している間は土を盛り続ける
+let placePending = false;
+let toolWanted = null; // 次のティックで持ち替える道具
 
 function worldDir(rel) {
   const fx = controls.target.x - camera.position.x;
@@ -404,8 +408,11 @@ function playerInput() {
   dx = Math.sign(dx);
   dz = Math.sign(dz);
   const chop = chopHeld || chopPending;
-  chopPending = false;
-  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton, chop };
+  const place = placeHeld || placePending;
+  const tool = toolWanted;
+  chopPending = placePending = false;
+  toolWanted = null;
+  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton, chop, place, tool };
 }
 
 function press(rel) {
@@ -421,6 +428,12 @@ window.addEventListener('keydown', (e) => {
   if (KEYMAP[e.code]) {
     e.preventDefault();
     if (!e.repeat) press(KEYMAP[e.code]);
+  } else if (e.code === 'Digit1' || e.code === 'Digit2') {
+    toolWanted = e.code === 'Digit1' ? 'axe' : 'shovel';
+  } else if (e.code === 'KeyG') {
+    e.preventDefault();
+    placeHeld = true;
+    placePending = true;
   } else if (e.code === 'KeyF') {
     e.preventDefault();
     chopHeld = true;
@@ -436,11 +449,22 @@ window.addEventListener('keyup', (e) => {
   running = e.shiftKey;
   if (KEYMAP[e.code]) release(KEYMAP[e.code]);
   if (e.code === 'KeyF') chopHeld = false;
+  if (e.code === 'KeyG') placeHeld = false;
 });
 window.addEventListener('blur', () => {
   held.length = 0;
   running = false;
   chopHeld = false;
+  placeHeld = false;
+});
+
+document.querySelector('[data-tool]').addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  toolWanted = player.tool === 'axe' ? 'shovel' : 'axe';
+});
+document.querySelector('[data-place]').addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  placePending = true;
 });
 
 document.querySelector('[data-chop]').addEventListener('pointerdown', (e) => {
@@ -474,10 +498,30 @@ const posLabel = document.getElementById('pos');
 const chunkLabel = document.getElementById('chunks');
 const speedLabel = document.getElementById('speed');
 const dragonLabel = document.getElementById('dragonState');
+const toolLabel = document.getElementById('tool');
+const soilLabel = document.getElementById('soil');
+const chopBtn = document.querySelector('[data-chop]');
 const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
   const a = ev.actor;
+  if (ev.type === 'dig') {
+    const soil = `土 ${ev.soil}/${SOIL_MAX}`;
+    switch (ev.result) {
+      case 'dug': return { cls: 'push', text: `${a.name} が地面を掘った`, rule: soil };
+      case 'rock': return { cls: 'block', text: 'シャベルが岩に当たって弾かれた（カチン）', rule: '岩は掘れない' };
+      case 'full': return { cls: 'block', text: 'シャベルが土でいっぱい。G で盛ろう', rule: soil };
+      default: return { cls: 'block', text: 'シャベルが届く所に地面がない', rule: '' };
+    }
+  }
+  if (ev.type === 'place') {
+    const soil = `土 ${ev.soil}/${SOIL_MAX}`;
+    switch (ev.result) {
+      case 'placed': return { cls: 'push', text: `${a.name} が土を盛った`, rule: soil };
+      case 'empty': return { cls: 'block', text: 'シャベルに土がない。F で掘ろう', rule: '' };
+      default: return { cls: 'block', text: 'そこには土を盛れない', rule: '' };
+    }
+  }
   if (ev.type === 'chop') {
     const t = ev.target;
     const pct = `${Math.round(ev.progress * 100)}%`;
@@ -591,6 +635,9 @@ function tick() {
   speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
   dragonLabel.textContent = DRAGON_MODES[dragon.mode];
+  toolLabel.textContent = player.tool === 'shovel' ? 'シャベル' : '斧';
+  soilLabel.textContent = `${player.soil}/${SOIL_MAX}`;
+  chopBtn.textContent = player.tool === 'shovel' ? '掘る' : '斧';
 }
 
 // カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）

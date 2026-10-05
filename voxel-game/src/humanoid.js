@@ -69,7 +69,10 @@ export function createPose() {
     blink: false,
     crouch: 0, // 段差を登った直後・着地したときに膝を曲げる 0..1
     air: 0, // 落ちている 0..1
-    swing: 0, // 斧を振る動きの進み具合 0..1（0 = 振っていない）
+    swing: 0, // 道具を使う動きの進み具合 0..1（0 = 使っていない）
+    tool: 'axe', // 右手に持っている道具（'axe' | 'shovel'）
+    action: 'chop', // 使い方（'chop' 斧を振る | 'dig' 掘る | 'place' 土を盛る）
+    carry: 0, // シャベルにのせている土（0 = なし）
   };
 }
 
@@ -98,10 +101,31 @@ const CHOP_KEYS = [
 ];
 export const CHOP_IMPACT = 0.55;
 
-function chopKey(t) {
+// シャベルのかなめのコマ（両手で柄を持つ）: [進み具合, 肩の角度, 肘の曲がり, 腕を内へ寄せる量, 手首の返し]
+// 掘る: 持ち上げる → 前の地面へ突き刺す（0.5） → てこで土をすくい上げる → 戻す
+// （柄の向き = 前腕の角度 − 手首の返し。0 で真下、正で前へ）
+const DIG_KEYS = [
+  [0.0, 0.3, 0.4, 0.0, 0.4],
+  [0.25, 1.15, 0.9, -0.3, 0.75],
+  [0.5, 0.55, 0.25, -0.35, 0.1],
+  [0.72, 0.95, 1.05, -0.3, 0.5],
+  [1.0, 0.3, 0.4, 0.0, 0.4],
+];
+// 盛る: 土をのせたまま前へ振り出し（0.55）、刃を返して落とす
+const PLACE_KEYS = [
+  [0.0, 0.3, 0.4, 0.0, 0.4],
+  [0.3, 0.8, 1.1, -0.3, 0.4],
+  [0.55, 1.1, 0.4, -0.35, 0.5],
+  [0.75, 0.9, 0.5, -0.3, 0.5],
+  [1.0, 0.3, 0.4, 0.0, 0.4],
+];
+export const DIG_IMPACT = 0.5;
+export const PLACE_IMPACT = 0.55;
+
+function chopKey(t, keys = CHOP_KEYS) {
   let k = 0;
-  while (k < CHOP_KEYS.length - 2 && CHOP_KEYS[k + 1][0] < t) k++;
-  const a = CHOP_KEYS[k], b = CHOP_KEYS[k + 1];
+  while (k < keys.length - 2 && keys[k + 1][0] < t) k++;
+  const a = keys[k], b = keys[k + 1];
   const u = Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0])));
   const e = u * u * (3 - 2 * u);
   return a.map((v, i) => v + (b[i] - v) * e);
@@ -176,14 +200,17 @@ function buildParts(p, pal) {
     let swingA = side * armAmp * s + push * 1.3; // side=-1（左）は右脚と同じ向き
     let elbowBend = lerp(lerp(0.2, 0.5, Math.max(0, side * s) * w), 1.55, r * w) * (1 - push) + push * 0.35;
     let lateral = side * (0.06 + 0.45 * p.air); // 落ちるときは腕が開く
-    let cock = -1.2; // 手首の返し（斧の柄と前腕の角度）
-    const axeArm = pal.axe && side === 1; // 右手に斧
-    if (axeArm && p.swing > 0) {
-      const [, a, e, lat, k] = chopKey(p.swing);
+    const shovel = pal.axe && p.tool === 'shovel';
+    let cock = shovel ? 0.4 : -1.2; // 手首の返し（道具の柄と前腕の角度）
+    const axeArm = pal.axe && side === 1; // 右手に道具
+    // 斧は右手だけで振る。シャベルは両手で柄を持つ（左手は少し内へ寄せて柄に添える）
+    if (pal.axe && p.swing > 0 && (axeArm || shovel)) {
+      const keys = !shovel ? CHOP_KEYS : p.action === 'place' ? PLACE_KEYS : DIG_KEYS;
+      const [, a, e, lat, k] = chopKey(p.swing, keys);
       const wgt = Math.min(1, p.swing / 0.12, (1 - p.swing) / 0.2);
-      swingA = lerp(swingA, a, wgt);
+      swingA = lerp(swingA, a + (side === -1 ? 0.25 : 0), wgt);
       elbowBend = lerp(elbowBend, e, wgt);
-      lateral = lerp(lateral, lat, wgt);
+      lateral = lerp(lateral, side === -1 ? -lat + 0.1 : lat, wgt);
       cock = lerp(cock, k, wgt);
     }
     const elbow = add(shoulder, swingDown(B.upperArm, swingA, lateral));
@@ -201,9 +228,22 @@ function buildParts(p, pal) {
       h = h.map((v) => v / hl);
       const edge = [0, -h[2], h[1]];
       const at = (k, e2 = 0) => [hand[0] + h[0] * k + edge[0] * e2, hand[1] + h[1] * k + edge[1] * e2, hand[2] + h[2] * k + edge[2] * e2];
-      capsule(at(-0.6), at(3.4), 0.42, 0.4, pal.axe.handle, 0.45, true);
-      capsule(at(3.0, -0.5), at(3.0, 1.4), 0.75, 0.6, pal.axe.blade, 0.5, true);
-      capsule(at(3.0, 1.3), at(3.0, 1.8), 0.62, 0.62, pal.axe.edge, 0.55, true);
+      if (shovel) {
+        // シャベル: 長い柄の先に、横に広い平たい刃。土を持っていれば刃に土がのる
+        const sh = pal.shovel;
+        capsule(at(-2.2), at(4.4), 0.5, 0.5, sh.handle, 0.45, true);
+        capsule(at(-2.4, 0), at(-2.2, 0), 0.6, 0.6, sh.grip, 0.45, true);
+        const side3 = [1, 0, 0];
+        const bl = (k, s3) => add(at(k), [side3[0] * s3, 0, 0]);
+        for (const k of [4.6, 5.3, 6.0]) capsule(bl(k, -0.9), bl(k, 0.9), 0.48, 0.48, k > 5.9 ? sh.edge : sh.blade, 0.5, true);
+        if (p.carry > 0 && (p.swing === 0 || p.action !== 'place' || p.swing < 0.55)) {
+          capsule(add(at(5.2), [-0.6, 0.5, 0]), add(at(5.2), [0.6, 0.5, 0]), 0.55, 0.55, sh.soil, 0.55, true);
+        }
+      } else {
+        capsule(at(-0.6), at(3.4), 0.42, 0.4, pal.axe.handle, 0.45, true);
+        capsule(at(3.0, -0.5), at(3.0, 1.4), 0.75, 0.6, pal.axe.blade, 0.5, true);
+        capsule(at(3.0, 1.3), at(3.0, 1.8), 0.62, 0.62, pal.axe.edge, 0.55, true);
+      }
     }
   }
 
@@ -347,7 +387,11 @@ export function rasterizeTool(palette, pose) {
 }
 
 export const PALETTES = {
-  player: { id: 'player', axe: { handle: 0x8a5a32, blade: 0x9aa4ae, edge: 0xe6edf2 }, skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22 },
+  player: {
+    id: 'player', axe: { handle: 0x8a5a32, blade: 0x9aa4ae, edge: 0xe6edf2 },
+    shovel: { handle: 0x9a6a3e, grip: 0x3b2b22, blade: 0x6f7a84, edge: 0xb8c2ca, soil: 0x6b4f35 },
+    skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22,
+  },
   npc: [
     { id: 'npc0', skin: 0xe8b58e, hair: 0x1f1f2b, eyes: 0x4a3229, shirt: 0x3cc4b0, pants: 0x4a4a5c, belt: 0x2a2a30, shoes: 0x2a2a30 },
     { id: 'npc1', skin: 0xc68d63, hair: 0x6b3b1f, eyes: 0x4a3229, shirt: 0x9b7bff, pants: 0x2e3b4e, belt: 0x4a3426, shoes: 0x4a3426 },

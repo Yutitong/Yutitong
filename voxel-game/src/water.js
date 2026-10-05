@@ -121,7 +121,8 @@ export class WaterSim {
         if (this.kind[a] === ABSENT) continue;
         const c = this.chunks[Math.floor((a % N) / CHUNK) + SPAN * Math.floor(Math.floor(a / N) / CHUNK)];
         const col = ((a % N) % CHUNK) + CHUNK * (Math.floor(a / N) % CHUNK);
-        if (this.kind[a] === ACTIVE) (c.lvl ??= new Float32Array(CHUNK * CHUNK).fill(NaN))[col] = this.L[a];
+        // 水の深さを残す（水位で残すと、そのあと掘ったり盛ったりした所で水が増えたり減ったりする）
+        if (this.kind[a] === ACTIVE) (c.lvl ??= new Float32Array(CHUNK * CHUNK).fill(NaN))[col] = this.L[a] - this.F[a];
         if (this.W[a]) this.paintTop(a, this.base[a]);
       }
     }
@@ -153,7 +154,7 @@ export class WaterSim {
         this.F[a] = F;
         this.W[a] = W > F ? W : 0;
         const saved = c.lvl?.[col];
-        this.L[a] = this.kind[a] === ACTIVE && Number.isFinite(saved) ? Math.max(saved, F) : W > F ? W - 0.25 : F;
+        this.L[a] = this.kind[a] === ACTIVE && Number.isFinite(saved) ? F + saved : W > F ? W - 0.25 : F;
         this.base[a] = this.W[a] ? this.baseColor(a) : 0;
         // すでにある滝のセルも、ここで面倒を見る
         if (W) {
@@ -171,10 +172,12 @@ export class WaterSim {
       if (this.kind[a] === ABSENT) continue;
       const i = a % N, j = Math.floor(a / N);
       const c = this.chunks[Math.floor(i / CHUNK) + SPAN * Math.floor(j / CHUNK)];
+      this.H[a] = c.height[(i % CHUNK) + CHUNK * (j % CHUNK)]; // 掘ったり土を盛ったりして変わる
       const F = this.floorOf(c, i % CHUNK, j % CHUNK, this.H[a]);
       if (F === this.F[a]) continue;
+      // 床が変わっても（掘った・土を盛った・物が入ってきた）、その列の水の量は同じ
+      this.L[a] = F + Math.max(0, this.L[a] - this.F[a]);
       this.F[a] = F;
-      if (this.L[a] < F) this.L[a] = F; // 物が入ってきた所の水は押しのけられる
     }
   }
 

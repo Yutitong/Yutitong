@@ -14,11 +14,12 @@ import { hash3, mulberry32, shade } from './rng.js';
 import { Terrain, groundColor, waterColor, fallColor, rockInside, boulderColor, fernAt, fernCells, WATER_LEVEL } from './terrain.js';
 import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
 import { chop, dropFalling } from './axe.js';
+import { dig, place } from './shovel.js';
 import { WaterSim } from './water.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
-import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID } from './ids.js';
-export { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID };
+import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
+export { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID };
 export const WATER_FLAG = 0x1000000; // 色にこの印がついたセルは半透明（水面）で描く
 export const VOXEL_METERS = 0.15;
 export const WIND_RADIUS = 140; // プレイヤーからこの距離（ボクセル）以内の木だけ風で揺らす
@@ -123,8 +124,9 @@ export class World {
     this.entities.set(FALL_ID, { id: FALL_ID, kind: 'water', name: '滝', yields: true, priority: PRIORITY.WATER, pos: [0, 0, 0], ...NO_CELLS });
     // シダは低いので、地面と同じく踏み越えられる
     this.entities.set(PLANT_ID, { id: PLANT_ID, kind: 'terrain', name: 'シダ', ground: true, priority: PRIORITY.TERRAIN, pos: [0, 0, 0], ...NO_CELLS });
+    this.entities.set(SOIL_ID, { id: SOIL_ID, kind: 'terrain', name: '盛り土', ground: true, priority: PRIORITY.TERRAIN, pos: [0, 0, 0], ...NO_CELLS });
     this.deepWater = { id: WATER_ID, kind: 'water', name: '深い水', priority: PRIORITY.TERRAIN };
-    this.nextId = PLANT_ID + 1;
+    this.nextId = SOIL_ID + 1;
     this.tickCount = 0;
     this.player = null;
     this.counts = { npc: 0 }; // 名前の通し番号
@@ -150,7 +152,8 @@ export class World {
           lo = Math.min(lo, col.h);
         }
       }
-      c = new Chunk(cx, cz, Math.max(0, lo - 2));
+      // 一番低い地面より少し下から持つ（シャベルで掘った穴の底が見えるように）
+      c = new Chunk(cx, cz, Math.max(0, lo - 8));
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
       fillTerrain(this, c, cols);
       if (this.generate) {
@@ -194,6 +197,20 @@ export class World {
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
     if (y < c.base) return 0;
     return c.color[c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? 0;
+  }
+
+  // 列 (x, z) の地面の高さを、いまのセルから求め直す（掘ったり土を盛ったりしたあと）
+  recomputeHeight(x, z) {
+    const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
+    const lx = x - c.cx * CHUNK, lz = z - c.cz * CHUNK;
+    let y = Math.min(c.top, c.base + c.owner.length / LAYER) - 1;
+    while (y >= c.base) {
+      const o = c.owner[c.index(lx, y, lz)];
+      if (o === GROUND_ID || o === SOIL_ID) break;
+      y--;
+    }
+    c.height[lx + CHUNK * lz] = Math.max(c.base, y + 1);
+    return c.height[lx + CHUNK * lz];
   }
 
   // 地面の高さ（その列で最初の空でないセルの1つ上）
@@ -417,7 +434,7 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     }
   };
 
-  const onChop = (e) => events.push(chop(world, e));
+  const onChop = (e, action = 'chop') => events.push(action === 'dig' ? dig(world, e) : action === 'place' ? place(world, e) : chop(world, e));
   const p = world.player;
   if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report, onChop);
   // 倒れていく木と、落ちていく物（切り落とされた龍の尾）

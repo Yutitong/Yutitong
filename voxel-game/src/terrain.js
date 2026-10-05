@@ -667,6 +667,31 @@ function rockColor(seed, x, y, z) {
   return shade(ROCK[band], 0.9 + (hash3(x, y, z) % 20) / 100);
 }
 
+// ---- 掘れる土 ------------------------------------------------------------------
+
+export const SOIL_DEPTH = 5; // 土の層の厚さ（ボクセル ≈ 75cm）。その下は岩
+
+// 地面のセル (x, y, z) が、シャベルで掘れる土・砂・砂利か（岩なら false）。
+// col は掘る前の地形（world.sample の結果）、slope はまわりとの高さの差
+export function isSoil(seed, x, y, z, col, slope) {
+  const depth = col.h - 1 - y;
+  if (depth < 0) return true; // もとの地面より上（盛った土）
+  if (col.channel || col.bank) return depth <= 2; // 川底・岸の砂利
+  if (col.h <= WATER_LEVEL + 1) return depth <= 6; // 水辺の砂と泥
+  if (slope >= 3) return false; // 急な所は岩肌
+  const alt = col.h - BASE;
+  if (alt > 130 && smoothstep(130, 330, alt) + (noise2(x / 16, z / 16, seed + 12) - 0.5) * 1.1 > 0.45) return false; // 山の上の岩場
+  if (col.edge < 45 && col.f < 0.9) return depth <= 2; // 渓流の谷: 苔と土の下はすぐ岩
+  return depth <= SOIL_DEPTH && alt < 160;
+}
+
+// 盛った土の色（掘り返した、黒っぽい柔らかい土）
+const LOOSE = [0x6b4f35, 0x5f4630, 0x76573a, 0x664a32];
+export function soilColor(x, y, z) {
+  const n = hash3(x, y, z);
+  return shade(LOOSE[n % LOOSE.length], 0.9 + (n % 16) / 100);
+}
+
 // 列の中の高さ y のセルの色
 export function groundColor(seed, x, y, z, col, slope) {
   const depth = col.h - 1 - y;
@@ -674,7 +699,7 @@ export function groundColor(seed, x, y, z, col, slope) {
   if ((col.channel || col.bank) && (col.f >= 0.9 || depth <= 1)) return shade(RIVERBED[hash3(x, y, z) % RIVERBED.length], 0.78 + (hash3(x, y, z) % 14) / 100);
   if (col.edge < 45 && col.f < 0.9) return gorgeWall(seed, x, y, z); // 渓流の谷の斜面の側面
   if (col.h <= WATER_LEVEL + 1) return shade(depth < 3 ? SAND : MUD, 0.9 + (hash3(x, y, z) % 12) / 100);
-  if (depth <= 3 && slope < 3 && col.h - BASE < 160) return shade(DIRT, 0.88 + (hash3(x, y, z) % 20) / 100); // 土の層
+  if (depth <= SOIL_DEPTH && slope < 3 && col.h - BASE < 160) return shade(DIRT, 0.88 + (hash3(x, y, z) % 20) / 100); // 土の層
   return rockColor(seed, x, y, z);
 }
 

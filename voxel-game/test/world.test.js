@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, PRIORITY, GROUND_ID, WATER_ID, ROCK_ID, PLANT_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
+import { World, PRIORITY, GROUND_ID, WATER_ID, ROCK_ID, PLANT_ID, SOIL_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
 import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman, rasterizeTool, CHOP_IMPACT } from '../src/humanoid.js';
 import { WALK_SPEED, RUN_SPEED, SPRINT_SPEED } from '../src/character.js';
 import { CHUNK, chunkKeyAt } from '../src/grid.js';
@@ -31,7 +31,7 @@ function assertConsistent(w) {
   // 毎回形を描き直す物（龍・炎・斧・倒れていく木）は offsets を持たないので数えない
   const trees = new Set([...w.entities.values()].filter((e) => e.tree || !e.offsets.length).map((e) => e.id));
   let owned = 0;
-  for (const c of w.chunks.values()) for (const o of c.owner) if (o > PLANT_ID && !trees.has(o)) owned++;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o > SOIL_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
 }
 
@@ -497,6 +497,58 @@ test('木箱は足場のない所（水の上）へは押せない', () => {
   const box = w.spawn({ kind: 'box', name: '木箱', priority: PRIORITY.BOX, needsSupport: true, pos: [p.pos[0] + 11, 6, p.pos[2] + 2], voxels: [[0, 0, 0, 1], [0, 1, 0, 1]] });
   for (let i = 0; i < 80; i++) step(w, walkInput(1, 0));
   assert.equal(box.pos[0], 19); // 岸の端で止まる（水の上に浮かない）
+  assertConsistent(w);
+});
+
+// ---- シャベル -------------------------------------------------------------------
+
+test('シャベル: 持ち替えて掘ると穴があき、土を持つ。深く掘ると岩に当たる', () => {
+  const w = new World({ seed: 20261004 });
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 3);
+  step(w, { dir: null, run: false, tool: 'shovel' });
+  assert.equal(p.tool, 'shovel');
+  const yaw = p.pose.yaw;
+  const fx = Math.floor(p.pos[0] + 4.5 + Math.sin(yaw) * 6.5), fz = Math.floor(p.pos[2] + 4.5 + Math.cos(yaw) * 6.5);
+  const h0 = w.groundAt(fx, fz);
+  const results = [];
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < 120; i++) results.push(...step(w, { dir: null, run: false, chop: true }).filter((e) => e.type === 'dig').map((e) => e.result));
+    p.soil = 0; // 土を捨てて、また掘る
+  }
+  assert.ok(results.includes('dug') && results.includes('full'));
+  assert.ok(results.includes('rock'), '岩に当たる');
+  const h1 = w.groundAt(fx, fz);
+  assert.ok(h0 - h1 >= 5 && h0 - h1 <= 7, `穴の深さ ${h0 - h1}`);
+  // 穴の底と壁は色がついている（地中の空洞が透けて見えない）
+  assert.equal(w.ownerAt(fx, h1 - 1, fz), GROUND_ID);
+  assert.ok(w.colorAt(fx, h1 - 1, fz) !== 0);
+  for (let y = h1; y < h0; y++) {
+    assert.equal(w.ownerAt(fx, y, fz), EMPTY);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (w.ownerAt(fx + dx, y, fz + dz) === GROUND_ID) assert.ok(w.colorAt(fx + dx, y, fz + dz) !== 0, '穴の壁');
+    }
+  }
+  assertConsistent(w);
+});
+
+test('シャベル: 持っている土を前に盛る（水の中にも盛れる）。持っていなければ盛れない', () => {
+  const w = steps([[0, 6], [16, 3]], 6); // x >= 16 は水深 3 の池
+  const p = spawnPlayer(w);
+  step(w, { dir: null, run: false, tool: 'shovel' });
+  let ev = step(w, { dir: null, run: false, place: true });
+  for (let i = 0; i < 30 && !ev.some((e) => e.type === 'place'); i++) ev = step(w, { dir: null, run: false });
+  assert.equal(ev.find((e) => e.type === 'place').result, 'empty');
+  // 池の方を向いて、岸まで歩く
+  for (let i = 0; i < 80; i++) step(w, walkInput(1, 0));
+  p.soil = 20;
+  const placed = [];
+  for (let i = 0; i < 60; i++) placed.push(...step(w, { dir: null, run: false, place: true }).filter((e) => e.type === 'place'));
+  assert.ok(placed.some((e) => e.result === 'placed'));
+  let soilInWater = 0;
+  for (let x = 16; x < 90; x++) for (let z = 0; z < 16; z++) for (let y = 3; y < 6; y++) if (w.ownerAt(x, y, z) === SOIL_ID) soilInWater++;
+  assert.ok(soilInWater > 0, '水の中に土を盛った');
+  assert.ok(p.soil < 20);
   assertConsistent(w);
 });
 

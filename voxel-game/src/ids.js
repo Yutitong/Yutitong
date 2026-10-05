@@ -5,3 +5,4 @@ export const WATER_ID = 2;
 export const ROCK_ID = 3; // 川の岩（地形の一部。動かない）
 export const FALL_ID = 4; // 落ちていく水（滝）。いつでも場所をゆずる
 export const PLANT_ID = 5; // シダなどの草（地形の一部。低いので踏み越えられる）
+export const SOIL_ID = 6; // シャベルで盛った土（地形の一部。また掘れる）
