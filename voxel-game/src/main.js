@@ -428,8 +428,8 @@ window.addEventListener('keydown', (e) => {
   if (KEYMAP[e.code]) {
     e.preventDefault();
     if (!e.repeat) press(KEYMAP[e.code]);
-  } else if (e.code === 'Digit1' || e.code === 'Digit2') {
-    toolWanted = e.code === 'Digit1' ? 'axe' : 'shovel';
+  } else if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3') {
+    toolWanted = { Digit1: 'axe', Digit2: 'shovel', Digit3: 'sword' }[e.code];
   } else if (e.code === 'KeyG') {
     e.preventDefault();
     placeHeld = true;
@@ -460,7 +460,7 @@ window.addEventListener('blur', () => {
 
 document.querySelector('[data-tool]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
-  toolWanted = player.tool === 'axe' ? 'shovel' : 'axe';
+  toolWanted = { axe: 'shovel', shovel: 'sword', sword: 'axe' }[player.tool]; // 斧 → シャベル → 太刀
 });
 document.querySelector('[data-place]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
@@ -512,6 +512,17 @@ function describe(ev) {
       case 'rock': return { cls: 'block', text: 'シャベルが岩に当たって弾かれた（カチン）', rule: '岩は掘れない' };
       case 'full': return { cls: 'block', text: 'シャベルが土でいっぱい。G で盛ろう', rule: soil };
       default: return { cls: 'block', text: 'シャベルが届く所に地面がない', rule: '' };
+    }
+  }
+  if (ev.type === 'slash') {
+    const t = ev.target;
+    const how = ev.cut === 'h' ? '横に薙いだ' : '斬り下ろした';
+    switch (ev.result) {
+      case 'wound': return { cls: 'push', text: `${a.name} が ${t.name} を太刀で${how}`, rule: `傷の深さ ${Math.round(ev.progress * 100)}%` };
+      case 'severed': return { cls: 'push', text: `太刀で ${t.name} の尾を斬り落とした！`, rule: '切断' };
+      case 'glance': return { cls: 'block', text: `太刀が ${t.name} の足やひれをかすめた`, rule: '' };
+      case 'blocked': return { cls: 'block', text: '太刀が弾かれた（龍しか斬れない）', rule: '' };
+      default: return { cls: 'block', text: `${a.name} は太刀を空振りした`, rule: '' };
     }
   }
   if (ev.type === 'place') {
@@ -635,9 +646,9 @@ function tick() {
   speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
   dragonLabel.textContent = DRAGON_MODES[dragon.mode];
-  toolLabel.textContent = player.tool === 'shovel' ? 'シャベル' : '斧';
+  toolLabel.textContent = { axe: '斧', shovel: 'シャベル', sword: '太刀' }[player.tool];
   soilLabel.textContent = `${player.soil}/${SOIL_MAX}`;
-  chopBtn.textContent = player.tool === 'shovel' ? '掘る' : '斧';
+  chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る' }[player.tool];
 }
 
 // カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）

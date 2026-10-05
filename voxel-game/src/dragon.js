@@ -822,9 +822,9 @@ export class Dragon {
     return Math.hypot(dx, dz) < 0.5 ? [best.B[0], best.B[2]] : [dx, dz];
   }
 
-  // 斧が点 p に当たった: 胴なら、当たった側から depth ボクセル削る。
+  // 斧が点 p に当たった: 胴なら、当たった側から depth ボクセル削る（frac を渡すと、胴の太さに対する割合で削る）。
   // 戻り値: null（胴に当たっていない）/ { s, f, severed }
-  wound(p, depth = 2.2) {
+  wound(p, depth = 2.2, frac = null) {
     if (!this.pts) return null;
     let best = null;
     let bd = Infinity;
@@ -857,7 +857,7 @@ export class Dragon {
       this.wounds.push(w);
     }
     const before = w.f;
-    w.f = Math.min(1, w.f + depth / (2 * r));
+    w.f = Math.min(1, w.f + (frac ?? depth / (2 * r)));
     // 傷がいくつも重なって胴の断面がすべて削れたら、そこで切り落とされたことにする
     // （見た目だけ切れて、体はつながったまま、ということが起きないように）
     const through = w.f >= 1 ? w.s : this.cutThrough(w.s);

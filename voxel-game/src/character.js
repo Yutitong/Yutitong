@@ -3,7 +3,7 @@
 // 体の位置は1ボクセル単位でしか動かないが、速度・向き・歩行周期は連続的に変わる。
 // アニメーションは毎ティック姿勢から描き直すので、移動のコマとは切り離されている。
 
-import { createPose, humanColors, rasterizeTool, CHOP_IMPACT, DIG_IMPACT, PLACE_IMPACT } from './humanoid.js';
+import { createPose, humanColors, rasterizeTool, CHOP_IMPACT, DIG_IMPACT, PLACE_IMPACT, SLASH_IMPACT } from './humanoid.js';
 
 export const WALK_SPEED = 13; // ボクセル/秒（≈ 2 m/s）
 export const RUN_SPEED = 33; // ≈ 5 m/s
@@ -18,6 +18,7 @@ const STRIDE_RUN = 22;
 const STRIDE_SPRINT = 29;
 const SWING_TIME = 0.6; // 斧を1回振る時間（秒）
 const DIG_TIME = 0.75; // シャベルで1回掘る・盛る時間（秒）
+const SLASH_TIME = 0.5; // 太刀でひと太刀の時間（秒）
 export const MAX_STEP = 2; // 歩いて登り降りできる段差（ボクセル ≈ 30cm）
 const GRAVITY = 65; // ボクセル/秒²（≈ 9.8 m/s²）
 const DOWN = [0, -1, 0];
@@ -107,9 +108,9 @@ function stepOnce(world, e, d3) {
 // 1ティック分キャラを動かす。
 // input: { dir: [dx, dz]（各 -1..1、8方向）または null, run: boolean }
 // report(e, result) は移動の結果（押し出し・止められた）を出来事として記録する。
-// input.tool で道具を持ち替える（'axe' | 'shovel'）。input.chop が true なら持っている道具を使う
-// （斧なら振る、シャベルなら掘る）。input.place が true ならシャベルで土を盛る。
-// 刃が当たる瞬間に onChop(e, action) を呼ぶ（action: 'chop' | 'dig' | 'place'）
+// input.tool で道具を持ち替える（'axe' | 'shovel' | 'sword'）。input.chop が true なら持っている道具を使う
+// （斧なら振る、シャベルなら掘る、太刀なら振り下ろしと横薙ぎを交互に）。input.place が true ならシャベルで土を盛る。
+// 刃が当たる瞬間に onChop(e, action) を呼ぶ（action: 'chop' | 'dig' | 'place' | 'slashV' | 'slashH'）
 export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   const pose = e.pose;
   const tools = Boolean(e.palette.axe); // 道具を持っているのはプレイヤーだけ
@@ -118,11 +119,17 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   if (tools && !e.swingT && (input.chop || (input.place && tool === 'shovel'))) {
     e.swingT = 1e-4;
     e.chopDone = false;
-    e.action = tool === 'axe' ? 'chop' : input.chop ? 'dig' : 'place';
+    if (tool === 'sword') {
+      e.action = e.lastSlash === 'slashV' ? 'slashH' : 'slashV'; // 振り下ろしと横薙ぎを交互に
+      e.lastSlash = e.action;
+    } else {
+      e.action = tool === 'axe' ? 'chop' : input.chop ? 'dig' : 'place';
+    }
   }
   if (e.swingT) {
-    e.swingT += dt / (e.action === 'chop' ? SWING_TIME : DIG_TIME);
-    const impact = e.action === 'chop' ? CHOP_IMPACT : e.action === 'dig' ? DIG_IMPACT : PLACE_IMPACT;
+    const slashing = e.action === 'slashV' || e.action === 'slashH';
+    e.swingT += dt / (e.action === 'chop' ? SWING_TIME : slashing ? SLASH_TIME : DIG_TIME);
+    const impact = e.action === 'chop' ? CHOP_IMPACT : slashing ? SLASH_IMPACT : e.action === 'dig' ? DIG_IMPACT : PLACE_IMPACT;
     if (!e.chopDone && e.swingT >= impact) {
       e.chopDone = true;
       onChop?.(e, e.action);

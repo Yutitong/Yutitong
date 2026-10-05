@@ -15,6 +15,7 @@ import { Terrain, groundColor, waterColor, fallColor, rockInside, boulderColor, 
 import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
 import { chop, dropFalling } from './axe.js';
 import { dig, place } from './shovel.js';
+import { slash } from './sword.js';
 import { WaterSim } from './water.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
@@ -434,7 +435,12 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     }
   };
 
-  const onChop = (e, action = 'chop') => events.push(action === 'dig' ? dig(world, e) : action === 'place' ? place(world, e) : chop(world, e));
+  const onChop = (e, action = 'chop') => events.push(
+    action === 'dig' ? dig(world, e)
+      : action === 'place' ? place(world, e)
+        : action === 'slashV' || action === 'slashH' ? slash(world, e, action === 'slashH')
+          : chop(world, e),
+  );
   const p = world.player;
   if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report, onChop);
   // 倒れていく木と、落ちていく物（切り落とされた龍の尾）

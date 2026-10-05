@@ -122,6 +122,26 @@ const PLACE_KEYS = [
 export const DIG_IMPACT = 0.5;
 export const PLACE_IMPACT = 0.55;
 
+// 太刀（両手で持つ長い刀）のかなめのコマ: [進み具合, 肩の角度, 肘の曲がり, 両手を横へずらす量, 刀の上下の向き, 刀の左右の向き]
+// 刀の上下の向き: 0 で真下、π/2 で前へ水平、π で真上。左右の向き: 0 でまっすぐ前、正で右
+const STANCE = [0.75, 0.55, 0, 2.0, 0]; // 中段の構え（切っ先を相手の目の高さへ）
+const SLASH_V = [ // 振り下ろし: 頭の上へ振りかぶり、前へまっすぐ斬り下ろす（0.5）
+  [0.0, ...STANCE],
+  [0.3, 2.9, 0.5, 0, 3.7, 0],
+  [0.5, 1.25, 0.1, 0, 1.25, 0],
+  [0.7, 0.6, 0.2, 0, 0.7, 0],
+  [1.0, ...STANCE],
+];
+const SLASH_H = [ // 横薙ぎ: 右へ引いて、前を右から左へ大きく薙ぐ（0.5）
+  [0.0, ...STANCE],
+  [0.3, 1.3, 0.7, 0.55, 1.65, 1.8],
+  [0.5, 1.45, 0.15, 0, 1.6, 0],
+  [0.7, 1.3, 0.5, -0.55, 1.6, -1.6],
+  [1.0, ...STANCE],
+];
+export const SLASH_IMPACT = 0.5;
+export const SWORD_LENGTH = 10; // 刃の長さ（ボクセル ≈ 1.5m）
+
 function chopKey(t, keys = CHOP_KEYS) {
   let k = 0;
   while (k < keys.length - 2 && keys[k + 1][0] < t) k++;
@@ -201,10 +221,18 @@ function buildParts(p, pal) {
     let elbowBend = lerp(lerp(0.2, 0.5, Math.max(0, side * s) * w), 1.55, r * w) * (1 - push) + push * 0.35;
     let lateral = side * (0.06 + 0.45 * p.air); // 落ちるときは腕が開く
     const shovel = pal.axe && p.tool === 'shovel';
+    const sword = pal.axe && p.tool === 'sword';
     let cock = shovel ? 0.4 : -1.2; // 手首の返し（道具の柄と前腕の角度）
     const axeArm = pal.axe && side === 1; // 右手に道具
-    // 斧は右手だけで振る。シャベルは両手で柄を持つ（左手は少し内へ寄せて柄に添える）
-    if (pal.axe && p.swing > 0 && (axeArm || shovel)) {
+    let blade = null; // 太刀の向き [上下, 左右]
+    if (sword) {
+      // 太刀: 両手で柄を握る。ふだんは中段に構え、斬るときはかなめのコマに沿って動く
+      const k = p.swing > 0 ? chopKey(p.swing, p.action === 'slashH' ? SLASH_H : SLASH_V) : [0, ...STANCE];
+      swingA = k[1] + (side === -1 ? 0.1 : 0);
+      elbowBend = k[2];
+      lateral = (side === 1 ? -0.35 : 0.35) + k[3];
+      blade = [k[4], k[5]];
+    } else if (pal.axe && p.swing > 0 && (axeArm || shovel)) {
       const keys = !shovel ? CHOP_KEYS : p.action === 'place' ? PLACE_KEYS : DIG_KEYS;
       const [, a, e, lat, k] = chopKey(p.swing, keys);
       const wgt = Math.min(1, p.swing / 0.12, (1 - p.swing) / 0.2);
@@ -228,7 +256,20 @@ function buildParts(p, pal) {
       h = h.map((v) => v / hl);
       const edge = [0, -h[2], h[1]];
       const at = (k, e2 = 0) => [hand[0] + h[0] * k + edge[0] * e2, hand[1] + h[1] * k + edge[1] * e2, hand[2] + h[2] * k + edge[2] * e2];
-      if (shovel) {
+      if (sword) {
+        // 柄・鍔・刃。刃は切っ先へ細くなり、刃先（斬る側）は明るい
+        const sw = pal.sword;
+        const [pitch, yaw] = blade;
+        const dir = [Math.sin(pitch) * Math.sin(yaw), -Math.cos(pitch), Math.sin(pitch) * Math.cos(yaw)];
+        const edgeV = p.action === 'slashH' && p.swing > 0
+          ? [-Math.cos(yaw), 0, Math.sin(yaw)]
+          : [Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw)].map((v) => -v);
+        const at2 = (k, e2 = 0) => [hand[0] + dir[0] * k + edgeV[0] * e2, hand[1] + dir[1] * k + edgeV[1] * e2, hand[2] + dir[2] * k + edgeV[2] * e2];
+        capsule(at2(-1.6), at2(0.8), 0.5, 0.5, sw.grip, 0.45, true);
+        capsule(at2(0.95), at2(1.2), 0.85, 0.85, sw.guard, 0.5, true); // 鍔
+        capsule(at2(1.3), at2(SWORD_LENGTH + 1.3), 0.64, 0.45, sw.blade, 0.5, true);
+        capsule(at2(1.6, 0.35), at2(SWORD_LENGTH + 0.9, 0.25), 0.42, 0.32, sw.edge, 0.55, true);
+      } else if (shovel) {
         // シャベル: 長い柄の先に、横に広い平たい刃。土を持っていれば刃に土がのる
         const sh = pal.shovel;
         capsule(at(-2.2), at(4.4), 0.5, 0.5, sh.handle, 0.45, true);
@@ -390,6 +431,7 @@ export const PALETTES = {
   player: {
     id: 'player', axe: { handle: 0x8a5a32, blade: 0x9aa4ae, edge: 0xe6edf2 },
     shovel: { handle: 0x9a6a3e, grip: 0x3b2b22, blade: 0x6f7a84, edge: 0xb8c2ca, soil: 0x6b4f35 },
+    sword: { grip: 0x2b2833, guard: 0x8a7440, blade: 0xb9c3cb, edge: 0xf3f6f8 },
     skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22,
   },
   npc: [

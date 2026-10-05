@@ -950,6 +950,37 @@ test('斧: 龍を切りつけると傷から肉が見え、切り続けると尾
   assertConsistent(w);
 });
 
+test('太刀: 離れた所から龍を深く斬り（一太刀で胴の半分）、振り下ろしと横薙ぎを交互に繰り出し、数太刀で切り落とす', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  d.land(40, 300, 0);
+  d.advance = () => {};
+  d.update(0.08, [0, 0, 0]);
+  const pt = d.pts[Math.round(300 / 0.8)];
+  // 胴から 2m ほど離れて立つ（斧は届かない）
+  const p = w.spawnHuman({
+    kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
+    pos: [Math.round(pt.c[0]) + 14, 1, Math.round(pt.c[2]) - 4], palette: PALETTES.player, yaw: -Math.PI / 2,
+  });
+  w.player = p;
+  step(w, { dir: null, run: false, tool: 'sword' });
+  assert.equal(p.tool, 'sword');
+  const slashes = [];
+  for (let i = 0; i < 300 && !slashes.some((ev) => ev.result === 'severed'); i++) {
+    slashes.push(...step(w, { dir: null, run: false, chop: true }).filter((ev) => ev.type === 'slash'));
+  }
+  const log = slashes.map((ev) => `${ev.cut}:${ev.result}:${ev.progress.toFixed(2)}`).join(',');
+  assert.equal(slashes[0].result, 'wound', log);
+  assert.ok(slashes[0].progress >= 0.45, log);
+  assert.ok(slashes.some((ev) => ev.cut === 'v') && slashes.some((ev) => ev.cut === 'h'), log);
+  const sev = slashes.findIndex((ev) => ev.result === 'severed');
+  assert.ok(sev >= 1 && sev <= 4, log);
+  assert.equal(slashes[sev].piece.kind, 'carcass');
+  assertConsistent(w);
+});
+
 test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷・切り口も）', async () => {
   const { Dragon } = await import('../src/dragon.js');
   const w = new World({ generate: false });
