@@ -502,21 +502,29 @@ test('木箱は足場のない所（水の上）へは押せない', () => {
 
 // ---- シャベル -------------------------------------------------------------------
 
-test('シャベル: 持ち替えて掘ると穴があき、土を持つ。深く掘ると岩に当たる', () => {
+test('シャベル: 持ち替えて掘ると地面を大きくえぐり、土を持つ。深く掘ると岩に当たる', () => {
   const w = new World({ seed: 20261004 });
   const p = spawnPlayer(w);
   ensureAround(w, p.pos[0], p.pos[2], 3);
   step(w, { dir: null, run: false, tool: 'shovel' });
   assert.equal(p.tool, 'shovel');
   const yaw = p.pose.yaw;
-  const fx = Math.floor(p.pos[0] + 4.5 + Math.sin(yaw) * 6.5), fz = Math.floor(p.pos[2] + 4.5 + Math.cos(yaw) * 6.5);
+  const fx = Math.floor(p.pos[0] + 4.5 + Math.sin(yaw) * 7.5), fz = Math.floor(p.pos[2] + 4.5 + Math.cos(yaw) * 7.5);
   const h0 = w.groundAt(fx, fz);
   const results = [];
+  const amounts = [];
   for (let round = 0; round < 3; round++) {
-    for (let i = 0; i < 120; i++) results.push(...step(w, { dir: null, run: false, chop: true }).filter((e) => e.type === 'dig').map((e) => e.result));
+    for (let i = 0; i < 120; i++) {
+      for (const e of step(w, { dir: null, run: false, chop: true })) {
+        if (e.type !== 'dig') continue;
+        results.push(e.result);
+        amounts.push(e.amount);
+      }
+    }
     p.soil = 0; // 土を捨てて、また掘る
   }
-  assert.ok(results.includes('dug') && results.includes('full'));
+  assert.ok(results.includes('dug'));
+  assert.ok(amounts[0] >= 30, `1 回目に ${amounts[0]} ボクセル`);
   assert.ok(results.includes('rock'), '岩に当たる');
   const h1 = w.groundAt(fx, fz);
   assert.ok(h0 - h1 >= 5 && h0 - h1 <= 7, `穴の深さ ${h0 - h1}`);
