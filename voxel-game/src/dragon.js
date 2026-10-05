@@ -1,12 +1,14 @@
-// 龍（東洋の龍）: 全長およそ 60m（400 ボクセル）。森の上の空をうねりながら飛び回る
+// 龍（東洋の龍）: 全長およそ 60m（400 ボクセル）
 //
-// - 頭が飛んだ道すじ（軌跡）を胴がなぞる。そこに後ろへ流れる波を重ねてうねらせ、曲がるときは体を傾ける
+// - 頭が進んだ道すじ（軌跡）を胴がなぞる。そこに後ろへ流れる波を重ねてうねらせ、曲がるときは体を傾ける
 // - 胴は太さの変わる管で、厚さ 2 ボクセルほどの殻だけを点灯・占有する（中は空）
 // - 頭（角・鬣・髭・目・口）、短い四肢と爪、背びれ、腹板、尾の先の炎のような房
-// - 1つのボクセルには1つの物だけ: 龍は空いているセルにしか入らず、他の物を押し出さない
+// - 1日の流れ: 飛ぶ → 開けた所へ降りる → 地面を這うように歩く（ときどき立ち止まって火を吹く）→ 飛び立つ
+// - 1つのボクセルには1つの物だけ: 龍は地形・木・岩には入らない。人・NPC・木箱にぶつかったら押しのける
 
 import { mulberry32, hash3, shade } from './rng.js';
 import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt, cellIndex } from './grid.js';
+import { Fire } from './fire.js';
 
 export const DRAGON_LENGTH = 400; // ボクセル（≈ 60m）
 const SPEED = 38; // ボクセル/秒（≈ 5.7 m/s）
@@ -15,6 +17,21 @@ const CLIMB = 0.45; // 上下に向きを変える速さ
 const MAX_PITCH = 0.38;
 const SAFE = 13; // 頭の中心と、下の木や地面との最小のすき間
 const SPINE_STEP = 0.8; // 胴を描く間隔（ボクセル）
+const WALK_SPEED = 12; // 地面を歩く速さ（ボクセル/秒 ≈ 1.8 m/s）
+const WALK_TURN = 0.75;
+const HEAD_FLOOR = 12.5; // 歩くとき、頭の中心は地面からこの高さ
+const BELLY = 2.5; // 歩くとき、腹と地面のすき間
+const BREATH_TIME = 3.6; // 1回に火を吹く時間（秒）
+const MOVABLE = new Set(['player', 'npc', 'box']); // 龍が押しのける物
+const GROUNDED = new Set(['walk', 'aim', 'breathe']);
+
+export const DRAGON_MODES = {
+  fly: '飛んでいる', descend: '降りてくる', walk: '歩いている', aim: '火を吹く相手を見ている',
+  breathe: '火を吹いている', takeoff: '飛び立つ',
+};
+
+const approach = (v, target, step) => (v < target ? Math.min(target, v + step) : Math.max(target, v - step));
+const wrap = (a) => ((a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 
 const C = {
   scaleA: 0x2e8b6e, scaleB: 0x3aa07f, scaleC: 0x237059, ridge: 0x1d5c4a,
@@ -160,6 +177,23 @@ export class Dragon {
       offsets: new Int16Array(0), colors: new Uint32Array(0),
     };
     world.entities.set(this.id, this.entity);
+    // 炎は別の持ち主。いつでも場所をゆずる（yields）
+    this.fireId = world.nextId++;
+    world.entities.set(this.fireId, {
+      id: this.fireId, kind: 'fire', name: '炎', priority: 0, yields: true, pos: [0, 0, 0],
+      offsets: new Int16Array(0), colors: new Uint32Array(0),
+    });
+    this.fire = new Fire(world, this.fireId, new Set([this.id, this.fireId]));
+    this.mode = 'fly';
+    this.modeTime = 0;
+    this.nextLanding = 18 + rng() * 10; // 飛び始めてから降りるまで（秒）
+    this.groundW = 0; // 地面に沿う度合い 0..1（軌跡の点ごとに記録する）
+    this.rear = 0; // 火を吹くときに首をもたげる度合い 0..1
+    this.speed = SPEED;
+    this.walked = 0; // 歩いた距離（足の運びに使う）
+    this.walkClock = 0;
+    this.events = [];
+    this.pts = null;
     this.head = [...start];
     this.yaw = 0;
     this.pitch = 0;
@@ -169,32 +203,237 @@ export class Dragon {
     this.waypointLeft = 0;
     // 軌跡: 頭が通った点（新しい順）。最初はまっすぐ後ろに伸ばしておく
     this.trail = [];
-    for (let s = 0; s <= DRAGON_LENGTH + 20; s += 3) this.trail.push({ p: [start[0], start[1], start[2] - s], roll: 0 });
+    for (let s = 0; s <= DRAGON_LENGTH + 20; s += 3) this.trail.push({ p: [start[0], start[1], start[2] - s], roll: 0, w: 0 });
     this.headModel = buildHead();
     this.cells = []; // いま占有しているセル: [チャンクの番号, セル番号, ...]
   }
 
   // (x, z) のまわりで、龍以外の物がある一番高い所。まだ作られていない場所は地形 + 大木の高さとみなす
-  clearance(x, z, radius = 20) {
+  // ignoreMovable: 人・NPC・木箱は数えない（歩くときは押しのけるので）
+  clearance(x, z, radius = 20, ignoreMovable = false) {
     let top = 0;
-    for (let dz = -radius; dz <= radius; dz += 4) {
-      for (let dx = -radius; dx <= radius; dx += 4) {
-        top = Math.max(top, this.columnTop(Math.round(x + dx), Math.round(z + dz)));
+    const step = radius > 10 ? 4 : 3;
+    for (let dz = -radius; dz <= radius; dz += step) {
+      for (let dx = -radius; dx <= radius; dx += step) {
+        top = Math.max(top, this.columnTop(Math.round(x + dx), Math.round(z + dz), ignoreMovable));
       }
     }
     return top;
   }
 
-  columnTop(x, z) {
+  columnTop(x, z, ignoreMovable = false) {
     const w = this.world;
     const c = w.chunks.get(chunkKeyAt(x, z));
     if (!c) return w.heightAt(x, z) + 95;
     const lx = x - c.cx * CHUNK, lz = z - c.cz * CHUNK;
     for (let y = c.top - 1; y > 0; y--) {
       const o = c.owner[cellIndex(lx, y, lz)];
-      if (o && o !== this.id) return y + 1;
+      if (!o || o === this.id || o === this.fireId) continue;
+      if (ignoreMovable && MOVABLE.has(w.entities.get(o)?.kind)) continue;
+      return y + 1;
     }
     return c.height[lx + CHUNK * lz];
+  }
+
+  // 歩くときの足場の高さ（水の上は水面）
+  floorAt(x, z) {
+    const w = this.world;
+    x = Math.round(x);
+    z = Math.round(z);
+    return Math.max(w.groundAt(x, z), w.waterAt(x, z));
+  }
+
+  setMode(mode) {
+    this.mode = mode;
+    this.modeTime = 0;
+  }
+
+  // 降りる場所: プレイヤーの近くの、木がなく平らな所か水面（もう作られている場所だけ）
+  findLanding(around) {
+    const rng = this.rng;
+    const w = this.world;
+    for (let k = 0; k < 30; k++) {
+      const a = rng() * Math.PI * 2;
+      const r = 45 + rng() * 70;
+      const x = Math.round(around[0] + Math.cos(a) * r), z = Math.round(around[2] + Math.sin(a) * r);
+      if (!w.chunks.has(chunkKeyAt(x, z))) continue;
+      const g = this.floorAt(x, z); // 川や池なら水面に降りる
+      if (this.clearance(x, z, 14, true) > g + 7) continue; // 小さな岩くらいは気にしない
+      let flat = true;
+      for (const [dx, dz] of [[-20, 0], [20, 0], [0, -20], [0, 20]]) {
+        if (Math.abs(this.floorAt(x + dx, z + dz) - g) > 6) flat = false;
+      }
+      if (flat) return { x, y: g, z };
+    }
+    return null;
+  }
+
+  // 火を吹く相手: 近くの木（なければ前の地面）
+  findFireTarget() {
+    let best = null;
+    let bd = 95;
+    for (const tree of this.world.trees.values()) {
+      const { x, y, z } = tree.spec;
+      const d = Math.hypot(x - this.head[0], z - this.head[2]);
+      if (d < bd && d > 30) {
+        bd = d;
+        best = [x + 0.5, y + tree.height * 0.6, z + 0.5];
+      }
+    }
+    if (best) return best;
+    const fx = this.head[0] + Math.sin(this.yaw) * 45, fz = this.head[2] + Math.cos(this.yaw) * 45;
+    return [fx, this.floorAt(fx, fz), fz];
+  }
+
+  // 降りて歩き始める（テストや、降りてきたとき）。trail は今の向きのまま地面に沿わせる
+  land(x, z, yaw = this.yaw) {
+    this.yaw = yaw;
+    this.pitch = 0;
+    this.roll = 0;
+    this.head = [x, this.floorAt(x, z) + HEAD_FLOOR, z];
+    this.trail = [];
+    for (let s = 0; s <= DRAGON_LENGTH + 20; s += 3) {
+      const px = x - Math.sin(yaw) * s, pz = z - Math.cos(yaw) * s;
+      this.trail.push({ p: [px, this.floorAt(px, pz) + HEAD_FLOOR, pz], roll: 0, w: 1 });
+    }
+    this.groundW = 1;
+    this.startWalking();
+  }
+
+  startWalking() {
+    this.setMode('walk');
+    this.walkClock = 0;
+    this.walkTime = 36 + this.rng() * 16;
+    this.nextBreath = 5 + this.rng() * 4;
+    this.walkTarget = null;
+    this.speed = Math.min(this.speed, WALK_SPEED);
+  }
+
+  // 1回分の行動（状態ごとに頭を動かす）
+  advance(dt, around) {
+    const rng = this.rng;
+    this.time += dt;
+    this.modeTime += dt;
+    switch (this.mode) {
+      case 'fly':
+        if (this.modeTime > this.nextLanding) {
+          const spot = this.findLanding(around);
+          if (spot) {
+            this.landing = spot;
+            this.setMode('descend');
+          } else {
+            this.nextLanding = this.modeTime + 4;
+          }
+        }
+        this.flyStep(dt, around);
+        break;
+      case 'descend': {
+        const L = this.landing;
+        const dist = Math.hypot(L.x - this.head[0], L.z - this.head[2]);
+        if (dist < 30 && this.head[1] < L.y + HEAD_FLOOR + 12) this.startWalking();
+        else if (this.modeTime > 35) {
+          this.setMode('fly');
+          this.nextLanding = 10;
+        }
+        this.flyStep(dt, around);
+        break;
+      }
+      case 'walk':
+      case 'aim':
+      case 'breathe':
+        this.walkClock += dt;
+        this.groundStep(dt, around);
+        break;
+      case 'takeoff':
+        this.flyStep(dt, around);
+        if (this.modeTime > 3.5) {
+          this.setMode('fly');
+          this.nextLanding = 26 + rng() * 14;
+        }
+        break;
+    }
+    this.groundW = approach(this.groundW, GROUNDED.has(this.mode) ? 1 : 0, dt / 1.4);
+    this.rear = approach(this.rear, this.mode === 'breathe' ? 1 : 0, dt / 0.9);
+    // 降りたあと、空に残っている胴と尾も数秒かけて地面へ下ろす（頭から順に）
+    if (GROUNDED.has(this.mode)) {
+      for (let i = 0; i < this.trail.length; i++) {
+        const q = this.trail[i];
+        if (q.w < 1) q.w = Math.min(1, q.w + (dt / 5) * Math.max(0.3, 1 - i / this.trail.length));
+      }
+    }
+    const last = this.trail[0];
+    if (Math.hypot(...sub(this.head, last.p)) > 0.05) this.trail.unshift({ p: [...this.head], roll: this.roll, w: this.groundW });
+    else last.w = this.groundW;
+    // 胴の長さ分だけ残す
+    let len = 0;
+    for (let i = 1; i < this.trail.length; i++) {
+      len += Math.hypot(...sub(this.trail[i].p, this.trail[i - 1].p));
+      if (len > DRAGON_LENGTH + 20) {
+        this.trail.length = i + 1;
+        break;
+      }
+    }
+  }
+
+  // 地面を歩く（立ち止まって火を吹くときも）
+  groundStep(dt, around) {
+    const rng = this.rng;
+    if (this.mode === 'walk') {
+      if (this.walkClock > this.walkTime) {
+        this.setMode('takeoff');
+        return this.flyStep(dt, around);
+      }
+      if (this.walkClock > this.nextBreath) {
+        this.fireTarget = this.findFireTarget();
+        this.setMode('aim');
+      }
+      this.walkTargetLeft = (this.walkTargetLeft ?? 0) - dt;
+      if (!this.walkTarget || this.walkTargetLeft <= 0 || Math.hypot(this.walkTarget[0] - this.head[0], this.walkTarget[2] - this.head[2]) < 20) {
+        // プレイヤーのまわりの開けた所を目指して歩く
+        let t = null;
+        for (let k = 0; k < 12 && !t; k++) {
+          const a = rng() * Math.PI * 2, r = 30 + rng() * 60;
+          const x = around[0] + Math.cos(a) * r, z = around[2] + Math.sin(a) * r;
+          if (!this.world.chunks.has(chunkKeyAt(Math.round(x), Math.round(z)))) continue;
+          if (this.clearance(x, z, 9, true) <= this.floorAt(x, z) + 4) t = [x, 0, z];
+        }
+        this.walkTarget = t ?? [this.head[0] + Math.sin(this.yaw + rng() - 0.5) * 60, 0, this.head[2] + Math.cos(this.yaw + rng() - 0.5) * 60];
+        this.walkTargetLeft = 10 + rng() * 6;
+      }
+    }
+    const target = this.mode === 'walk' ? this.walkTarget : this.fireTarget;
+    const to = [target[0] - this.head[0], 0, target[2] - this.head[2]];
+    let wantYaw = Math.atan2(to[0], to[2]);
+    let wantSpeed = this.mode === 'walk' ? WALK_SPEED : this.mode === 'aim' ? WALK_SPEED * 0.6 : 0;
+    if (this.mode === 'aim') {
+      const facing = Math.abs(wrap(wantYaw - this.yaw)) < 0.3;
+      if ((facing && Math.hypot(to[0], to[2]) < 85) || this.modeTime > 5) this.setMode('breathe');
+    } else if (this.mode === 'breathe' && this.modeTime > BREATH_TIME + 0.6) {
+      this.mode = 'walk';
+      this.modeTime = 0;
+      this.nextBreath = this.walkClock + 9 + rng() * 6;
+    }
+    // 木や岩を避ける: 前が塞がっていたら、空いている側へ曲がる
+    if (this.mode !== 'breathe') {
+      const blocked = (yaw, d) => {
+        const x = this.head[0] + Math.sin(yaw) * d, z = this.head[2] + Math.cos(yaw) * d;
+        return this.clearance(x, z, 7, true) > this.floorAt(x, z) + 6;
+      };
+      if (blocked(this.yaw, 14) || blocked(this.yaw, 26)) {
+        const left = blocked(this.yaw + 0.8, 22), right = blocked(this.yaw - 0.8, 22);
+        wantYaw = this.yaw + (left && !right ? -1.2 : 1.2);
+        wantSpeed *= 0.5;
+      }
+    }
+    this.yaw += Math.max(-WALK_TURN * dt, Math.min(WALK_TURN * dt, wrap(wantYaw - this.yaw)));
+    this.speed = approach(this.speed, wantSpeed, 18 * dt);
+    this.roll = approach(this.roll, 0, dt);
+    this.pitch = approach(this.pitch, 0, dt);
+    this.head[0] += Math.sin(this.yaw) * this.speed * dt;
+    this.head[2] += Math.cos(this.yaw) * this.speed * dt;
+    const floor = this.floorAt(this.head[0], this.head[2]) + HEAD_FLOOR;
+    this.head[1] = this.head[1] > floor ? Math.max(floor, this.head[1] - 25 * dt) : floor;
+    this.walked += this.speed * dt;
   }
 
   // 次に向かう点: プレイヤーのまわりを大きく回る。ときどき低く降りてくる
@@ -210,37 +449,43 @@ export class Dragon {
     this.waypointLeft = 8 + rng() * 6;
   }
 
-  fly(dt, around) {
-    this.time += dt;
+  // 空を飛ぶ（降りてくるとき・飛び立つときも）
+  flyStep(dt, around) {
+    const descending = this.mode === 'descend';
+    const takeoff = this.mode === 'takeoff';
     this.waypointLeft -= dt;
-    if (!this.waypoint || this.waypointLeft <= 0 || Math.hypot(...sub(this.waypoint, this.head)) < 25) this.pickWaypoint(around);
+    if (descending) this.waypoint = [this.landing.x, this.landing.y + HEAD_FLOOR, this.landing.z];
+    else if (!this.waypoint || this.waypointLeft <= 0 || Math.hypot(...sub(this.waypoint, this.head)) < 25) this.pickWaypoint(around);
     const to = sub(this.waypoint, this.head);
+    // 降りる場所の真上近くでは、ゆっくり・急角度で森の切れ目へ舞い降りる
+    const final = descending && Math.hypot(to[0], to[2]) < 50;
+    this.speed = approach(this.speed, final ? SPEED * 0.5 : descending ? SPEED * 0.75 : SPEED, 12 * dt);
     const wantYaw = Math.atan2(to[0], to[2]);
     let dy = ((wantYaw - this.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    const turn = Math.max(-TURN * dt, Math.min(TURN * dt, dy));
+    const turnRate = final ? TURN * 2.2 : TURN;
+    const turn = Math.max(-turnRate * dt, Math.min(turnRate * dt, dy));
     this.yaw += turn;
     this.roll += (Math.max(-0.6, Math.min(0.6, (turn / dt) * 1.4)) - this.roll) * Math.min(1, dt * 2);
     let wantPitch = Math.atan2(to[1], Math.hypot(to[0], to[2]));
-    // 先の方に木や丘があれば上がる
+    // 先の方に木や丘があれば上がる。降りる場所の近くでは、人や木箱は気にせず地面まで降りる
+    const nearLanding = descending && Math.hypot(to[0], to[2]) < 70;
+    const gap = nearLanding ? HEAD_FLOOR - 2 : SAFE;
     const fwd = [Math.sin(this.yaw), 0, Math.cos(this.yaw)];
     const ahead = add(this.head, mul(fwd, 30));
-    const minY = Math.max(this.clearance(this.head[0], this.head[2]), this.clearance(ahead[0], ahead[2])) + SAFE;
+    const probe = final ? 6 : 20;
+    const minY = final
+      ? this.clearance(this.head[0], this.head[2], probe, true) + gap
+      : Math.max(this.clearance(this.head[0], this.head[2], probe, nearLanding), this.clearance(ahead[0], ahead[2], probe, nearLanding)) + gap;
     if (this.head[1] < minY + 4) wantPitch = MAX_PITCH;
-    wantPitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, wantPitch));
-    this.pitch += Math.max(-CLIMB * dt, Math.min(CLIMB * dt, wantPitch - this.pitch));
+    if (takeoff) wantPitch = MAX_PITCH;
+    const minPitch = final ? -1.3 : descending ? -0.6 : -MAX_PITCH;
+    wantPitch = Math.max(minPitch, Math.min(MAX_PITCH, wantPitch));
+    const climb = final ? CLIMB * 2.5 : CLIMB;
+    this.pitch += Math.max(-climb * dt, Math.min(climb * dt, wantPitch - this.pitch));
     const dir = [Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch)];
-    this.head = add(this.head, mul(dir, SPEED * dt));
-    this.head[1] = Math.min(HEIGHT - 16, Math.max(this.head[1], this.clearance(this.head[0], this.head[2]) + SAFE - 3));
-    this.trail.unshift({ p: [...this.head], roll: this.roll });
-    // 胴の長さ分だけ残す
-    let len = 0;
-    for (let i = 1; i < this.trail.length; i++) {
-      len += Math.hypot(...sub(this.trail[i].p, this.trail[i - 1].p));
-      if (len > DRAGON_LENGTH + 20) {
-        this.trail.length = i + 1;
-        break;
-      }
-    }
+    this.head = add(this.head, mul(dir, this.speed * dt));
+    const floor = this.clearance(this.head[0], this.head[2], probe, nearLanding) + (nearLanding ? HEAD_FLOOR - 2 : SAFE - 3);
+    this.head[1] = Math.min(HEIGHT - 16, Math.max(this.head[1], floor));
   }
 
   // 軌跡に沿って、頭から距離 s の位置・向き・傾きを求める
@@ -266,10 +511,21 @@ export class Dragon {
       const roll = a.roll + (b.roll - a.roll) * t;
       B = rotateAround(B, T, roll);
       N = rotateAround(N, T, roll);
-      // 後ろへ流れる波でうねる（横に大きく、縦に小さく）
+      // 地面に沿う度合い（その点を頭が通ったときの値）
+      const w = (a.w ?? 0) + ((b.w ?? 0) - (a.w ?? 0)) * t;
+      // 後ろへ流れる波でうねる（横に大きく、縦に小さく）。地面では縦に揺れず、止まっているときは小さく
       const ph = (s / 120) * Math.PI * 2 - this.time * 2.2;
-      const center = add(p, add(mul(B, Math.sin(ph) * waveAt(s)), mul(N, Math.cos(ph * 0.5) * waveAt(s) * 0.35)));
-      pts.push({ s, c: center, T, N, B });
+      const amp = waveAt(s) * (1 - w * (0.45 - 0.25 * Math.min(1, this.speed / WALK_SPEED)));
+      const center = add(p, add(mul(B, Math.sin(ph) * amp), mul(N, Math.cos(ph * 0.5) * amp * 0.35 * (1 - w))));
+      if (w > 0) {
+        // 地面から腹までのすき間をあけて這う。頭のあたりは高く、火を吹くときは首をもたげる
+        const r = radiusAt(s);
+        const off = s < 40 ? HEAD_FLOOR + (r + BELLY - HEAD_FLOOR) * (s / 40) : r + BELLY;
+        const lift = this.rear * 18 * Math.max(0, 1 - s / 90) ** 1.6;
+        const want = this.floorAt(center[0], center[2]) + off + lift;
+        center[1] += (want - center[1]) * w;
+      }
+      pts.push({ s, c: center, T, N, B, w });
     }
     // うねりを加えたあとの向きを付け直す
     for (let k = 0; k < pts.length; k++) {
@@ -280,6 +536,7 @@ export class Dragon {
       pts[k].B = B;
       pts[k].N = cross(B, T);
     }
+    this.pts = pts;
     return pts;
   }
 
@@ -338,24 +595,39 @@ export class Dragon {
       }
     }
 
-    // 四肢: 前足と後ろ足。泳ぐように前後に掻く
-    for (const [sLeg, phase] of [[78, 0], [232, Math.PI * 0.6]]) {
+    // 四肢: 飛ぶときは泳ぐように前後に掻き、歩くときは足を地面につけて交互に運ぶ
+    const lerp3 = (a, b, k) => add(a, mul(sub(b, a), k));
+    const stride = Math.min(1, this.speed / WALK_SPEED);
+    for (const [sLeg, phase, walkPhase] of [[78, 0, 0], [232, Math.PI * 0.6, Math.PI]]) {
       const k = Math.round(sLeg / SPINE_STEP);
-      const { c, T, N, B } = pts[k];
+      const { c, T, N, B, w } = pts[k];
       const r = radiusAt(sLeg);
+      const Th = norm([T[0], 0, T[2]]);
+      const Bh = norm(cross(Th, [0, 1, 0]));
       for (const side of [-1, 1]) {
+        // 飛ぶとき
         const swing = Math.sin(t * 2.4 + phase + (side > 0 ? Math.PI : 0)) * 0.7;
         const hip = add(c, add(mul(B, side * r * 0.8), mul(N, -r * 0.45)));
         const down = norm(add(add(mul(N, -1), mul(B, side * 0.55)), mul(T, -0.4 + swing)));
-        const knee = add(hip, mul(down, 9));
-        const shin = norm(add(add(mul(N, -0.6), mul(T, 0.7 + swing * 0.5)), mul(B, side * 0.2)));
-        const ankle = add(knee, mul(shin, 7));
+        let knee = add(hip, mul(down, 9));
+        let shin = norm(add(add(mul(N, -0.6), mul(T, 0.7 + swing * 0.5)), mul(B, side * 0.2)));
+        let ankle = add(knee, mul(shin, 7));
+        let claws = [-0.6, -0.2, 0.2, 0.6].map((spread) => norm(add(add(shin, mul(B, spread)), mul(N, -0.5))));
+        if (w > 0) {
+          // 歩くとき: 対角の足が一緒に動く。振り出す足は少し持ち上がる
+          const lp = (this.walked / 26) * Math.PI * 2 + walkPhase + (side > 0 ? Math.PI : 0);
+          const fx = c[0] + Bh[0] * side * (r + 4) + Th[0] * Math.sin(lp) * 5 * stride;
+          const fz = c[2] + Bh[2] * side * (r + 4) + Th[2] * Math.sin(lp) * 5 * stride;
+          const foot = [fx, this.floorAt(fx, fz) + 0.6 + Math.max(0, Math.cos(lp)) * 3 * stride, fz];
+          const wKnee = add(lerp3(hip, foot, 0.5), add(mul(Bh, side * 3.5), [0, 2.5, 0]));
+          const wClaws = [-0.6, -0.2, 0.2, 0.6].map((spread) => norm(add(add(Th, mul(Bh, side * spread)), [0, -0.2, 0])));
+          knee = lerp3(knee, wKnee, w);
+          ankle = lerp3(ankle, foot, w);
+          claws = claws.map((cl, n) => norm(lerp3(cl, wClaws[n], w)));
+        }
         tube(put, hip, knee, 2.4, 1.8, C.scaleA);
         tube(put, knee, ankle, 1.8, 1.3, C.scaleB);
-        for (const spread of [-0.6, -0.2, 0.2, 0.6]) {
-          const claw = norm(add(add(shin, mul(B, spread)), mul(N, -0.5)));
-          tube(put, ankle, add(ankle, mul(claw, 3.5)), 0.6, 0.4, C.claw);
-        }
+        for (const claw of claws) tube(put, ankle, add(ankle, mul(claw, 3.5)), 0.6, 0.4, C.claw);
       }
     }
 
@@ -396,12 +668,14 @@ export class Dragon {
     }
   }
 
-  // 1回分飛んで、体を描き直す。前の体を消してから新しい体を書く。
-  // 龍は空いているセルにしか入らない（ほかの物を押し出したり上書きしたりしない）
+  // 1回分動いて、体と炎を描き直す。前の体を消してから新しい体を書く。
+  // 龍は空いているセルに入る。人・NPC・木箱がいるセルは、その物を押しのけてから入る（押しのけられなければ入らない）
   update(dt, around) {
-    this.fly(dt, around);
+    this.events = [];
+    this.advance(dt, around);
     const w = this.world;
     const id = this.id;
+    this.fire.update(dt); // 炎の粒を動かし、当たった物を焦がす
     // 同じチャンクのセルが続くので、直前のチャンクを使い回す
     let chunk = null;
     let ck = -1;
@@ -420,24 +694,116 @@ export class Dragon {
       chunk.color[i] = 0;
       chunk.changed.push(i);
     }
+    this.fire.clear();
     const cells = [];
+    const blocked = new Map(); // 押しのける物の id → [チャンク, セル番号, 色, チャンクの番号, ...]
     this.shape((x, y, z, color) => {
       const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
       use(chunkKey(cx, cz));
       chunk.ensure(y);
       const i = cellIndex(x - cx * CHUNK, y, z - cz * CHUNK);
       const owner = chunk.owner[i];
-      if (owner !== 0 && owner !== id) return; // ほかの物がいる
       if (owner === 0) {
         chunk.owner[i] = id;
         cells.push(ck, i);
         if (y >= chunk.top) chunk.top = y + 1;
+      } else if (owner !== id) {
+        if (MOVABLE.has(w.entities.get(owner)?.kind)) {
+          let list = blocked.get(owner);
+          if (!list) blocked.set(owner, (list = []));
+          list.push(chunk, i, color, ck);
+        }
+        return; // 地形・木・岩・水には入らない
       }
       chunk.color[i] = color;
       chunk.changed.push(i);
     });
+    for (const [eid, list] of blocked) {
+      const e = w.entities.get(eid);
+      if (this.shove(e, list)) this.events.push({ type: 'push', actor: this.entity, target: e });
+      // 空いたセルに入る
+      for (let n = 0; n < list.length; n += 4) {
+        const c = list[n], i = list[n + 1];
+        if (c.owner[i] !== 0) continue;
+        c.owner[i] = id;
+        c.color[i] = list[n + 2];
+        c.top = Math.max(c.top, Math.floor(i / (CHUNK * CHUNK)) + 1);
+        c.changed.push(i);
+        w.dirty.add(c.key);
+        cells.push(list[n + 3], i);
+      }
+    }
     this.cells = cells; // [チャンクの番号, セル番号, ...]
+    // 火を吹く: 口から相手へ向けて、少し首を振りながら
+    if (this.mode === 'breathe' && this.rear > 0.55 && this.modeTime < BREATH_TIME) {
+      const { mouth, dir } = this.mouth();
+      this.fire.breathe(mouth, dir, 16);
+    }
+    this.fire.draw();
     this.entity.pos = this.head.map(Math.round);
+  }
+
+  // 口の位置と、炎を吹く向き
+  mouth() {
+    const { c, T, N } = this.pts[0];
+    const mouth = add(c, add(mul(T, 22), mul(N, -5.5)));
+    const target = this.fireTarget ?? add(mouth, mul(T, 40));
+    let aim = norm(sub(target, mouth));
+    aim = norm(add(mul(T, 0.3), mul(aim, 0.7))); // 首の向きから大きくは外れない
+    const sweep = Math.sin(this.modeTime * 2.4) * 0.14;
+    const dir = [aim[0] * Math.cos(sweep) + aim[2] * Math.sin(sweep), aim[1], -aim[0] * Math.sin(sweep) + aim[2] * Math.cos(sweep)];
+    return { mouth, dir };
+  }
+
+  // 物 e を、龍の体から離れる向きへ1ボクセルずつ押しのける。龍のセル list と重ならなくなるまで
+  shove(e, list) {
+    const w = this.world;
+    if (!e._mid) {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let o = 0; o < e.offsets.length; o += 3) {
+        for (let a = 0; a < 3; a++) {
+          lo[a] = Math.min(lo[a], e.offsets[o + a]);
+          hi[a] = Math.max(hi[a], e.offsets[o + a] + 1);
+        }
+      }
+      e._mid = [0, 1, 2].map((a) => (lo[a] + hi[a]) / 2);
+    }
+    const overlapping = () => {
+      for (let n = 0; n < list.length; n += 4) if (list[n].owner[list[n + 1]] === e.id) return true;
+      return false;
+    };
+    let moved = false;
+    for (let step = 0; step < 24 && overlapping(); step++) {
+      // 一番近い背骨の点から離れる向き（8方向）。だめなら少しずつ横へずらす
+      const m = [e.pos[0] + e._mid[0], e.pos[1] + e._mid[1], e.pos[2] + e._mid[2]];
+      let best = this.pts[0];
+      let bd = Infinity;
+      for (const p of this.pts) {
+        const d = (p.c[0] - m[0]) ** 2 + (p.c[2] - m[2]) ** 2 + 0.25 * (p.c[1] - m[1]) ** 2;
+        if (d < bd) {
+          bd = d;
+          best = p;
+        }
+      }
+      let dx = m[0] - best.c[0], dz = m[2] - best.c[2];
+      if (Math.hypot(dx, dz) < 0.5) [dx, dz] = [best.B[0], best.B[2]];
+      const a = Math.atan2(dz, dx);
+      let ok = false;
+      for (const turn of [0, 0.785, -0.785, 1.571, -1.571]) {
+        const mx = Math.round(Math.cos(a + turn)), mz = Math.round(Math.sin(a + turn));
+        if (!mx && !mz) continue;
+        for (const dy of [0, 1, 2]) {
+          if (w.tryMove(e.id, [mx, dy, mz]).ok) {
+            ok = true;
+            break;
+          }
+        }
+        if (ok) break;
+      }
+      if (!ok) break;
+      moved = true;
+    }
+    return moved;
   }
 
   // いま占有しているセルの数

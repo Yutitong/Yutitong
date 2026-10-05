@@ -498,3 +498,89 @@ test('龍: 全長 300 ボクセル以上で、木や地面の上を飛び、ほ�
   assert.ok(len > 300, `length ${len}`);
   assert.ok(minGap >= 9, `gap ${minGap}`);
 });
+
+test('龍: 地面を歩くときは地面に沿い、行く手の人を押しのける（重ならない）', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const p = spawnPlayer(w); // 地面の高さ 1
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  // プレイヤーの 40 ボクセル手前に、プレイヤーへ向けて降ろす
+  d.land(p.pos[0] + 4, p.pos[2] - 40, 0);
+  d.walkTarget = [p.pos[0] + 4, 0, p.pos[2] + 300];
+  d.walkTargetLeft = 1e9;
+  d.walkTime = 1e9;
+  d.nextBreath = 1e9;
+  const start = [...p.pos];
+  const pushes = [];
+  for (let i = 0; i < 80; i++) {
+    d.update(0.08, p.pos);
+    pushes.push(...d.events);
+  }
+  assert.equal(d.mode, 'walk');
+  assert.ok(pushes.some((ev) => ev.target === p), '押しのけた');
+  assert.notDeepEqual(p.pos, start);
+  // プレイヤーのセルはすべてプレイヤーのもの（龍と重なっていない）
+  for (const [x, y, z] of w.cellsOf(p)) assert.equal(w.ownerAt(x, y, z), p.id);
+  // 龍のセルの数が合い、足は地面に着いている
+  let owned = 0;
+  let low = Infinity;
+  for (const c of w.chunks.values()) {
+    c.owner.forEach((o, i) => {
+      if (o !== d.id) return;
+      owned++;
+      low = Math.min(low, Math.floor(i / 256));
+    });
+  }
+  assert.equal(owned, d.size);
+  assert.ok(low <= 2, `一番低いセル ${low}`);
+  assert.ok(Math.abs(d.head[1] - (1 + 12.5)) < 1, `頭の高さ ${d.head[1]}`);
+});
+
+test('龍: 火を吹くと木が焦げ、炎はほかの物を上書きしない', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ seed: 5 });
+  ensureAround(w, 0, 0, 6);
+  const tree = [...w.trees.values()].find((t) => t.spec.scale > 0.8 && Math.abs(t.spec.x) < 60 && Math.abs(t.spec.z) < 60);
+  const { x, z } = tree.spec;
+  const d = new Dragon(w, [0, 200, 0]);
+  w.dragon = d;
+  d.land(x - 60, z, Math.PI / 2); // 木の 60 ボクセル西で、東（+x）を向く
+  d.fireTarget = [x + 0.5, tree.spec.y + tree.height * 0.6, z + 0.5];
+  d.setMode('breathe');
+  const others = () => new Map([...w.chunks].map(([k, c]) => [k, Array.from(c.owner, (o) => (o === d.id || o === d.fireId ? 0 : o))]));
+  const before = others();
+  const litBefore = tree.color.filter((c) => c).length;
+  let flames = 0;
+  for (let i = 0; i < 45; i++) {
+    d.update(0.08, [x, 0, z]);
+    flames = Math.max(flames, d.fire.cells.length / 2);
+  }
+  assert.ok(flames > 100, `炎のセル ${flames}`);
+  assert.ok(d.fire.burned > 20, `焦げたセル ${d.fire.burned}`);
+  assert.ok(tree.color.filter((c) => c).length < litBefore, '葉が燃え落ちた');
+  // 炎と龍は空いた所にしか入らない（地形・木・岩・水・人の持ち主は変わらない）
+  for (const [k, owners] of before) {
+    const now = w.chunks.get(k).owner;
+    owners.forEach((o, i) => {
+      const e = w.entities.get(o);
+      if (o !== 0 && !['npc', 'box', 'player'].includes(e?.kind)) assert.equal(now[i], o);
+    });
+  }
+});
+
+test('龍: 飛ぶ → 降りる → 歩く → 火を吹く → 飛び立つ', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const w = new World({ seed: 20261004 });
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 7);
+  const d = spawnDragon(w, p.pos);
+  d.nextLanding = 2;
+  const seen = [];
+  for (let i = 0; i < 1200 && d.mode !== 'takeoff'; i++) {
+    d.update(0.08, p.pos);
+    if (seen[seen.length - 1] !== d.mode) seen.push(d.mode);
+  }
+  for (const m of ['fly', 'descend', 'walk', 'breathe', 'takeoff']) assert.ok(seen.includes(m), seen.join(' → '));
+  assert.ok(d.fire.burned > 0);
+});

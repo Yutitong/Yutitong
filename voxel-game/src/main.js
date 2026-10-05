@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, cellIndex, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
-import { spawnDragon } from './dragon.js';
+import { spawnDragon, DRAGON_MODES } from './dragon.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 0.94; // 1未満にして隙間を作り、ディスプレイの画素のように見せる
@@ -393,6 +393,7 @@ const tickLabel = document.getElementById('tick');
 const posLabel = document.getElementById('pos');
 const chunkLabel = document.getElementById('chunks');
 const speedLabel = document.getElementById('speed');
+const dragonLabel = document.getElementById('dragonState');
 const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
@@ -497,6 +498,7 @@ function tick() {
   posLabel.textContent = `${(player.pos[0] * VOXEL_METERS).toFixed(1)}, ${(player.pos[2] * VOXEL_METERS).toFixed(1)} m`;
   speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
+  dragonLabel.textContent = DRAGON_MODES[dragon.mode];
 }
 
 // カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）

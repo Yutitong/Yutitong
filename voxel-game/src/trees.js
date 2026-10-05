@@ -24,7 +24,7 @@ const PALETTES = {
 // 木の中のセルの番号（負の座標もそのまま扱える数値）
 const OFF = 2 ** 20;
 const SPAN = 2 ** 21;
-const cellKey = (x, y, z) => ((x + OFF) * SPAN + (z + OFF)) * 128 + y;
+const cellKey = (x, y, z) => ((x + OFF) * SPAN + (z + OFF)) * HEIGHT + y; // y は 0..HEIGHT-1
 
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
@@ -442,4 +442,36 @@ export function updateWind(world, time, px, pz, radius) {
       if (ox !== cl.ox || oz !== cl.oz) shiftClump(world, tree, cl, ox, oz);
     }
   }
+}
+
+// ---- 火 ----------------------------------------------------------------------
+
+const CHAR_WOOD = [0x2a221d, 0x332820, 0x1f1a17];
+const CHAR_LEAF = [0x3a2e22, 0x4a3826, 0x2b241f];
+
+// 木のセル (x, y, z) を焦がす。葉は消えるか焦げ茶に、幹や枝は黒くなる。
+// 木の形の記録（葉の塊の元の色・tree.color）も書き換えるので、風で葉がずれても焦げたまま。
+// 戻り値は焼けたあとの色（0 = 消えた）。この木のセルでなければ null
+export function burnTreeCell(tree, x, y, z) {
+  if (!tree.index) {
+    tree.index = new Map();
+    for (let i = 0; i < tree.xs.length; i++) tree.index.set(cellKey(tree.xs[i], tree.ys[i], tree.zs[i]), i);
+  }
+  const i = tree.index.get(cellKey(x, y, z));
+  if (i === undefined) return null;
+  const h = (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+  const ci = tree.clumpOf[i];
+  if (ci < 0) {
+    if (!tree.color[i]) return null;
+    tree.color[i] = CHAR_WOOD[(h >>> 3) % CHAR_WOOD.length];
+    return tree.color[i];
+  }
+  const cl = tree.clumps[ci];
+  const rest = cellKey(x - cl.ox, y, z - cl.oz);
+  if (!cl.base.get(rest)) return null; // もう焼けている / 葉のない所
+  const final = (h >>> 5) % 10 < 3 ? CHAR_LEAF[(h >>> 9) % CHAR_LEAF.length] : 0;
+  if (final) cl.base.set(rest, final);
+  else cl.base.delete(rest);
+  tree.color[i] = final;
+  return final;
 }

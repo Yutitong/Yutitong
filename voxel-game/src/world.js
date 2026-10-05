@@ -15,9 +15,8 @@ import { terrainHeight, groundColor, waterColor, WATER_LEVEL } from './terrain.j
 import { paintTreesInto, updateWind } from './trees.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
-export const EMPTY = 0;
-export const GROUND_ID = 1;
-export const WATER_ID = 2;
+import { EMPTY, GROUND_ID, WATER_ID } from './ids.js';
+export { EMPTY, GROUND_ID, WATER_ID };
 export const WATER_FLAG = 0x1000000; // 色にこの印がついたセルは半透明（水面）で描く
 export const VOXEL_METERS = 0.15;
 export const WIND_RADIUS = 140; // プレイヤーからこの距離（ボクセル）以内の木だけ風で揺らす
@@ -269,6 +268,7 @@ export class World {
       if (seen.has(owner)) continue;
       seen.add(owner);
       const other = this.entities.get(owner);
+      if (other.yields) continue; // 炎などは場所をゆずる（上書きされても次の描画で避ける）
       if (other.priority >= power) {
         this._fail = { blocker: other, via: e, reason: 'priority' };
         return false;
@@ -362,7 +362,10 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   }
   // 葉の揺れと龍は1ティックおき（1秒に12.5回）に、交互に動かす
   if (p && world.tickCount % 2 === 0) updateWind(world, world.time, p.pos[0], p.pos[2], WIND_RADIUS);
-  if (p && world.dragon && world.tickCount % 2 === 1) world.dragon.update(dt * 2, p.pos);
+  if (p && world.dragon && world.tickCount % 2 === 1) {
+    world.dragon.update(dt * 2, p.pos);
+    events.push(...world.dragon.events);
+  }
   return events;
 }
 
