@@ -68,6 +68,7 @@ export function createPose() {
     blink: false,
     crouch: 0, // 段差を登った直後・着地したときに膝を曲げる 0..1
     air: 0, // 落ちている 0..1
+    swing: 0, // 斧を振る動きの進み具合 0..1（0 = 振っていない）
   };
 }
 
@@ -83,6 +84,27 @@ const tilt = (p, ang) => [
 ];
 // 前に ang だけ振った長さ len の下向きベクトル
 const swingDown = (len, ang, side = 0) => [side * len, -len * Math.cos(ang), len * Math.sin(ang)];
+
+// 斧を振る動きのかなめのコマ: [進み具合, 肩の角度, 肘の曲がり, 腕を内へ寄せる量, 手首の返し]
+// 振りかぶる（斧が頭の後ろへ） → 前へ振り下ろす（0.55 で当たる） → 戻す
+const CHOP_KEYS = [
+  [0.0, 0.3, 0.4, 0.0, -1.2],
+  [0.15, 2.2, 1.0, 0.0, -1.4],
+  [0.38, 3.25, 1.4, -0.15, -1.5],
+  [0.55, 1.0, 0.15, -0.35, -0.25],
+  [0.75, 0.7, 0.3, -0.25, -0.6],
+  [1.0, 0.3, 0.4, 0.0, -1.2],
+];
+export const CHOP_IMPACT = 0.55;
+
+function chopKey(t) {
+  let k = 0;
+  while (k < CHOP_KEYS.length - 2 && CHOP_KEYS[k + 1][0] < t) k++;
+  const a = CHOP_KEYS[k], b = CHOP_KEYS[k + 1];
+  const u = Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0])));
+  const e = u * u * (3 - 2 * u);
+  return a.map((v, i) => v + (b[i] - v) * e);
+}
 
 // ---- 骨格 → 部位 ------------------------------------------------------------
 
@@ -116,7 +138,7 @@ function buildParts(p, pal) {
   const sway = p.sway * 0.35 * (1 - w);
 
   const parts = [];
-  const capsule = (a, b, ra, rb, color, bias = 0) => parts.push({ type: 'cap', a, b, ra, rb, color, bias });
+  const capsule = (a, b, ra, rb, color, bias = 0, tool = false) => parts.push({ type: 'cap', a, b, ra, rb, color, bias, tool });
   // pow = 2 で楕円体、大きくすると角の丸い箱に近づく
   const ellipsoid = (center, radii, color, bias = 0, shade = null, yaw = 0, pow = 2) =>
     parts.push({ type: 'ell', center, radii, color, bias, shade, yaw, pow });
@@ -149,13 +171,38 @@ function buildParts(p, pal) {
   const twist = 0.25 * w * s;
   for (const side of [-1, 1]) {
     const shoulder = add(neckBase, [side * B.shoulderHalf, -0.6 + breathLift, side * twist]);
-    const swingA = side * armAmp * s + push * 1.3; // side=-1（左）は右脚と同じ向き
-    const elbowBend = lerp(lerp(0.2, 0.5, Math.max(0, side * s) * w), 1.55, r * w) * (1 - push) + push * 0.35;
-    const elbow = add(shoulder, swingDown(B.upperArm, swingA, side * (0.06 + 0.45 * p.air))); // 落ちるときは腕が開く
+    let swingA = side * armAmp * s + push * 1.3; // side=-1（左）は右脚と同じ向き
+    let elbowBend = lerp(lerp(0.2, 0.5, Math.max(0, side * s) * w), 1.55, r * w) * (1 - push) + push * 0.35;
+    let lateral = side * (0.06 + 0.45 * p.air); // 落ちるときは腕が開く
+    let cock = -1.2; // 手首の返し（斧の柄と前腕の角度）
+    const axeArm = pal.axe && side === 1; // 右手に斧
+    if (axeArm && p.swing > 0) {
+      const [, a, e, lat, k] = chopKey(p.swing);
+      const wgt = Math.min(1, p.swing / 0.12, (1 - p.swing) / 0.2);
+      swingA = lerp(swingA, a, wgt);
+      elbowBend = lerp(elbowBend, e, wgt);
+      lateral = lerp(lateral, lat, wgt);
+      cock = lerp(cock, k, wgt);
+    }
+    const elbow = add(shoulder, swingDown(B.upperArm, swingA, lateral));
     const hand = add(elbow, swingDown(B.forearm, swingA + elbowBend));
     capsule(shoulder, elbow, 0.66, 0.6, pal.shirt, 0.15);
     capsule(elbow, hand, 0.6, 0.55, pal.skin, 0.15);
     ellipsoid(hand, [0.6, 0.62, 0.6], pal.skin, 0.2);
+    if (axeArm) {
+      // 柄は前腕の向きを手首で返した向き。刃は柄に直角で、振り下ろす側を向く
+      const f = [hand[0] - elbow[0], hand[1] - elbow[1], hand[2] - elbow[2]];
+      const fl = Math.hypot(...f) || 1;
+      const fy = f[1] / fl, fz = f[2] / fl;
+      let h = [f[0] / fl * 0.3, fy * Math.cos(cock) - fz * Math.sin(cock), fy * Math.sin(cock) + fz * Math.cos(cock)];
+      const hl = Math.hypot(...h);
+      h = h.map((v) => v / hl);
+      const edge = [0, -h[2], h[1]];
+      const at = (k, e2 = 0) => [hand[0] + h[0] * k + edge[0] * e2, hand[1] + h[1] * k + edge[1] * e2, hand[2] + h[2] * k + edge[2] * e2];
+      capsule(at(-0.6), at(3.4), 0.42, 0.4, pal.axe.handle, 0.45, true);
+      capsule(at(3.0, -0.5), at(3.0, 1.4), 0.75, 0.6, pal.axe.blade, 0.5, true);
+      capsule(at(3.0, 1.3), at(3.0, 1.8), 0.62, 0.62, pal.axe.edge, 0.55, true);
+    }
   }
 
   // 首と頭（頭は首から上だけ別に回せる）
@@ -268,8 +315,37 @@ export function rasterizeHuman(palette, pose, out = new Uint32Array(N)) {
   return out;
 }
 
+// 道具（斧）のうち、当たり判定の円柱からはみ出した部分のセル: [[x, y, z, color], ...]（箱の座標。範囲外もある）
+// 体の中に収まる部分は rasterizeHuman が描く。はみ出した部分は、世界の空いているセルにだけ別の持ち主として描く
+const MASK_SET = new Set(HUMAN_MASK);
+export function rasterizeTool(palette, pose) {
+  const cells = new Map();
+  const cos = Math.cos(pose.yaw);
+  const sin = Math.sin(pose.yaw);
+  for (const part of buildParts(pose, palette)) {
+    if (!part.tool) continue;
+    const a = toBox(part.a, cos, sin);
+    const b = toBox(part.b, cos, sin);
+    const rMax = Math.max(part.ra, part.rb);
+    for (let y = Math.floor(Math.min(a[1], b[1]) - rMax); y <= Math.floor(Math.max(a[1], b[1]) + rMax); y++) {
+      for (let z = Math.floor(Math.min(a[2], b[2]) - rMax); z <= Math.floor(Math.max(a[2], b[2]) + rMax); z++) {
+        for (let x = Math.floor(Math.min(a[0], b[0]) - rMax); x <= Math.floor(Math.max(a[0], b[0]) + rMax); x++) {
+          if (x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D && MASK_SET.has(x + W * (z + D * y))) continue;
+          let n = 0;
+          for (const sx of SUB) for (const sy of SUB) for (const sz of SUB) {
+            const [d, t] = distToSegment(x + 0.5 + sx, y + 0.5 + sy, z + 0.5 + sz, a, b);
+            if (d <= part.ra + (part.rb - part.ra) * t) n++;
+          }
+          if (n / 8 >= THRESHOLD) cells.set(`${x},${y},${z}`, [x, y, z, part.color]);
+        }
+      }
+    }
+  }
+  return [...cells.values()];
+}
+
 export const PALETTES = {
-  player: { id: 'player', skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22 },
+  player: { id: 'player', axe: { handle: 0x8a5a32, blade: 0x9aa4ae, edge: 0xe6edf2 }, skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22 },
   npc: [
     { id: 'npc0', skin: 0xe8b58e, hair: 0x1f1f2b, eyes: 0x4a3229, shirt: 0x3cc4b0, pants: 0x4a4a5c, belt: 0x2a2a30, shoes: 0x2a2a30 },
     { id: 'npc1', skin: 0xc68d63, hair: 0x6b3b1f, eyes: 0x4a3229, shirt: 0x9b7bff, pants: 0x2e3b4e, belt: 0x4a3426, shoes: 0x4a3426 },

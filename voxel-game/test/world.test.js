@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { World, PRIORITY, GROUND_ID, WATER_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
-import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman } from '../src/humanoid.js';
+import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman, rasterizeTool, CHOP_IMPACT } from '../src/humanoid.js';
 import { WALK_SPEED, RUN_SPEED } from '../src/character.js';
 import { CHUNK, chunkKeyAt, cellIndex } from '../src/grid.js';
 
@@ -28,7 +28,8 @@ function assertConsistent(w) {
     expected += e.colors.length;
   }
   // 木は形が決まっていて動かないので別に調べる（treeCellsConsistent）
-  const trees = new Set([...w.entities.values()].filter((e) => e.tree).map((e) => e.id));
+  // 毎回形を描き直す物（龍・炎・斧・倒れていく木）は offsets を持たないので数えない
+  const trees = new Set([...w.entities.values()].filter((e) => e.tree || !e.offsets.length).map((e) => e.id));
   let owned = 0;
   for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && o !== WATER_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
@@ -96,8 +97,8 @@ const [SX, SY, SZ] = HUMAN_SIZE;
 const at = (g, x, y, z) => g[x + SX * (z + SZ * y)];
 const lit = (g) => g.reduce((n, c) => n + (c !== 0), 0);
 
-test('人型: 立ち姿は左右対称で、頭・目・靴がある', () => {
-  const P = PALETTES.player;
+test('人型: 立ち姿は左右対称で、頭・目・靴がある（斧を持たない NPC）', () => {
+  const P = PALETTES.npc[0];
   const g = rasterizeHuman(P, createPose());
   for (let y = 0; y < SY; y++) {
     for (let z = 0; z < SZ; z++) {
@@ -109,6 +110,17 @@ test('人型: 立ち姿は左右対称で、頭・目・靴がある', () => {
   // 足は地面に着き、頭は直方体の上の方にある
   assert.ok([...Array(SX * SZ).keys()].some((i) => g[i] === P.shoes));
   assert.ok(g.slice(SX * SZ * (SY - 2)).some((c) => c === P.hair));
+});
+
+test('人型: プレイヤーは右手に斧を持ち、振ると斧が前へ出る', () => {
+  const P = PALETTES.player;
+  const g = rasterizeHuman(P, createPose());
+  assert.ok(g.includes(P.axe.handle) && g.includes(P.axe.blade));
+  // 振り下ろした瞬間、はみ出した斧の刃は体の前（+z）にある
+  const tool = rasterizeTool(P, { ...createPose(), swing: CHOP_IMPACT });
+  const blade = tool.filter((c) => c[3] === P.axe.blade || c[3] === P.axe.edge);
+  assert.ok(blade.length > 0);
+  assert.ok(blade.every((c) => c[2] >= SZ - 1), blade.map((c) => c.join()).join(' '));
 });
 
 test('人型: 90°回すと形もそのまま90°回る', () => {
@@ -583,4 +595,114 @@ test('龍: 飛ぶ → 降りる → 歩く → 火を吹く → 飛び立つ', a
   }
   for (const m of ['fly', 'descend', 'walk', 'breathe', 'takeoff']) assert.ok(seen.includes(m), seen.join(' → '));
   assert.ok(d.fire.burned > 0);
+});
+
+// ---- 斧 ----------------------------------------------------------------------
+
+// 木の幹の前（西側）にプレイヤーを立たせ、東（+x）を向かせる
+function standBeforeTree(w, tree) {
+  const { x, y, z } = tree.spec;
+  for (let d = 10; d < 30; d++) {
+    const px = x - d - 4, pz = z - 4;
+    const p = w.spawnHuman({ kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER, pos: [px, y, pz], palette: PALETTES.player, yaw: Math.PI / 2 });
+    if (p) {
+      w.player = p;
+      return p;
+    }
+  }
+  return null;
+}
+
+test('斧: 幹に切り込みを入れていくと、木が向こう側へ倒れて倒木と切り株が残る', () => {
+  const w = new World({ seed: 5 });
+  ensureAround(w, 0, 0, 6);
+  const big = [...w.trees.values()].filter((t) => t.spec.scale > 0.8 && t.spec.species !== 'birch');
+  let tree = null;
+  let p = null;
+  for (const t of big) {
+    p = standBeforeTree(w, t);
+    if (p) {
+      tree = t;
+      break;
+    }
+  }
+  assert.ok(p, '木の前に立てる場所がある');
+  // 幹まで歩く
+  for (let i = 0; i < 80; i++) step(w, walkInput(1, 0));
+  const chops = [];
+  for (let i = 0; i < 600 && !tree.felled; i++) chops.push(...step(w, { dir: null, run: false, chop: true }).filter((ev) => ev.type === 'chop'));
+  assert.ok(tree.felled, chops.map((ev) => ev.result).join(','));
+  assert.ok(chops.some((ev) => ev.result === 'notch'));
+  assert.equal(chops[chops.length - 1].result, 'felled');
+  // 倒れきるまで待つ
+  for (let i = 0; i < 200 && w.felling.length; i++) step(w, { dir: null, run: false });
+  assert.equal(w.felling.length, 0);
+  const log = [...w.entities.values()].find((e) => e.name.endsWith('の倒木'));
+  assert.ok(log, '倒木がある');
+  // 倒木は寝ている: 倒木のセルの高さは低く、東（+x）へ伸びている
+  let top = 0, east = -Infinity, n = 0;
+  for (const c of w.chunks.values()) {
+    c.owner.forEach((o, i) => {
+      if (o !== log.id) return;
+      n++;
+      top = Math.max(top, Math.floor(i / 256));
+      east = Math.max(east, c.cx * 16 + (i % 16));
+    });
+  }
+  assert.ok(n > 500, `倒木のセル ${n}`);
+  assert.ok(top - tree.spec.y < tree.height * 0.6, `倒木の高さ ${top - tree.spec.y} / ${tree.height}`);
+  assert.ok(east > tree.spec.x + tree.height * 0.5, '東へ倒れた');
+  // 切り株が残っている
+  assert.equal(w.ownerAt(tree.spec.x, tree.spec.y + 1, tree.spec.z), tree.id);
+  for (const [x, y, z] of w.cellsOf(p)) assert.equal(w.ownerAt(x, y, z), p.id);
+});
+
+test('斧: 龍を切りつけると傷から肉が見え、切り続けると尾の側が切り落とされて落ちる', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  d.land(40, 300, 0); // 北（+z）向きに、z = 300 から南へ寝そべる
+  d.advance = () => {}; // 動かないようにする
+  d.update(0.08, [0, 0, 0]);
+  // 胴の s = 300 あたりの横に立って、胴の方を向く
+  const pt = d.pts[Math.round(300 / 0.8)];
+  const p = w.spawnHuman({
+    kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
+    pos: [Math.round(pt.c[0]) + 9, 1, Math.round(pt.c[2]) - 4], palette: PALETTES.player, yaw: -Math.PI / 2,
+  });
+  assert.ok(p);
+  w.player = p;
+  const flesh = new Set([0xa3262e, 0xbc3438, 0xcf4f4c, 0xb02c33]);
+  const fleshShown = () => {
+    let n = 0;
+    for (const c of w.chunks.values()) c.owner.forEach((o, i) => { if (o === d.id && flesh.has(c.color[i])) n++; });
+    return n;
+  };
+  const chops = [];
+  let woundFlesh = 0;
+  for (let i = 0; i < 800 && !chops.some((ev) => ev.result === 'severed'); i++) {
+    const evs = step(w, { dir: [-1, 0], run: false, chop: true }).filter((ev) => ev.type === 'chop');
+    chops.push(...evs);
+    if (!woundFlesh && evs.some((ev) => ev.result === 'wound' && ev.progress > 0.5)) {
+      step(w, { dir: null, run: false }); // 龍が描き直されるまで
+      woundFlesh = fleshShown();
+    }
+  }
+  assert.ok(woundFlesh > 10, `切り傷から見える肉 ${woundFlesh}`);
+  assert.ok(chops.some((ev) => ev.result === 'wound'), chops.map((ev) => ev.result).join(','));
+  const sev = chops.find((ev) => ev.result === 'severed');
+  assert.ok(sev, chops.map((ev) => `${ev.result}:${ev.progress?.toFixed(2)}`).join(','));
+  assert.ok(d.length < 400 && d.length > 250, `残りの長さ ${d.length}`);
+  const piece = sev.piece;
+  assert.equal(piece.kind, 'carcass');
+  // 切り落とした尾の断面に肉の色が見える
+  assert.ok(piece.colors.some((c) => flesh.has(c)), '切り落とした尾の断面');
+  // 尾は地面まで落ちる
+  for (let i = 0; i < 100 && piece.falling; i++) step(w, { dir: null, run: false });
+  assert.equal(piece.falling, false);
+  let low = Infinity;
+  for (const [, y] of w.cellsOf(piece)) low = Math.min(low, y);
+  assert.equal(low, 1);
+  assertConsistent(w);
 });

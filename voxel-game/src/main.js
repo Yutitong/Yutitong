@@ -316,6 +316,8 @@ const KEYMAP = {
 const held = [];
 let running = false;
 let runButton = false;
+let chopHeld = false; // F を押している間は振り続ける
+let chopPending = false; // 次のティックで1回振る
 
 function worldDir(rel) {
   const fx = controls.target.x - camera.position.x;
@@ -336,7 +338,9 @@ function playerInput() {
   }
   dx = Math.sign(dx);
   dz = Math.sign(dz);
-  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton };
+  const chop = chopHeld || chopPending;
+  chopPending = false;
+  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton, chop };
 }
 
 function press(rel) {
@@ -352,6 +356,10 @@ window.addEventListener('keydown', (e) => {
   if (KEYMAP[e.code]) {
     e.preventDefault();
     if (!e.repeat) press(KEYMAP[e.code]);
+  } else if (e.code === 'KeyF') {
+    e.preventDefault();
+    chopHeld = true;
+    chopPending = true;
   } else if (e.code === 'Space') {
     e.preventDefault();
     setPaused(!paused);
@@ -362,10 +370,17 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
   running = e.shiftKey;
   if (KEYMAP[e.code]) release(KEYMAP[e.code]);
+  if (e.code === 'KeyF') chopHeld = false;
 });
 window.addEventListener('blur', () => {
   held.length = 0;
   running = false;
+  chopHeld = false;
+});
+
+document.querySelector('[data-chop]').addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  chopPending = true;
 });
 
 const runBtn = document.querySelector('[data-run]');
@@ -398,6 +413,18 @@ const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
   const a = ev.actor;
+  if (ev.type === 'chop') {
+    const t = ev.target;
+    const pct = `${Math.round(ev.progress * 100)}%`;
+    switch (ev.result) {
+      case 'notch': return { cls: 'push', text: `${a.name} が ${t.name} の幹に斧を入れた`, rule: `切り込み ${pct}` };
+      case 'felled': return { cls: 'push', text: `${t.name} が倒れる！`, rule: '倒木' };
+      case 'wound': return { cls: 'push', text: `${a.name} が ${t.name} を切りつけた`, rule: `傷の深さ ${pct}` };
+      case 'severed': return { cls: 'push', text: `${t.name} の尾を切り落とした！`, rule: '切断' };
+      case 'glance': return { cls: 'block', text: `斧が ${t.name} の足やひれをかすめた`, rule: '' };
+      default: return { cls: 'block', text: t ? `斧が ${t.name} に当たったが、切れない` : `${a.name} は斧を空振りした`, rule: '' };
+    }
+  }
   const t = ev.target;
   if (ev.type === 'push') {
     return { cls: 'push', text: `${a.name} が ${t.name} を押し出した`, rule: `${fmtP(a.priority)} > ${fmtP(t.priority)}` };

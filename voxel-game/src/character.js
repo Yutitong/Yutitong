@@ -3,7 +3,7 @@
 // 体の位置は1ボクセル単位でしか動かないが、速度・向き・歩行周期は連続的に変わる。
 // アニメーションは毎ティック姿勢から描き直すので、移動のコマとは切り離されている。
 
-import { createPose, humanColors } from './humanoid.js';
+import { createPose, humanColors, rasterizeTool, CHOP_IMPACT } from './humanoid.js';
 
 export const WALK_SPEED = 9; // ボクセル/秒（≈ 1.35 m/s）
 export const RUN_SPEED = 21; // ≈ 3.2 m/s
@@ -13,6 +13,7 @@ const DECEL = 45;
 const TURN_RATE = 9; // ラジアン/秒
 const STRIDE_WALK = 11; // 1周期（左右1歩ずつ）で進むボクセル数
 const STRIDE_RUN = 18;
+const SWING_TIME = 0.6; // 斧を1回振る時間（秒）
 export const MAX_STEP = 2; // 歩いて登り降りできる段差（ボクセル ≈ 30cm）
 const GRAVITY = 65; // ボクセル/秒²（≈ 9.8 m/s²）
 const DOWN = [0, -1, 0];
@@ -100,8 +101,22 @@ function stepOnce(world, e, d3) {
 // 1ティック分キャラを動かす。
 // input: { dir: [dx, dz]（各 -1..1、8方向）または null, run: boolean }
 // report(e, result) は移動の結果（押し出し・止められた）を出来事として記録する。
-export function updateCharacter(world, e, input, dt, rng, report) {
+// input.chop が true なら斧を振る。刃が当たる瞬間に onChop(e) を呼ぶ
+export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   const pose = e.pose;
+  if (input.chop && !e.swingT && e.palette.axe) {
+    e.swingT = 1e-4;
+    e.chopDone = false;
+  }
+  if (e.swingT) {
+    e.swingT += dt / SWING_TIME;
+    if (!e.chopDone && e.swingT >= CHOP_IMPACT) {
+      e.chopDone = true;
+      onChop?.(e);
+    }
+    if (e.swingT >= 1) e.swingT = 0;
+  }
+  pose.swing = e.swingT ?? 0;
   const airborne = applyGravity(world, e, dt);
   const dir = input.dir && (input.dir[0] || input.dir[1]) ? input.dir : null;
 
@@ -118,6 +133,7 @@ export function updateCharacter(world, e, input, dt, rng, report) {
   // 速度: 加速・減速は一定の割合で
   let targetSpeed = dir ? (input.run ? RUN_SPEED : WALK_SPEED) : 0;
   if (Math.abs(turnLeft) > 1.2) targetSpeed *= 0.3; // 振り返るときは足を止め気味に
+  if (e.swingT) targetSpeed *= 0.35; // 斧を振っている間はゆっくり
   if (e.pushing > 0) targetSpeed = Math.min(targetSpeed, PUSH_SPEED);
   // 木や岩にぶつかったら、その場で足踏みせずに立ち止まる。
   // 同じ方向に行こうとしている間は、ときどき道が空いたかだけ確かめる。
@@ -213,4 +229,20 @@ export function updateCharacter(world, e, input, dt, rng, report) {
   // 姿勢からボクセルを描き直し、変わったセルだけ塗り替える
   humanColors(e.palette, pose, e.look);
   world.recolor(e, e.look);
+  if (e.toolId) drawTool(world, e);
+}
+
+// 斧の、体の円柱からはみ出した部分を描く。空いているセルにだけ入り、いつでも場所をゆずる
+function drawTool(world, e) {
+  for (const [x, y, z] of e.toolCells) {
+    if (world.ownerAt(x, y, z) === e.toolId) world.setCell(x, y, z, 0, 0);
+  }
+  const next = [];
+  for (const [tx, ty, tz, color] of rasterizeTool(e.palette, e.pose)) {
+    const x = e.pos[0] + tx, y = e.pos[1] + ty, z = e.pos[2] + tz;
+    if (y < 1 || world.ownerAt(x, y, z) !== 0) continue;
+    world.setCell(x, y, z, e.toolId, color);
+    next.push([x, y, z]);
+  }
+  e.toolCells = next;
 }

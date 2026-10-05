@@ -372,6 +372,7 @@ function finalize(shape, spec) {
     spec, clumps,
     xs: Int32Array.from(xs), ys: Int16Array.from(ys), zs: Int32Array.from(zs),
     color: Uint32Array.from(color), clumpOf: Int16Array.from(clumpOf),
+    gone: new Uint8Array(xs.length), // 斧で切られた・倒れて木から外れたセル
     buckets: new Map(), height: ys.reduce((m, y) => Math.max(m, y - lift), 0),
   };
   const lists = new Map();
@@ -393,6 +394,7 @@ export function paintTreesInto(world, chunk) {
     const list = tree.buckets.get(chunk.key);
     if (!list) continue;
     for (const i of list) {
+      if (tree.gone[i]) continue;
       const ci = cellIndex(tree.xs[i] - x0, tree.ys[i], tree.zs[i] - z0);
       chunk.ensure(tree.ys[i]);
       if (chunk.owner[ci] !== 0) continue;
@@ -409,6 +411,7 @@ function shiftClump(world, tree, clump, ox, oz) {
   clump.ox = ox;
   clump.oz = oz;
   for (const i of clump.cells) {
+    if (tree.gone[i]) continue;
     const x = tree.xs[i], y = tree.ys[i], z = tree.zs[i];
     const c = clump.base.get(cellKey(x - ox, y, z - oz)) ?? 0;
     if (c === tree.color[i]) continue;
@@ -430,7 +433,7 @@ export function updateWind(world, time, px, pz, radius) {
   const strength = 0.55 + 0.45 * noise2(time * 0.12, 0, world.seed + 11);
   for (const tree of world.trees.values()) {
     const { x, z } = tree.spec;
-    if (Math.max(Math.abs(x - px), Math.abs(z - pz)) > radius) continue;
+    if (tree.felled || Math.max(Math.abs(x - px), Math.abs(z - pz)) > radius) continue;
     for (const cl of tree.clumps) {
       const along = cl.wx * wx + cl.wz * wz;
       const gust = 0.5 + 0.5 * Math.sin(along * 0.07 - time * 1.9 + (cl.wx - cl.wz) * 0.013);

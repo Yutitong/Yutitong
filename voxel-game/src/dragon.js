@@ -9,6 +9,7 @@
 import { mulberry32, hash3, shade } from './rng.js';
 import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt, cellIndex } from './grid.js';
 import { Fire } from './fire.js';
+import { redrawBody, MOVABLE } from './body.js';
 
 export const DRAGON_LENGTH = 400; // ボクセル（≈ 60m）
 const SPEED = 38; // ボクセル/秒（≈ 5.7 m/s）
@@ -22,7 +23,11 @@ const WALK_TURN = 0.75;
 const HEAD_FLOOR = 12.5; // 歩くとき、頭の中心は地面からこの高さ
 const BELLY = 2.5; // 歩くとき、腹と地面のすき間
 const BREATH_TIME = 3.6; // 1回に火を吹く時間（秒）
-const MOVABLE = new Set(['player', 'npc', 'box']); // 龍が押しのける物
+const SEVER_MIN = 60; // これより頭に近い所（首）は切り落とせない
+// 切り口の色: 皮の下の脂、肉、骨
+const FLESH = [0xa3262e, 0xbc3438, 0xcf4f4c, 0xb02c33];
+const FAT = 0xe9b9a0;
+const BONE = 0xeee3c8;
 const GROUNDED = new Set(['walk', 'aim', 'breathe']);
 
 export const DRAGON_MODES = {
@@ -194,6 +199,8 @@ export class Dragon {
     this.walkClock = 0;
     this.events = [];
     this.pts = null;
+    this.length = DRAGON_LENGTH; // 尾を切り落とされると短くなる
+    this.wounds = []; // 切り傷: { s: 頭からの距離, th: 胴のまわりの向き, f: 深さ（直径に対する割合） }
     this.head = [...start];
     this.yaw = 0;
     this.pitch = 0;
@@ -542,7 +549,8 @@ export class Dragon {
 
   // いまの姿のセルを作る
   // emit(x, y, z, color) を、龍の体の各セルについて呼ぶ（同じセルが何度か来ることもある）
-  shape(emit) {
+  // from / to: 頭からの距離でこの範囲だけ描く（尾を切り落とすときに使う）
+  shape(emit, from = 0, to = this.length) {
     const put = (p, color) => {
       const y = Math.floor(p[1]);
       if (y < 1 || y >= HEIGHT) return;
@@ -550,12 +558,39 @@ export class Dragon {
     };
     const pts = this.spine();
     const t = this.time;
+    const keep = (s) => s >= from && s <= to;
+    // 切り口を描く: 中心からの距離で 脂 → 肉 → 骨
+    const flesh = (c, U, V, u, v, r) => {
+      const d = Math.hypot(u, v);
+      const color = d > r - 0.6 ? FAT : d < 1.3 && r > 2.5 ? BONE : FLESH[hash3(Math.round(u * 2), Math.round(v * 2), 5) % FLESH.length];
+      put(add(c, add(mul(U, u), mul(V, v))), color);
+    };
+    const disk = (c, U, V, r, minU = -Infinity) => {
+      for (let u = -r; u <= r; u += 0.7) {
+        if (u < minU) continue;
+        const L = Math.sqrt(Math.max(0, r * r - u * u));
+        for (let v = -L; v <= L; v += 0.7) flesh(c, U, V, u, v, r);
+      }
+    };
+    let first = null;
+    let last = null;
 
     // 胴: 太さの変わる管の殻。上は鱗、下は腹板（たくさん呼ばれるので配列を作らずに計算する）
     for (const { s, c, N, B } of pts) {
-      if (s < 3) continue;
+      if (s < 3 || !keep(s)) continue;
+      first ??= { s, c, N, B };
+      last = { s, c, N, B };
       const r = radiusAt(s);
       const band = Math.floor(s / 2.2);
+      // この輪にかかる切り傷: 向き th の側から V 字に削れている。真ん中が一番深く（c0 の所まで）、両端は浅い
+      const cuts = [];
+      for (const w of this.wounds) {
+        const half = 2.5 + 2 * w.f; // 深くなるほど切り口も広がる
+        const ds = Math.abs(s - w.s);
+        if (ds > half) continue;
+        const deep = r - 2 * r * w.f;
+        cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), c0: deep + (r - deep) * (ds / half) });
+      }
       for (const rho of [r, r - 0.9]) {
         if (rho <= 0.4) continue;
         const n = Math.max(8, Math.ceil((Math.PI * 2 * rho) / 0.8));
@@ -563,6 +598,9 @@ export class Dragon {
         for (let k = 0; k < n; k++) {
           const th = (k / n) * Math.PI * 2;
           const cu = ring.cos[k], su = ring.sin[k];
+          let cut = false;
+          for (const q of cuts) if (rho * (cu * q.cu0 + su * q.su0) > q.c0) cut = true;
+          if (cut) continue;
           const y = Math.floor(c[1] + (N[1] * cu + B[1] * su) * rho);
           if (y < 1 || y >= HEIGHT) continue;
           const x = Math.floor(c[0] + (N[0] * cu + B[0] * su) * rho);
@@ -577,8 +615,16 @@ export class Dragon {
           emit(x, y, z, color);
         }
       }
+      for (const q of cuts) {
+        // 切り込みの斜面: 肉の断面が見える
+        if (Math.abs(q.c0) >= r) continue;
+        const U = add(mul(N, q.cu0), mul(B, q.su0)); // 切り込んだ向き
+        const V = add(mul(N, -q.su0), mul(B, q.cu0));
+        const L = Math.sqrt(r * r - q.c0 * q.c0);
+        for (let v = -L; v <= L; v += 0.7) flesh(c, U, V, q.c0, v, r);
+      }
       // 背びれ: のこぎり状
-      if (s > 40 && s < DRAGON_LENGTH - 28) {
+      if (s > 40 && s < DRAGON_LENGTH - 28 && !cuts.some((q) => q.c0 < r * 0.2 && q.cu0 > 0.3)) {
         const hgt = 1.5 + 2.8 * ((s % 7) / 7) * Math.min(1, r / 4);
         for (let h = 0.5; h <= hgt; h += 0.5) put(add(c, mul(N, r + h)), h > hgt - 1 ? C.finTip : C.fin);
       }
@@ -595,10 +641,15 @@ export class Dragon {
       }
     }
 
+    // 切り落とされた所の断面
+    if (first && from > 0) disk(first.c, first.N, first.B, radiusAt(first.s));
+    if (last && to < DRAGON_LENGTH) disk(last.c, last.N, last.B, radiusAt(last.s));
+
     // 四肢: 飛ぶときは泳ぐように前後に掻き、歩くときは足を地面につけて交互に運ぶ
     const lerp3 = (a, b, k) => add(a, mul(sub(b, a), k));
     const stride = Math.min(1, this.speed / WALK_SPEED);
     for (const [sLeg, phase, walkPhase] of [[78, 0, 0], [232, Math.PI * 0.6, Math.PI]]) {
+      if (!keep(sLeg)) continue;
       const k = Math.round(sLeg / SPINE_STEP);
       const { c, T, N, B, w } = pts[k];
       const r = radiusAt(sLeg);
@@ -631,6 +682,7 @@ export class Dragon {
       }
     }
 
+    if (from > 0) return; // 頭・髭・鬣は頭の側だけ
     // 頭: 首の向きに合わせて頭の形を置く
     const { c: hc, T: hT, N: hN, B: hB } = pts[0];
     for (const [f, u, l, color] of this.headModel) {
@@ -652,7 +704,7 @@ export class Dragon {
       }
     }
     // 鬣: 頭の後ろから首にかけて、炎のように後ろへなびく房
-    for (let s = 6; s < 70; s += 3) {
+    for (let s = 6; s < Math.min(70, to); s += 3) {
       const { c, T, N, B } = pts[Math.round(s / SPINE_STEP)];
       const r = radiusAt(s);
       for (const side of [-1, 0, 1]) {
@@ -668,72 +720,13 @@ export class Dragon {
     }
   }
 
-  // 1回分動いて、体と炎を描き直す。前の体を消してから新しい体を書く。
-  // 龍は空いているセルに入る。人・NPC・木箱がいるセルは、その物を押しのけてから入る（押しのけられなければ入らない）
+  // 1回分動いて、体と炎を描き直す
   update(dt, around) {
     this.events = [];
     this.advance(dt, around);
-    const w = this.world;
-    const id = this.id;
     this.fire.update(dt); // 炎の粒を動かし、当たった物を焦がす
-    // 同じチャンクのセルが続くので、直前のチャンクを使い回す
-    let chunk = null;
-    let ck = -1;
-    const use = (key) => {
-      if (key !== ck) {
-        ck = key;
-        chunk = w.chunks.get(key) ?? w.chunkAt(Math.floor(key / 65536) - 32768, (key % 65536) - 32768);
-        w.dirty.add(key);
-      }
-    };
-    for (let n = 0; n < this.cells.length; n += 2) {
-      use(this.cells[n]);
-      const i = this.cells[n + 1];
-      if (chunk.owner[i] !== id) continue;
-      chunk.owner[i] = 0;
-      chunk.color[i] = 0;
-      chunk.changed.push(i);
-    }
     this.fire.clear();
-    const cells = [];
-    const blocked = new Map(); // 押しのける物の id → [チャンク, セル番号, 色, チャンクの番号, ...]
-    this.shape((x, y, z, color) => {
-      const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
-      use(chunkKey(cx, cz));
-      chunk.ensure(y);
-      const i = cellIndex(x - cx * CHUNK, y, z - cz * CHUNK);
-      const owner = chunk.owner[i];
-      if (owner === 0) {
-        chunk.owner[i] = id;
-        cells.push(ck, i);
-        if (y >= chunk.top) chunk.top = y + 1;
-      } else if (owner !== id) {
-        if (MOVABLE.has(w.entities.get(owner)?.kind)) {
-          let list = blocked.get(owner);
-          if (!list) blocked.set(owner, (list = []));
-          list.push(chunk, i, color, ck);
-        }
-        return; // 地形・木・岩・水には入らない
-      }
-      chunk.color[i] = color;
-      chunk.changed.push(i);
-    });
-    for (const [eid, list] of blocked) {
-      const e = w.entities.get(eid);
-      if (this.shove(e, list)) this.events.push({ type: 'push', actor: this.entity, target: e });
-      // 空いたセルに入る
-      for (let n = 0; n < list.length; n += 4) {
-        const c = list[n], i = list[n + 1];
-        if (c.owner[i] !== 0) continue;
-        c.owner[i] = id;
-        c.color[i] = list[n + 2];
-        c.top = Math.max(c.top, Math.floor(i / (CHUNK * CHUNK)) + 1);
-        c.changed.push(i);
-        w.dirty.add(c.key);
-        cells.push(list[n + 3], i);
-      }
-    }
-    this.cells = cells; // [チャンクの番号, セル番号, ...]
+    this.draw();
     // 火を吹く: 口から相手へ向けて、少し首を振りながら
     if (this.mode === 'breathe' && this.rear > 0.55 && this.modeTime < BREATH_TIME) {
       const { mouth, dir } = this.mouth();
@@ -741,6 +734,79 @@ export class Dragon {
     }
     this.fire.draw();
     this.entity.pos = this.head.map(Math.round);
+  }
+
+  // 体を描き直す。人・NPC・木箱がいるセルは、その物を体から離れる向きへ押しのけてから入る
+  draw() {
+    const { cells, pushed } = redrawBody(this.world, this.id, this.cells, (emit) => this.shape(emit), (m) => this.awayFrom(m));
+    this.cells = cells;
+    for (const e of pushed) this.events.push({ type: 'push', actor: this.entity, target: e });
+  }
+
+  // 位置 m から見て、龍の体から離れる向き [dx, dz]
+  awayFrom(m) {
+    let best = this.pts[0];
+    let bd = Infinity;
+    for (const p of this.pts) {
+      if (p.s > this.length) break;
+      const d = (p.c[0] - m[0]) ** 2 + (p.c[2] - m[2]) ** 2 + 0.25 * (p.c[1] - m[1]) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    const dx = m[0] - best.c[0], dz = m[2] - best.c[2];
+    return Math.hypot(dx, dz) < 0.5 ? [best.B[0], best.B[2]] : [dx, dz];
+  }
+
+  // 斧が点 p に当たった: 胴なら、当たった側から depth ボクセル削る。
+  // 戻り値: null（胴に当たっていない）/ { s, f, severed }
+  wound(p, depth = 2.2) {
+    if (!this.pts) return null;
+    let best = null;
+    let bd = Infinity;
+    for (const q of this.pts) {
+      if (q.s < 3 || q.s > this.length) continue;
+      const d = (q.c[0] - p[0]) ** 2 + (q.c[1] - p[1]) ** 2 + (q.c[2] - p[2]) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = q;
+      }
+    }
+    if (!best) return null;
+    const r = radiusAt(best.s);
+    const v = sub(p, best.c);
+    if (Math.hypot(...v) > r + 2.5) return null; // 足・ひれ・鬣などは削らない
+    const th = Math.atan2(dot(v, best.B), dot(v, best.N));
+    let w = this.wounds.find((q) => Math.abs(q.s - best.s) < 3.5 && Math.abs(wrap(q.th - th)) < 0.8);
+    if (!w) {
+      w = { s: best.s, th, f: 0 };
+      this.wounds.push(w);
+    }
+    w.f = Math.min(1, w.f + depth / (2 * r));
+    if (w.s < SEVER_MIN) w.f = Math.min(w.f, 0.85);
+    if (w.f >= 1) return { s: w.s, f: 1, severed: this.sever(w.s) };
+    return { s: w.s, f: w.f, severed: null };
+  }
+
+  // 頭から距離 sCut の所で切り落とす。尾の側は別の物（龍の尾）になって地面へ落ちる
+  sever(sCut) {
+    const w = this.world;
+    this.wounds = this.wounds.filter((q) => Math.abs(q.s - sCut) > 5);
+    const tail = new Map();
+    this.shape((x, y, z, color) => tail.set(`${x},${y},${z}`, [x, y, z, color]), sCut + SPINE_STEP, this.length);
+    this.length = sCut;
+    this.wounds = this.wounds.filter((q) => q.s < sCut);
+    this.draw(); // 尾の側のセルが空く
+    const cells = [...tail.values()].filter(([x, y, z]) => w.ownerAt(x, y, z) === 0);
+    if (!cells.length) return null;
+    const lo = [0, 1, 2].map((a) => Math.min(...cells.map((c) => c[a])));
+    const piece = w.spawn({
+      kind: 'carcass', name: '龍の尾', priority: 8, falling: true, vy: 0, fall: 0, pos: lo,
+      voxels: cells.map(([x, y, z, color]) => [x - lo[0], y - lo[1], z - lo[2], color]),
+    });
+    if (GROUNDED.has(this.mode)) this.setMode('takeoff'); // 痛がって飛び去る
+    return piece;
   }
 
   // 口の位置と、炎を吹く向き
@@ -753,57 +819,6 @@ export class Dragon {
     const sweep = Math.sin(this.modeTime * 2.4) * 0.14;
     const dir = [aim[0] * Math.cos(sweep) + aim[2] * Math.sin(sweep), aim[1], -aim[0] * Math.sin(sweep) + aim[2] * Math.cos(sweep)];
     return { mouth, dir };
-  }
-
-  // 物 e を、龍の体から離れる向きへ1ボクセルずつ押しのける。龍のセル list と重ならなくなるまで
-  shove(e, list) {
-    const w = this.world;
-    if (!e._mid) {
-      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-      for (let o = 0; o < e.offsets.length; o += 3) {
-        for (let a = 0; a < 3; a++) {
-          lo[a] = Math.min(lo[a], e.offsets[o + a]);
-          hi[a] = Math.max(hi[a], e.offsets[o + a] + 1);
-        }
-      }
-      e._mid = [0, 1, 2].map((a) => (lo[a] + hi[a]) / 2);
-    }
-    const overlapping = () => {
-      for (let n = 0; n < list.length; n += 4) if (list[n].owner[list[n + 1]] === e.id) return true;
-      return false;
-    };
-    let moved = false;
-    for (let step = 0; step < 24 && overlapping(); step++) {
-      // 一番近い背骨の点から離れる向き（8方向）。だめなら少しずつ横へずらす
-      const m = [e.pos[0] + e._mid[0], e.pos[1] + e._mid[1], e.pos[2] + e._mid[2]];
-      let best = this.pts[0];
-      let bd = Infinity;
-      for (const p of this.pts) {
-        const d = (p.c[0] - m[0]) ** 2 + (p.c[2] - m[2]) ** 2 + 0.25 * (p.c[1] - m[1]) ** 2;
-        if (d < bd) {
-          bd = d;
-          best = p;
-        }
-      }
-      let dx = m[0] - best.c[0], dz = m[2] - best.c[2];
-      if (Math.hypot(dx, dz) < 0.5) [dx, dz] = [best.B[0], best.B[2]];
-      const a = Math.atan2(dz, dx);
-      let ok = false;
-      for (const turn of [0, 0.785, -0.785, 1.571, -1.571]) {
-        const mx = Math.round(Math.cos(a + turn)), mz = Math.round(Math.sin(a + turn));
-        if (!mx && !mz) continue;
-        for (const dy of [0, 1, 2]) {
-          if (w.tryMove(e.id, [mx, dy, mz]).ok) {
-            ok = true;
-            break;
-          }
-        }
-        if (ok) break;
-      }
-      if (!ok) break;
-      moved = true;
-    }
-    return moved;
   }
 
   // いま占有しているセルの数

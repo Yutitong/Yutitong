@@ -13,6 +13,7 @@ import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
 import { hash3, mulberry32, shade } from './rng.js';
 import { terrainHeight, groundColor, waterColor, WATER_LEVEL } from './terrain.js';
 import { paintTreesInto, updateWind } from './trees.js';
+import { chop, dropFalling } from './axe.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 import { EMPTY, GROUND_ID, WATER_ID } from './ids.js';
@@ -106,6 +107,7 @@ export class World {
     this.counts = { npc: 0, crate: 0 }; // 名前の通し番号
     this.trees = new Map(); // 区画 → 木
     this.treeSpecs = new Map(); // 区画 → 木の設計図（なければ null）
+    this.felling = []; // 倒れていく木
     this.time = 0;
   }
 
@@ -190,6 +192,15 @@ export class World {
   spawnHuman({ palette, yaw = 0, ...spec }, rng = Math.random) {
     const pose = { ...createPose(), yaw };
     const e = this.spawn({ ...spec, palette, yaw, wade: WADE_DEPTH, offsets: HUMAN_OFFSETS, colors: humanColors(palette, pose) });
+    if (e && palette.axe) {
+      // 斧の、体からはみ出した部分の持ち主（いつでも場所をゆずる）
+      e.toolId = this.nextId++;
+      e.toolCells = [];
+      this.entities.set(e.toolId, {
+        id: e.toolId, kind: 'tool', name: '斧', priority: 0, yields: true, pos: [0, 0, 0],
+        offsets: new Int16Array(0), colors: new Uint32Array(0),
+      });
+    }
     return e && initCharacter(e, rng);
   }
 
@@ -349,8 +360,16 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     }
   };
 
+  const onChop = (e) => events.push(chop(world, e));
   const p = world.player;
-  if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report);
+  if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report, onChop);
+  // 倒れていく木と、落ちていく物（切り落とされた龍の尾）
+  for (const f of world.felling) {
+    f.update(dt);
+    for (const e of f.pushed ?? []) events.push({ type: 'push', actor: f.entity, target: e });
+  }
+  world.felling = world.felling.filter((f) => !f.done);
+  for (const e of [...world.entities.values()]) if (e.falling) dropFalling(world, e, dt);
 
   for (const e of [...world.entities.values()]) {
     if (e.kind !== 'npc') continue;
