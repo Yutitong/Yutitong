@@ -18,6 +18,8 @@ const CLIMB = 0.45; // 上下に向きを変える速さ
 const MAX_PITCH = 0.38;
 const SAFE = 13; // 頭の中心と、下の木や地面との最小のすき間
 const SPINE_STEP = 0.8; // 胴を描く間隔（ボクセル）
+const SLAB_MIN = SPINE_STEP * 0.625; // 背骨の1点が受け持つ厚みの半分（となりと少し重ねる）
+const SHELL = 1.9; // 胴の皮の厚さ（ボクセル）。√3 より厚いと、どの向きから見ても中が透けない
 const WALK_SPEED = 12; // 地面を歩く速さ（ボクセル/秒 ≈ 1.8 m/s）
 const WALK_TURN = 0.75;
 const HEAD_FLOOR = 12.5; // 歩くとき、頭の中心は地面からこの高さ
@@ -89,7 +91,7 @@ const waveAt = (s) => Math.sin(Math.min(1, s / DRAGON_LENGTH) * Math.PI) * 10 + 
 
 // ---- 頭の形（頭の座標: f = 前, u = 上, l = 横。一度だけ作る） ------------------
 
-const ell = (c, r) => (p) => Math.hypot((p[0] - c[0]) / r[0], (p[1] - c[1]) / r[1], (p[2] - c[2]) / r[2]);
+const ell = (c, r) => Object.assign((p) => Math.hypot((p[0] - c[0]) / r[0], (p[1] - c[1]) / r[1], (p[2] - c[2]) / r[2]), { rmin: Math.min(...r) });
 
 function buildHead() {
   const parts = [
@@ -104,7 +106,9 @@ function buildHead() {
     { f: ell([-2, 0, -9.5], [5, 4, 2.5]), color: 'cheek' },
   ];
   const points = [];
-  const step = 0.6;
+  // 点の間隔 0.55（1/√3 より細かい）・殻の厚さ 2 ボクセル以上: 頭がどの向きに回っても、
+  // どのボクセルにも点が入るので、点の間に隙間ができない
+  const step = 0.55;
   for (let f = -14; f <= 34; f += step) {
     for (let u = -11; u <= 13; u += step) {
       for (let l = -13; l <= 13; l += step) {
@@ -118,7 +122,7 @@ function buildHead() {
             best = part;
           }
         }
-        if (bestD > 1 || bestD < 0.86) continue; // 表面の薄い殻だけ
+        if (bestD > 1 || bestD < 1 - 2.0 / best.f.rmin) continue; // 表面の殻だけ（中は空）
         let color;
         const h = hash3(Math.round(f), Math.round(u), Math.round(l));
         if (best.color === 'jaw') color = u > -7.2 && f > 5 ? (h % 2 === 0 ? C.tooth : C.mouth) : (u < -9.3 ? C.belly : C.scaleA);
@@ -492,7 +496,9 @@ export class Dragon {
     const dir = [Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch)];
     this.head = add(this.head, mul(dir, this.speed * dt));
     const floor = this.clearance(this.head[0], this.head[2], probe, nearLanding) + (nearLanding ? HEAD_FLOOR - 2 : SAFE - 3);
-    this.head[1] = Math.min(HEIGHT - 16, Math.max(this.head[1], floor));
+    // 低すぎるときは持ち上げる。一度に跳ね上げると軌跡（胴）が折れるので、速さの分までにする
+    if (this.head[1] < floor) this.head[1] = Math.min(floor, this.head[1] + this.speed * dt);
+    this.head[1] = Math.min(HEIGHT - 16, this.head[1]);
   }
 
   // 軌跡に沿って、頭から距離 s の位置・向き・傾きを求める
@@ -559,70 +565,119 @@ export class Dragon {
     const pts = this.spine();
     const t = this.time;
     const keep = (s) => s >= from && s <= to;
-    // 切り口を描く: 中心からの距離で 脂 → 肉 → 骨
-    const flesh = (c, U, V, u, v, r) => {
-      const d = Math.hypot(u, v);
-      const color = d > r - 0.6 ? FAT : d < 1.3 && r > 2.5 ? BONE : FLESH[hash3(Math.round(u * 2), Math.round(v * 2), 5) % FLESH.length];
-      put(add(c, add(mul(U, u), mul(V, v))), color);
-    };
-    const disk = (c, U, V, r, minU = -Infinity) => {
-      for (let u = -r; u <= r; u += 0.7) {
-        if (u < minU) continue;
-        const L = Math.sqrt(Math.max(0, r * r - u * u));
-        for (let v = -L; v <= L; v += 0.7) flesh(c, U, V, u, v, r);
-      }
-    };
-    let first = null;
-    let last = null;
+    // 切り口・切り傷の断面の色: 中心からの距離で 脂 → 肉 → 骨
+    const fleshColor = (rho, r, x, y, z) =>
+      rho > r - 0.7 ? FAT : rho < 1.3 && r > 2.5 ? BONE : FLESH[hash3(x, y, z) % FLESH.length];
 
-    // 胴: 太さの変わる管の殻。上は鱗、下は腹板（たくさん呼ばれるので配列を作らずに計算する）
-    for (const { s, c, N, B } of pts) {
+    // 胴: 太さの変わる管。ボクセルごとに背骨からの距離を測り、表面から SHELL の厚さの所だけを点灯する
+    // （点を並べるのではなく1つずつ調べるので、斜めから見ても隙間ができない）。中は空。
+    // 切り傷や切り口では、削れた面から SHELL の厚さの所に肉の断面を描くので、そこからも中は見えない
+    // 背骨の点の間が空いている所（軌跡が急に曲がった所など）には、間の点を足して隙間をなくす
+    const rings = [];
+    for (let k = 0; k < pts.length; k++) {
+      const a = pts[k];
+      rings.push(a);
+      const b = pts[k + 1];
+      if (!b) break;
+      const gap = Math.hypot(b.c[0] - a.c[0], b.c[1] - a.c[1], b.c[2] - a.c[2]);
+      const m = Math.ceil(gap / (SLAB_MIN * 2)) - 1; // 受け持ちの厚み（2 × SLAB_MIN）で届く間は足さない
+      for (let i = 1; i <= m; i++) {
+        const f = i / (m + 1);
+        const mix = (p, q) => [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f, p[2] + (q[2] - p[2]) * f];
+        const T = norm(mix(a.T, b.T));
+        const B = norm(cross(T, mix(a.N, b.N)));
+        rings.push({ s: a.s + (b.s - a.s) * f, c: mix(a.c, b.c), T, N: cross(B, T), B });
+      }
+    }
+    for (let k = 0; k < rings.length; k++) {
+      const { s, c, T, N, B } = rings[k];
       if (s < 3 || !keep(s)) continue;
-      first ??= { s, c, N, B };
-      last = { s, c, N, B };
       const r = radiusAt(s);
       const band = Math.floor(s / 2.2);
-      // この輪にかかる切り傷: 向き th の側から V 字に削れている。真ん中が一番深く（c0 の所まで）、両端は浅い
+      // 急に曲がる所では、曲がりの外側がとなりの点の受け持ちから外れないよう、受け持つ厚みを広げる
+      let bend = 0;
+      for (const j of [k - 1, k + 1]) {
+        const q = rings[j];
+        if (q) bend = Math.max(bend, Math.acos(Math.min(1, q.T[0] * T[0] + q.T[1] * T[1] + q.T[2] * T[2])));
+      }
+      const SLAB = SLAB_MIN + r * bend;
+      const cap = (from > 0 && s - from < SPINE_STEP * 1.5) || (to < DRAGON_LENGTH && to - s < SPINE_STEP * 1.5);
+      // この輪にかかる切り傷: 向き th の側から V 字に削れている。真ん中が一番深い
       const cuts = [];
       for (const w of this.wounds) {
         const half = 2.5 + 2 * w.f; // 深くなるほど切り口も広がる
-        const ds = Math.abs(s - w.s);
-        if (ds > half) continue;
+        if (Math.abs(s - w.s) > half + SLAB) continue;
         const deep = r - 2 * r * w.f;
-        cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), c0: deep + (r - deep) * (ds / half) });
+        // 斜面の傾き。面からの距離は、面に直角に測る（斜面でも肉の層が薄くならないように）
+        const slope = (r - deep) / half;
+        cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), ws: w.s, half, deep, norm: Math.sqrt(1 + slope * slope) });
       }
-      for (const rho of [r, r - 0.9]) {
-        if (rho <= 0.4) continue;
-        const n = Math.max(8, Math.ceil((Math.PI * 2 * rho) / 0.8));
-        const ring = ringTable(n);
-        for (let k = 0; k < n; k++) {
-          const th = (k / n) * Math.PI * 2;
-          const cu = ring.cos[k], su = ring.sin[k];
-          let cut = false;
-          for (const q of cuts) if (rho * (cu * q.cu0 + su * q.su0) > q.c0) cut = true;
-          if (cut) continue;
-          const y = Math.floor(c[1] + (N[1] * cu + B[1] * su) * rho);
-          if (y < 1 || y >= HEIGHT) continue;
-          const x = Math.floor(c[0] + (N[0] * cu + B[0] * su) * rho);
-          const z = Math.floor(c[2] + (N[2] * cu + B[2] * su) * rho);
-          let color;
-          if (cu < -0.55) color = band % 3 === 0 ? C.bellyLine : C.belly;
-          else if (cu > 0.93) color = C.ridge;
-          else {
-            const cell = (band + Math.floor((th * rho) / 2.2)) % 2;
-            color = cell ? C.scaleA : (hash3(band, k, 3) % 5 === 0 ? C.scaleC : C.scaleB);
+      const r2 = r * r;
+      const inner = Math.max(0, r - SHELL);
+      const inner2 = cuts.length || cap ? -1 : inner * inner; // 切り傷も切り口もなければ、中の空洞はすぐに飛ばせる
+      // 背骨の向きに一番近い軸を内側のループにし、その軸では「受け持つ厚み」に入る範囲だけを調べる
+      const ax = Math.abs(T[0]) >= Math.abs(T[1]) && Math.abs(T[0]) >= Math.abs(T[2]) ? 0 : Math.abs(T[1]) >= Math.abs(T[2]) ? 1 : 2;
+      const [a1, a2] = [0, 1, 2].filter((a) => a !== ax);
+      const ext = (a) => Math.abs(T[a]) * SLAB + Math.sqrt(Math.max(0, 1 - T[a] * T[a])) * r + 0.5;
+      const cell = [0, 0, 0];
+      for (let i1 = Math.floor(c[a1] - ext(a1)); i1 <= Math.floor(c[a1] + ext(a1)); i1++) {
+        const d1 = i1 + 0.5 - c[a1];
+        for (let i2 = Math.floor(c[a2] - ext(a2)); i2 <= Math.floor(c[a2] + ext(a2)); i2++) {
+          const d2 = i2 + 0.5 - c[a2];
+          // t = d1*T[a1] + d2*T[a2] + d3*T[ax] が ±SLAB に入る d3 の範囲
+          const t0 = d1 * T[a1] + d2 * T[a2];
+          const u0 = d1 * N[a1] + d2 * N[a2];
+          const v0 = d1 * B[a1] + d2 * B[a2];
+          const ta = (-SLAB - t0) / T[ax], tb = (SLAB - t0) / T[ax];
+          const lo3 = Math.ceil(Math.min(ta, tb) + c[ax] - 0.5), hi3 = Math.floor(Math.max(ta, tb) + c[ax] - 0.5);
+          for (let i3 = lo3; i3 <= hi3; i3++) {
+            const d3 = i3 + 0.5 - c[ax];
+            const u = u0 + d3 * N[ax];
+            const v = v0 + d3 * B[ax];
+            const rho2 = u * u + v * v;
+            if (rho2 > r2 || rho2 < inner2) continue;
+            const t = t0 + d3 * T[ax];
+            cell[a1] = i1;
+            cell[a2] = i2;
+            cell[ax] = i3;
+            const x = cell[0], y = cell[1], z = cell[2];
+            if (y < 1 || y >= HEIGHT) continue;
+            // 切り傷で削れた所は描かない。削れた面のすぐ下は肉の断面
+            let face = Infinity;
+            let removed = false;
+            for (const q of cuts) {
+              const ds = Math.abs(s + t - q.ws);
+              if (ds > q.half) continue;
+              const e = u * q.cu0 + v * q.su0 - (q.deep + (r - q.deep) * (ds / q.half));
+              if (e > 0) {
+                removed = true;
+                break;
+              }
+              face = Math.min(face, -e / q.norm);
+            }
+            if (removed) continue;
+            const rho = Math.sqrt(rho2);
+            const skin = rho >= inner;
+            const cutFace = face < SHELL || cap;
+            if (!skin && !cutFace) continue;
+            let color;
+            if (cutFace && (cap || face < 1.2 || !skin)) {
+              color = fleshColor(rho, r, x, y, z);
+            } else {
+              const cu = rho > 0 ? u / rho : 1;
+              if (cu < -0.55) color = band % 3 === 0 ? C.bellyLine : C.belly;
+              else if (cu > 0.93) color = C.ridge;
+              else {
+                const th = Math.atan2(v, u) + Math.PI;
+                const cellc = (band + Math.floor((th * r) / 2.2)) % 2;
+                color = cellc ? C.scaleA : (hash3(band, Math.floor(th * 6), 3) % 5 === 0 ? C.scaleC : C.scaleB);
+              }
+            }
+            emit(x, y, z, color);
           }
-          emit(x, y, z, color);
         }
       }
-      for (const q of cuts) {
-        // 切り込みの斜面: 肉の断面が見える
-        if (Math.abs(q.c0) >= r) continue;
-        const U = add(mul(N, q.cu0), mul(B, q.su0)); // 切り込んだ向き
-        const V = add(mul(N, -q.su0), mul(B, q.cu0));
-        const L = Math.sqrt(r * r - q.c0 * q.c0);
-        for (let v = -L; v <= L; v += 0.7) flesh(c, U, V, q.c0, v, r);
-      }
+      for (const q of cuts) q.c0 = q.deep + (r - q.deep) * Math.min(1, Math.abs(s - q.ws) / q.half);
       // 背びれ: のこぎり状
       if (s > 40 && s < DRAGON_LENGTH - 28 && !cuts.some((q) => q.c0 < r * 0.2 && q.cu0 > 0.3)) {
         const hgt = 1.5 + 2.8 * ((s % 7) / 7) * Math.min(1, r / 4);
@@ -641,9 +696,6 @@ export class Dragon {
       }
     }
 
-    // 切り落とされた所の断面
-    if (first && from > 0) disk(first.c, first.N, first.B, radiusAt(first.s));
-    if (last && to < DRAGON_LENGTH) disk(last.c, last.N, last.B, radiusAt(last.s));
 
     // 四肢: 飛ぶときは泳ぐように前後に掻き、歩くときは足を地面につけて交互に運ぶ
     const lerp3 = (a, b, k) => add(a, mul(sub(b, a), k));
@@ -834,13 +886,13 @@ function tube(put, a, b, r0, r1, color) {
   const T = norm(d);
   const B = norm(Math.abs(T[1]) > 0.9 ? cross(T, [1, 0, 0]) : cross(T, [0, 1, 0]));
   const N = cross(B, T);
-  for (let s = 0; s <= len; s += 0.5) {
+  // 中まで詰まった管（細いので、殻にせず全部埋める。点の間隔 0.45 なら斜めでも隙間ができない）
+  for (let s = 0; s <= len; s += 0.45) {
     const c = add(a, mul(T, s));
     const r = r0 + (r1 - r0) * (s / len);
-    const n = Math.max(6, Math.ceil((Math.PI * 2 * r) / 0.7));
-    for (let k = 0; k < n; k++) {
-      const th = (k / n) * Math.PI * 2;
-      put(add(c, add(mul(N, Math.cos(th) * r), mul(B, Math.sin(th) * r))), color);
+    for (let u = -r; u <= r; u += 0.45) {
+      const L = Math.sqrt(Math.max(0, r * r - u * u));
+      for (let v = -L; v <= L; v += 0.45) put(add(c, add(mul(N, u), mul(B, v))), color);
     }
   }
 }

@@ -706,3 +706,48 @@ test('斧: 龍を切りつけると傷から肉が見え、切り続けると尾
   assert.equal(low, 1);
   assertConsistent(w);
 });
+
+test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷・切り口も）', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 90, 0]);
+  w.dragon = d;
+  d.land(40, 300, 0.3);
+  for (let i = 0; i < 10; i++) d.update(0.08, [0, 0, 0]);
+  // 何か所か切りつけ、尾の先を切り落とす
+  for (const k of [150, 260, 330]) {
+    const { c, B } = d.pts[k];
+    for (let n = 0; n < (k === 330 ? 12 : 3); n++) d.wound([c[0] + B[0] * 6, c[1] + B[1] * 6, c[2] + B[2] * 6]);
+  }
+  d.advance = () => {};
+  d.update(0.08, [0, 0, 0]);
+  const own = (x, y, z) => w.ownerAt(x, y, z) === d.id;
+  // 背骨の中心から、龍のセルを面で通り抜けずに（6 近傍で）胴の外へ出られるか
+  const radiusOf = (s) => (s / 400 < 0.12 ? 4.6 + 1.6 * (s / 48) : s / 400 < 0.4 ? 7 : Math.max(1.2, 6.2 * (1 - (s / 400 - 0.4) / 0.6) ** 0.9));
+  let tested = 0;
+  for (let k = 60; k < d.pts.length && d.pts[k].s < d.length - 30; k += 15) {
+    const start = d.pts[k].c.map(Math.floor);
+    if (own(...start)) continue;
+    tested++;
+    const seen = new Set([start.join()]);
+    const q = [start];
+    while (q.length && seen.size < 3000) {
+      const [x, y, z] = q.pop();
+      for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        const n = [x + dx, y + dy, z + dz];
+        const key = n.join();
+        if (seen.has(key) || own(...n) || n[1] < 1) continue;
+        seen.add(key);
+        let best = Infinity, bs = 0;
+        for (const p of d.pts) {
+          if (p.s > d.length) break;
+          const dd = (n[0] + 0.5 - p.c[0]) ** 2 + (n[1] + 0.5 - p.c[1]) ** 2 + (n[2] + 0.5 - p.c[2]) ** 2;
+          if (dd < best) [best, bs] = [dd, p.s];
+        }
+        assert.ok(Math.sqrt(best) <= radiusOf(bs) + 2, `s = ${d.pts[k].s.toFixed(0)} の中から ${key} へ抜けられる`);
+        q.push(n);
+      }
+    }
+  }
+  assert.ok(tested >= 12, `調べた所 ${tested}`);
+});
