@@ -278,6 +278,8 @@ const OBJ={
  sign:{rows:["................","................","..OOOOOOOOOOOO..","..OBBBBBBBBBBO..","..OBDDDDDDDDBO..","..OBBBBBBBBBBO..","..OBDDDDDDBBBO..","..OBBBBBBBBBBO..","..OOOOOOOOOOOO..",".......OO.......",".......OO.......",".......OO.......",".......OO.......","......OOOO......","................","................"],pal:{O:'#3a2a1a',B:'#d0a868',D:'#6a4a2a'}},
  sandal:{rows:["................","......OOOO......",".....OBBBBO.....","....OBBRBBBO....","....OBRBRBBO....","....ORBBBRBO....","...OBRBBBBRBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","....OBBBBBBO....","....OBBBBBBO....","....OBBBBBBO....",".....OBBBBO.....","......OOOO......","................"],pal:{O:'#3a2a1a',B:'#8e6c4a',R:'#d03a3a'}},
  teron:{rows:["................","......P..Y......","....P.PPYY.Y....",".....PWWWWY.....","...CCWWEEWWGG...","....CWWEEWWG....",".....BWWWWG.....","....B.BBGG.G....","......B..G......",".......NN.......","....LL.NN.......",".....LLNN.LL....",".......NNLL.....",".......NN.......","................","................"],pal:{P:'#ff6aa0',Y:'#ffe04a',C:'#5ae0f0',G:'#6ae06a',B:'#6a8aff',W:'#ffffff',E:'#ffd23a',N:'#2a7a2a',L:'#4ab04a'}},
+ goldsandal:{rows:["................","......OOOO......",".....OBBBBO.....","....OBBRBBBO....","....OBRBRBBO....","....ORBBBRBO....","...OBRBBBBRBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","....OBBBBBBO....","....OBBBBBBO....","....OBBBBBBO....",".....OBBBBO.....","......OOOO......","................"],pal:{O:"#5a3a00",B:"#ffd25a",R:"#ff4a5a"}},
+ goldtorn:{rows:["................","......OOOO......",".....OBBBBO.....","....OBBBBBBO....","....OBRBBBBO....","....ORBBBRBO....","...OBRBBBBRBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","...OBBBBBBBBO...","....OBBBBBBO....","....OBBBBBBO....","....OBBBBBBO....",".....OBBBBO.....","......OOOO......","................"],pal:{O:"#5a3a00",B:"#ffd25a",R:"#ff4a5a"}},
  speaker:{rows:["................","..OOOOOOOOOOOO..","..OBBBBBBBBBBO..","..OBBGGGGGGBBO..","..OBGGCCCCGGBO..","..OBGCCWWCCGBO..","..OBGGCCCCGGBO..","..OBBGGGGGGBBO..","..OBBBBBBBBBBO..","..OBBBGGGGBBBO..","..OBBGCCCCGBBO..","..OBBGCWWCGBBO..","..OBBBGGGGBBBO..","..OBBBBBBBBBBO..","..OOOOOOOOOOOO..","................"],pal:{O:"#08080c",B:"#1e1e2a",G:"#3a3a4e",C:"#55556e",W:"#9a9ab8"}},
  jar:{rows:["................",".....OOOOOO.....","....OYYYYYYO....",".....OOOOOO.....","....OBBBBBBO....","...OBWBBBBBBO...","..OBWBBBBBBBBO..","..OBBBRRRRBBBO..","..OBBRRRRRRBBO..","..OBBBRRRRBBBO..","..OBBBBBBBBBBO..","...OBBBBBBBBO...","....OOOOOOOO....","................","................","................"],pal:{O:'#2a1a10',B:'#e0d8c8',W:'#ffffff',R:'#d04040',Y:'#ffd23a'}}
 };
@@ -396,7 +398,8 @@ const ITEMS={
  tansan:{name:'きつけ炭酸',price:60,tg:'dead',revive:true,desc:'シュワッと 一発。 たおれた 仲間を 生きかえらせる。'},
  komonjo:{name:'古文書',key:true,desc:'「光人ノ母、地下深キ ピンクノ部屋ニテ 待ツ。 カノ者、ニオイニ ウルサシ。」'},
  teron:{name:'テロンテロンサファリウム',key:true,desc:'虹色に ひかる 花。 かぐと テロンテロンする。'},
- are:{name:'アレ',key:true,battle:true,desc:'「アレ」だ。 それ以上 説明の しようが ない。'}
+ are:{name:'アレ',key:true,battle:true,desc:'「アレ」だ。 それ以上 説明の しようが ない。'},
+ boro:{name:'ボロサンダル',key:true,desc:'ボロボロの サンダル。 鼻緒に 小さく 「ネガイ カナウ」と 刻まれている……？'}
 };
 const EN={
  police:{name:'パトロール巡査',human:'police',hp:16,atk:10,def:3,agi:6,exp:3,gold:5,acts:['atk','atk','bind']},
@@ -414,7 +417,7 @@ const EN={
  ekislime:{name:'いえきスライム',mon:'slime',pal:{O:'#1a3a1a',B:'#8ad04a',W:'#e8ffd0',E:'#1a1a1a',M:'#2a4a1a'},hp:62,atk:28,def:12,agi:9,exp:22,gold:18,acts:['atk','melt']},
  henpoko:{name:'ヘンポコ虫',mon:'bug',pal:{O:'#2a0a2a',B:'#b05ad0',W:'#fff',E:'#ffe04a',M:'#2a0a2a',R:'#ff8ad0'},hp:50,atk:30,def:9,agi:16,exp:24,gold:20,acts:['atk','dance']},
  boot:{name:'しょうかちゅうブーツ',mon:'boot',pal:{O:'#1a1008',B:'#7a4a2a',W:'#d0c0a0',E:'#ffe04a',M:'#1a1008',R:'#c03a2a'},hp:72,atk:32,def:15,agi:6,exp:26,gold:22,acts:['atk','kick']},
- wakinini2:{name:'ワキニーニ',human:'wakinini',boss:true,big:true,hp:700,atk:34,def:14,agi:14,exp:0,gold:0,acts:['atk','atk','wakiaura','wakikatame']}
+ wakinini2:{name:'ワキニーニ',human:'wakinini',boss:true,big:true,hp:700,atk:34,def:14,agi:14,exp:300,gold:500,acts:['atk','atk','wakiaura','wakikatame']}
 };
 Object.keys(EN).forEach(k=>EN[k].key=k);
 function enemyCanvas(d){return d.human?charSprite(d.human,'front',0):monSprite(d.mon,d.pal)}
@@ -765,11 +768,11 @@ defMap('maze',{name:'ヘンポコ迷宮',outside:'M',bgKind:'maze',
  enc:()=>F('peace')?null:[['ekislime'],['henpoko','henpoko'],['boot'],['ekislime','henpoko']],
  events:[
   {id:'oldman',x:MZ.shop[0],y:MZ.shop[1],sprite:'oldman',dir:'down',talk:async()=>{await emote('oldman','♪');await say('おじいさん「ほっほっ。 わしは 50年前に\nこの ウナギに 飲みこまれた 行商人じゃ。」','おじいさん「住めば 都じゃよ。 なにか 買って いくかね？」');await shop(['oyatsu','bigoyatsu','mint','tansan'])}},
-  ...(MZ.keibu?[{id:'keibu2',x:MZ.keibu[0],y:MZ.keibu[1],sprite:'keibu',dir:'down',talk:async()=>{await emote('keibu2','…');await say('ハリコミ警部「……おお、館長さん。 ワシも 飲まれたよ。」','ハリコミ警部「ここで 3日 すごして わかった。\n逮捕とか…… わりと どうでも いいな。」')}}]:[]),
+  ...(MZ.keibu?[{id:'keibu2',x:MZ.keibu[0],y:MZ.keibu[1],sprite:'keibu',dir:'down',show:()=>!F('wk_beaten'),talk:async()=>{await emote('keibu2','…');await say('ハリコミ警部「……おお、館長さん。 ワシも 飲まれたよ。」','ハリコミ警部「ここで 3日 すごして わかった。\n逮捕とか…… わりと どうでも いいな。」')}}]:[]),
   ...MZ.chests.map((c,i)=>chest('m'+i,c[0],c[1],['bigoyatsu','mint','tansan'][i],2)),
   {id:'arechest',x:MZ.are[0],y:MZ.are[1],sprite:'chest',obj:true,glow:'#fff0a0',show:()=>!F('are_found'),talk:areScene},
-  {id:'wakinini2',x:MZ.are[0],y:MZ.are[1],sprite:'wakinini',dir:'down',show:()=>F('are_found')&&!F('peace'),talk:finalBattle},
-  {id:'sandal',x:MZ.sandal[0],y:MZ.sandal[1],sprite:'sandal',obj:true,talk:()=>F('peace')
+  {id:'wakinini2',x:MZ.are[0],y:MZ.are[1],sprite:'wakinini',dir:'down',show:()=>F('are_found')&&!F('peace')&&!F('wk_beaten'),talk:finalBattle},
+  {id:'sandal',x:MZ.sandal[0],y:MZ.sandal[1],sprite:'sandal',obj:true,show:()=>!F('sandal_got'),talk:()=>F('peace')
      ?say('ボロボロの サンダルが 落ちている。','カイト「ふっ…… 今の ワシには、\nこんな ボロサンダル 目に 入らんわい。」')
      :say('ボロボロの サンダルが 落ちている。\n鼻緒が いまにも ちぎれそうだ。','カイト「きたないのう。\n誰が はくんじゃ、こんなもの。」')},
   {x:MZ.exit[0],y:MZ.exit[1],solid:false,touch:exitScene}
@@ -977,7 +980,8 @@ async function dmgEnemy(e,d){
   burst(PS,e.cx,e.cy,6,{type:'spark',life:300,speed:.3,c:'#fff6c0',size:3});
   await blog(e.name+'に '+d+'の ダメージ！');
   if(e.hp<=0){
-    if(B.o.undying===e.d.key){e.hp=Math.round(e.mhp*.4);e.hurtT=performance.now();flash(.4,'200,120,255');await blog(e.name+'は 弟への 想いで 立ちあがった！');await blog('（このままでは キリがない…… なにか 別の 方法は……？）');return}
+    if(B.o.undying===e.d.key&&(e.revives||0)<(B.o.maxRevive==null?Infinity:B.o.maxRevive)){e.revives=(e.revives||0)+1;e.hp=Math.round(e.mhp*.4);e.hurtT=performance.now();flash(.4,'200,120,255');
+      if(e.revives===1){await blog(e.name+'は 弟への 想いで 立ちあがった！');await blog('（このままでは キリがない…… なにか 別の 方法は……？）')}else{await blog(e.name+'は ふらふらと 立ちあがった！');await blog(e.name+'の 息が あがっている…… あと ひといきだ！')}return}
     e.hp=0;e.dieT=performance.now();sfx('die');await blog(e.name+'を たおした！');
   }
 }
@@ -1271,7 +1275,7 @@ async function luminaTalk(){
   if(!F('teron_quest'))return say('ルミナ「母の 部屋への 入り口は 東の 部屋の 奥の かべ。\nピンク色に 光る レンガが 目印です。」');
   return say('ルミナ「……。」');
 }
-async function altarTalk(){await say('封印の 台座だ。 サンダルの 形の くぼみが ある。');shake(300);await emoteAll('!');await say('下の ほうから 「グオオオ……」と いびきが きこえる。')}
+async function altarTalk(){if(F('secret_route'))return say('封印の 台座だ。\n中から すやすやと 寝息が きこえる。');await say('封印の 台座だ。 サンダルの 形の くぼみが ある。');shake(300);await emoteAll('!');await say('下の ほうから 「グオオオ……」と いびきが きこえる。')}
 async function hiddenWall(){
   await say('かべを しらべた……');await emote('kaito','!');await say('ピンク色に 光る レンガが ある！');
   showMsg('おしてみますか？');const c=await choose(['はい','いいえ'],{style:{right:'3%',bottom:'30cqw'}});hideMsg();if(c!==0)return;
@@ -1280,6 +1284,7 @@ async function hiddenWall(){
   await say('ゴゴゴゴゴ……！\nかくし階段が あらわれた！');
 }
 async function motherTalk(){
+  if(F('secret_route')&&hasItem('teron'))return trueEnding();
   if(!F('teron_quest')){
     await say('ピンク色の 光を まとった 女性が いる。');await emote('mother','…');
     await say('？？？「……なんじゃ。 千年ぶりの 客かと 思えば、\nずいぶん 汗くさい 連中じゃのう。」','ヒカリーヌ「わらわは 光人の母、ヒカリーヌ。\nルミナの 母じゃ。」','カイト「伝説の サンダルの 在りかを お教え 願いたい。\n遺跡を 復活させたいのです。」');
@@ -1397,12 +1402,17 @@ async function areScene(){
 async function finalBattle(){
   await emote('wakinini2','anger');
   await say('？？？「見つけたぞ、よふかし団！」','ワキニーニ「ウナギの 腹の 中だろうと 関係ねえ！\n弟の 仇ィィィ！！」');
-  const r=await battle(['wakinini2'],{noEscape:true,undying:'wakinini2',
+  const r=await battle(['wakinini2'],{noEscape:true,undying:'wakinini2',maxRevive:2,
     intro:async()=>{await say('ミミ「団長！ さっきの 『アレ』を……！」','（どうぐ から 「アレ」を つかってみよう）')},
     onAre:areFinale});
   if(r==='peace'){setF('peace');
     await emoteAll('♥');
     await say('ワキニーニ「弟の 仇なんて、もう どうでも いいや。\nアイツも 牢屋で 元気に やってるしな。」','ワキニーニ「出口まで いっしょに 行こうぜ、兄弟！」','（一行は 最高の 気分だ。\nもう まものも よってこない）');
+  }else if(r==='win'){setF('wk_beaten');
+    await say('ワキニーニ「ぐ……ぐはっ……！\nアレも 使わずに…… オレを……」','ワキニーニ「弟よ…… すまねえ……」');
+    await emoteAll('!');await say('そこへ どこからか ハリコミ警部が あらわれた！','ハリコミ警部「ワキニーニ！ ウナギの 腹の 中でも\n逮捕は 逮捕だ！」','ワキニーニは 連行されていった……。');
+    await emote('lumina','!');await say('ルミナ「館長、出口へ いそぎましょう！\n外に 出たら、オオウナギを 封印しなおします！」');
+    await emote('mimi','♪');await say('ミミ「テロンテロンサファリウムも 無事です！」');
   }
 }
 async function areFinale(p){
@@ -1428,6 +1438,8 @@ async function areFinale(p){
   return'peace';
 }
 async function exitScene(){
+  if(F('wk_beaten'))return secretExit();
+  if(!F('peace')&&F('are_found')){await say('出口らしき 光が 見える……！');return say('……でも、ワキニーニとの 決着が まだ ついていない。')}
   if(!F('peace')){await say('出口らしき 光が 見える……！');await emote('lumina','!');return say('ルミナ「待ってください。 この 迷宮の どこかに\n伝承の 『アレ』が あるはず……」','ルミナ「アレを 見つけるまでは、\n出られない 気が します。」')}
   await emoteAll('♪');
   await say('カイト「出口だ！」','ワキニーニ「最高の 気分だぜ。」','ミミ「ヒリヒリ しますけどね。」');
@@ -1444,10 +1456,63 @@ async function ending(){
   await sceneSwap('black');await narrate('……しかし。');
   await sceneSwap('reveal');await narrate('ヘンポコ迷宮の すみっこに 落ちていた、\nあの ボロボロの サンダル。','その 鼻緒に、小さく こう 刻まれていたことを――','『ネガイ　カナウ』','一行は 知るよしも なかった……。');
   await sceneSwap('black');
+  await endCard('おしまい','');
+}
+async function endCard(big,sub){
   const t=Math.floor(S.playMs/60000);
-  const w=el('div','win stats');w.innerHTML='<div class="big">おしまい</div><div>怪盗館長と 幻のサンダル</div><div>プレイ時間 '+Math.floor(t/60)+'時間'+(t%60)+'分 ・ カイト Lv '+S.party[0].lv+'</div><div style="color:var(--muted)">あそんでくれて ありがとう！</div>';
+  const w=el('div','win stats');w.innerHTML='<div class="big">'+big+'</div>'+(sub?'<div style="color:var(--pink)">'+sub+'</div>':'')+'<div>怪盗館長と 幻のサンダル</div><div>プレイ時間 '+Math.floor(t/60)+'時間'+(t%60)+'分 ・ カイト Lv '+S.party[0].lv+'</div><div style="color:var(--muted)">あそんでくれて ありがとう！</div>';
   sfx('win');await waitKey();w.remove();
   S=null;scene=null;mode='title';fade=0;followers=[];title();
+}
+async function secretExit(){
+  await emoteAll('!');
+  await say('カイト「出口だ！」','ルミナ「外に 出たら、すぐに オオウナギを 封印しなおします！」');
+  sfx('boom');shake(900);flash(.8);await fadeTo(1,900);
+  await narrate('オオウナギの 大きな くしゃみと ともに、\n一行は 外へ 飛びだした！','……ボロボロの サンダルも いっしょに 飛びだした。');
+  setF('sandal_got');setF('secret_route');
+  S.map='ruins';S.x=12;S.y=11;S.dir='up';S.respawn={map:'ruins',x:12,y:11};resetFollowers();PW=[];emotes=[];
+  await fadeTo(0,700);showMapName('幻の遺跡サンダル');
+  const st={s:0,beam:0};
+  fx=(g,now)=>{const x=12*TILE-CAM.x,y=9*TILE+16-CAM.y;
+    if(st.beam>0){g.save();g.globalCompositeOperation='lighter';const w=60*st.beam;const gr=g.createLinearGradient(x-w,0,x+w,0);gr.addColorStop(0,'rgba(140,220,255,0)');gr.addColorStop(.5,'rgba(200,245,255,.85)');gr.addColorStop(1,'rgba(140,220,255,0)');g.fillStyle=gr;g.fillRect(x-w,0,w*2,y+10);g.restore()}
+    if(st.s>0)drawEelHead(g,x,y-90*st.s,st.s*.75,.15,false,now)};
+  sfx('boom');shake(600);await anim(900,t=>{st.s=ease(t)});
+  await emoteAll('!!');await say('オオウナギ「……ハックション。」','ルミナ「いまです！ 封印―― ふたたび！！」');
+  sfx('magic');flash(.7,'180,240,255');await anim(400,t=>{st.beam=t});
+  await anim(1300,t=>{st.s=1-t});st.beam=0;fx=null;shake(400);sfx('boom');
+  await say('オオウナギは 台座の 中へ 吸いこまれていった！');
+  await emote('lumina','♪');await say('ルミナ「封印、完了です……！\nこれで 見張りの 任務も 元どおり。」');
+  await emote('kaito','?');await say('カイト「……ん？ なんじゃ、また この ボロサンダルか。\nまあ 一応 持っていくか。」');
+  giveItem('boro');sfx('item');await say('ボロサンダルを 手に入れた！');
+  await say('ミミ「団長、テロンテロンサファリウムも 無事です！」','カイト「よし。 ヒカリーヌ殿の ところへ 戻るぞ！」','（地下の ピンクの部屋へ 花を とどけよう）');
+}
+async function trueEnding(){
+  await emote('mother','!');await say('ヒカリーヌ「……む？ この 香りは……！」');
+  delete S.items.teron;sfx('item');await say('テロンテロンサファリウムを わたした！');
+  burst(PW,4*TILE+16,2*TILE,24,{type:'heart',life:1800,speed:.05,up:.04});await emote('mother','♥');
+  await say('ヒカリーヌ「テロンテロン……♪」','ヒカリーヌ「……ふう。 千年ぶりに 機嫌が よいわ。\nそなたら、なかなか やるのう。」','カイト「では ヒカリーヌ殿。 伝説の サンダルの 在りかを。」','ヒカリーヌ「在りか じゃと？ ……そなた、\nふところに 入れておるでは ないか。」');
+  await emoteAll('?');await say('カイト「……え？」','カイトは ボロサンダルを とりだした。','ヒカリーヌ「それこそが 伝説の サンダル。\n封印が とけたとき、ウナギに 飲まれて おったのじゃ。」');
+  await emote('mimi','!!');await say('ミミ「あの ボロサンダルが……！」');await emote('don','…');await say('ドン「……はいてみたい。」','ヒカリーヌ「では、遺跡を 目覚めさせよう。\nルミナ、手を かせ。」','ルミナ「はい、母上！」');
+  sfx('magic');flash(1,'255,240,200');await fadeTo(1,700);scene={name:'revival',t0:performance.now()};mode='scene';PS=[];await fadeTo(0,900);
+  await narrate('光人の 母と 娘の 光が、\nボロボロの サンダルを つつみこむ――','幻の遺跡『サンダル』が、\n千年の 眠りから 目を さました！','サンダルは 黄金の 光を はなっている。');
+  await say('ヒカリーヌ「鼻緒を ちぎれば、どんな 願いも\nひとつだけ 叶う。 さあ、どうする 館長よ。」');
+  showMsg('鼻緒を ちぎりますか？');const c=await choose(['ちぎる','ちぎらない'],{style:{right:'3%',bottom:'30cqw'},cancel:false});hideMsg();
+  let sub;
+  if(c===0){
+    await say('カイト「ワシの 願いは ひとつ。」','カイト「世界中の 盗まれた お宝が、\nすべて 持ち主の もとへ 帰ること！」');
+    sfx('crit');shake(600);flash(1);scene.torn=true;await narrate('ブチッ！');
+    await sceneSwap('wish');scene.torn=true;await narrate('黄金の 光が 夜空に はじけ――','世界中の 盗品が、流れ星と なって\n持ち主の もとへ 帰っていった。','ボンボミュージアムンQの 展示室は からっぽに なった。\nよふかし団の 夜の 仕事も、もう ない。');
+    await sceneSwap('golddisplay');scene.torn=true;await narrate('鼻緒の ちぎれた 黄金のサンダルは、\nカイト博物館の 目玉展示に なった。','カイト「これで 夜は ゆっくり 眠れるわい。」');
+    sub='ネガイ カナウ';
+  }else{
+    await say('カイト「……いや。 やめておこう。」','カイト「願いは、自分の 手で 叶えるものだ。」','ヒカリーヌ「……ほう。\n千年で いちばん 気に入ったぞ、館長。」');
+    await sceneSwap('golddisplay');await narrate('黄金のサンダルは、カイト博物館の 目玉展示に なった。\n入館料は もちろん 無料。','そして 今夜も――\n怪盗 カイトは 盗まれた お宝を 盗み返しに いく。');
+    sub='願いは 自分の 手で';
+  }
+  await sceneSwap('jail');await narrate('ワキニーニ兄弟は 同じ 牢屋で、\nなかよく ラーメンの 出前を とっている。');
+  await sceneSwap('sleep');await narrate('オオウナギは 台座の 下で ふたたび 眠っている。\n……ときどき くしゃみを しながら。');
+  await sceneSwap('black');
+  await endCard('TRUE END',sub);
 }
 
 // ---------------------------------------------------------------- club lights (mirror balls, spots, beams, lasers, dance floor)
@@ -1567,7 +1632,7 @@ function museumAt(g,cx,baseY,s){const D='#0a0618';g.fillStyle=D;g.fillRect(cx-90
   g.fillStyle='#1c1430';for(let i=0;i<6;i++)g.fillRect(cx-78*s+i*30*s,baseY-62*s,10*s,58*s);g.fillStyle='#ffd25a';g.fillRect(cx-8*s,baseY-34*s,16*s,34*s);
   const gr=g.createRadialGradient(cx,baseY-17*s,2,cx,baseY-17*s,50*s);gr.addColorStop(0,'rgba(255,210,90,.35)');gr.addColorStop(1,'rgba(255,210,90,0)');g.fillStyle=gr;g.fillRect(cx-60*s,baseY-70*s,120*s,70*s);return[cx,baseY-112*s]}
 function capeAt(g,x,y,s,now){const w=Math.sin(now*.008)*6*s;g.fillStyle='#1a1028';g.beginPath();g.moveTo(x-5*s,y);g.lineTo(x-14*s+w,y+22*s);g.lineTo(x+18*s+w*1.6,y+18*s);g.lineTo(x+5*s,y);g.fill();g.fillStyle='#a02a3a';g.beginPath();g.moveTo(x+4*s,y+2*s);g.lineTo(x+18*s+w*1.6,y+18*s);g.lineTo(x+10*s+w,y+19*s);g.fill()}
-function sandalAt(g,x,y,scale,now,rot=0){const s=objSprite('sandal');g.save();g.globalCompositeOperation='lighter';g.translate(x,y);g.rotate(now*.0003);for(let i=0;i<12;i++){g.rotate(Math.PI/6);g.fillStyle='rgba(255,230,140,.07)';g.beginPath();g.moveTo(0,0);g.lineTo(-10*scale/8,-140*scale/8);g.lineTo(10*scale/8,-140*scale/8);g.fill()}g.restore();
+function sandalAt(g,x,y,scale,now,rot=0,key='sandal'){const s=objSprite(key);g.save();g.globalCompositeOperation='lighter';g.translate(x,y);g.rotate(now*.0003);for(let i=0;i<12;i++){g.rotate(Math.PI/6);g.fillStyle='rgba(255,230,140,.07)';g.beginPath();g.moveTo(0,0);g.lineTo(-10*scale/8,-140*scale/8);g.lineTo(10*scale/8,-140*scale/8);g.fill()}g.restore();
   g.save();g.translate(x,y);g.rotate(rot);g.imageSmoothingEnabled=false;g.shadowColor='#ffe86a';g.shadowBlur=14+Math.sin(now*.004)*8;g.drawImage(s,-8*scale,-8*scale,16*scale,16*scale);g.restore();
   for(let i=0;i<6;i++){const a=i*1.05+now*.0008,r=12*scale+Math.sin(now*.003+i)*6;const k=(Math.sin(now*.006+i*2)+1)/2;g.fillStyle='rgba(255,246,200,'+k+')';const sx=x+Math.cos(a)*r,sy=y+Math.sin(a)*r*.7;g.fillRect(sx-4,sy,9,1);g.fillRect(sx,sy-4,1,9)}}
 function emoAt(g,kind,x,y,s=2){const im=emoSprite(kind);g.imageSmoothingEnabled=false;g.drawImage(im,x,y,im.width*s,im.height*s)}
@@ -1622,12 +1687,29 @@ function drawScene(now){
     const gl=g.createRadialGradient(240,170,10,240,170,160);gl.addColorStop(0,'rgba(255,200,240,.45)');gl.addColorStop(1,'rgba(255,200,240,0)');g.fillStyle=gl;g.fillRect(80,10,320,320);
     drawCharAt(g,'mother','down',0,192,96,6);emoAt(g,'…',280,70,3);
     if(Math.random()<.12)addP(PS,{type:'heart',x:Math.random()*CW,y:CH,vy:-.05,life:4000});break}
-  case'exhibit':{g.fillStyle='#120e1c';g.fillRect(0,0,CW,CH);g.fillStyle='#1c1628';g.fillRect(0,0,CW,230);[[40,50],[380,50]].forEach(([x,y])=>{g.fillStyle='#6a4a20';g.fillRect(x,y,64,80);g.fillStyle='#2a2240';g.fillRect(x+6,y+6,52,68)});
+  case'golddisplay':case'exhibit':{const gold=scene.name==='golddisplay';g.fillStyle='#120e1c';g.fillRect(0,0,CW,CH);g.fillStyle='#1c1628';g.fillRect(0,0,CW,230);[[40,50],[380,50]].forEach(([x,y])=>{g.fillStyle='#6a4a20';g.fillRect(x,y,64,80);g.fillStyle='#2a2240';g.fillRect(x+6,y+6,52,68)});
     g.save();g.globalCompositeOperation='lighter';const sp=g.createLinearGradient(0,0,0,260);sp.addColorStop(0,'rgba(255,240,190,.4)');sp.addColorStop(1,'rgba(255,240,190,.08)');g.fillStyle=sp;g.beginPath();g.moveTo(210,0);g.lineTo(270,0);g.lineTo(340,270);g.lineTo(140,270);g.fill();g.restore();
-    g.fillStyle='#4a2c18';g.fillRect(190,220,100,70);g.fillStyle='#7a5034';g.fillRect(190,220,100,6);g.fillStyle='#d8b04a';g.fillRect(212,246,56,22);g.fillStyle='#2a1a10';g.font='16px '+FONT;g.textAlign='center';g.fillText('アレ',240,263);g.textAlign='left';
-    g.save();g.shadowColor='#fff0a0';g.shadowBlur=16+Math.sin(now*.004)*8;g.drawImage(objSprite('jar'),200,140,80,80);g.restore();
+    g.fillStyle='#4a2c18';g.fillRect(190,220,100,70);g.fillStyle='#7a5034';g.fillRect(190,220,100,6);g.font='16px '+FONT;const pl=gold?'伝説のサンダル':'アレ',pw=g.measureText(pl).width+20;g.fillStyle='#d8b04a';g.fillRect(240-pw/2,246,pw,22);g.fillStyle='#2a1a10';g.textAlign='center';g.fillText(pl,240,263);g.textAlign='left';
+    g.save();g.shadowColor='#fff0a0';g.shadowBlur=16+Math.sin(now*.004)*8;g.drawImage(objSprite(gold?(scene.torn?'goldtorn':'goldsandal'):'jar'),200,140,80,80);g.restore();
     drawCharAt(g,'kaito','right',0,90,170,3);emoAt(g,'♪',110,140);
     if(Math.random()<.15)addP(PS,{type:'mote',x:180+Math.random()*120,y:Math.random()*250,vy:-.01,life:2500,c:'#fff0c0'});break}
+  case'revival':{skyBands(g,['#0a0618','#140a28','#22103a','#341648','#4a1e52','#6a2a58']);starField(g,now,50,160);
+    const rg=g.createRadialGradient(240,170,10,240,170,260);rg.addColorStop(0,'rgba(255,230,150,.55)');rg.addColorStop(1,'rgba(255,230,150,0)');g.fillStyle=rg;g.fillRect(0,0,CW,CH);
+    g.fillStyle='#1a1230';[[30,110],[80,170],[130,90],[330,150],[380,100],[430,180]].forEach(([x,h])=>{g.fillRect(x,300-h,26,h);g.fillRect(x-6,300-h,38,8);g.fillStyle='rgba(255,210,90,'+(.4+.3*Math.sin(now*.004+x))+')';g.fillRect(x+10,300-h+20,6,h-30);g.fillStyle='#1a1230'});g.fillRect(0,296,CW,56);
+    for(let i=0;i<3;i++){const x=240+(i-1)*150;g.save();g.globalCompositeOperation='lighter';const bg=g.createLinearGradient(x-20,0,x+20,0);bg.addColorStop(0,'rgba(255,240,180,0)');bg.addColorStop(.5,'rgba(255,240,180,.25)');bg.addColorStop(1,'rgba(255,240,180,0)');g.fillStyle=bg;g.fillRect(x-20,0,40,300);g.restore()}
+    g.save();g.shadowColor='#ffb0e0';g.shadowBlur=14;drawCharAt(g,'mother','right',0,40,190,3);g.shadowColor='#fff3a0';drawCharAt(g,'lumina','left',0,392,190,3);g.restore();
+    sandalAt(g,240,150+Math.sin(now*.0015)*6,9,now,0,scene.torn?'goldtorn':'goldsandal');
+    if(Math.random()<.3)addP(PS,{type:'star',x:Math.random()*CW,y:Math.random()*280,life:700,c:'#fff0b0'});break}
+  case'wish':{skyBands(g,['#05041a','#0a0826','#110c34','#1a1042','#24144e']);starField(g,now,90,260);museumAt(g,240,320,.9);g.fillStyle='#07050f';g.fillRect(0,318,CW,40);
+    const icons=['jar','chest','goldsandal','teron'];for(let i=0;i<16;i++){const tt=((t/2600)+i/16)%1,a=.25+(i/16)*2.64,x=240+Math.cos(a)*tt*430,y=250-Math.sin(a)*tt*300+tt*tt*90;
+      g.save();g.globalCompositeOperation='lighter';g.strokeStyle='rgba(255,220,120,'+(.5*(1-tt))+')';g.lineWidth=2;g.beginPath();g.moveTo(240,250);g.quadraticCurveTo(240+Math.cos(a)*tt*200,250-Math.sin(a)*tt*200,x,y);g.stroke();g.restore();
+      if(i%4===3){g.fillStyle='#ffd25a';g.beginPath();g.arc(x,y,6,0,7);g.fill();g.fillStyle='#fff6c0';g.fillRect(x-2,y-3,2,2)}else g.drawImage(objSprite(icons[i%3]),x-12,y-12,24,24)}
+    sandalAt(g,240,250,4,now,0,'goldtorn');break}
+  case'jail':{g.fillStyle='#1e1c26';g.fillRect(0,0,CW,CH);for(let y=0;y<260;y+=18){g.fillStyle='#16141c';g.fillRect(0,y+17,CW,1);for(let x=(y/18)%2?22:0;x<CW;x+=44)g.fillRect(x,y,1,17)}
+    g.fillStyle='#2a2834';g.fillRect(0,260,CW,92);g.fillStyle='#0c0a14';g.fillRect(205,40,70,50);moonAt(g,240,64,10);g.fillStyle='#3a3846';for(let x=212;x<275;x+=14)g.fillRect(x,40,3,50);
+    drawCharAt(g,'wakinini','down',Math.floor(now/500)%4,120,170,3);drawCharAt(g,'wakino','down',Math.floor(now/500+1)%4,290,170,3);
+    [[150,262],[320,262]].forEach(([x,y])=>{g.drawImage(monSprite('bowl',EN.menman.pal),x-16,y-10,32,32);g.strokeStyle='rgba(255,255,255,.3)';g.lineWidth=2;g.beginPath();for(let k=0;k<24;k+=3)g.lineTo(x+Math.sin(k*.3+now*.005)*3,y-12-k);g.stroke()});
+    g.fillStyle='#4a4858';for(let x=10;x<CW;x+=34)g.fillRect(x,0,6,CH);g.fillStyle='#6a6878';for(let x=10;x<CW;x+=34)g.fillRect(x,0,2,CH);g.fillRect(0,20,CW,6);g.fillRect(0,300,CW,6);break}
   case'reveal':{g.fillStyle='#0a0206';g.fillRect(0,0,CW,CH);const v=g.createRadialGradient(240,176,40,240,176,300);v.addColorStop(0,'rgba(90,20,30,.6)');v.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=v;g.fillRect(0,0,CW,CH);
     sandalAt(g,240,150+Math.sin(now*.0015)*5,9,now,0);break}
   case'black':default:g.fillStyle='#000';g.fillRect(0,0,CW,CH);
