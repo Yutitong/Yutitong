@@ -5,14 +5,17 @@
 
 import { createPose, humanColors, rasterizeTool, CHOP_IMPACT } from './humanoid.js';
 
-export const WALK_SPEED = 9; // ボクセル/秒（≈ 1.35 m/s）
-export const RUN_SPEED = 21; // ≈ 3.2 m/s
+export const WALK_SPEED = 13; // ボクセル/秒（≈ 2 m/s）
+export const RUN_SPEED = 33; // ≈ 5 m/s
+export const SPRINT_SPEED = 53; // ≈ 8 m/s（走り続けると全力疾走になる）
+export const SPRINT_AFTER = 1.2; // 走り始めてから全力疾走になるまで（秒）
 export const PUSH_SPEED = 4;
-const ACCEL = 30; // ボクセル/秒²
-const DECEL = 45;
+const ACCEL = 45; // ボクセル/秒²
+const DECEL = 70;
 const TURN_RATE = 9; // ラジアン/秒
-const STRIDE_WALK = 11; // 1周期（左右1歩ずつ）で進むボクセル数
-const STRIDE_RUN = 18;
+const STRIDE_WALK = 10; // 1周期（左右1歩ずつ）で進むボクセル数（≈ 1.5m）
+const STRIDE_RUN = 22;
+const STRIDE_SPRINT = 29;
 const SWING_TIME = 0.6; // 斧を1回振る時間（秒）
 export const MAX_STEP = 2; // 歩いて登り降りできる段差（ボクセル ≈ 30cm）
 const GRAVITY = 65; // ボクセル/秒²（≈ 9.8 m/s²）
@@ -130,8 +133,9 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
     e.moveDir = dir;
   }
 
-  // 速度: 加速・減速は一定の割合で
-  let targetSpeed = dir ? (input.run ? RUN_SPEED : WALK_SPEED) : 0;
+  // 速度: 加速・減速は一定の割合で。走り続けると全力疾走になる
+  e.runFor = dir && input.run && e.speed > WALK_SPEED ? (e.runFor ?? 0) + dt : 0;
+  let targetSpeed = dir ? (input.run ? (e.runFor >= SPRINT_AFTER ? SPRINT_SPEED : RUN_SPEED) : WALK_SPEED) : 0;
   if (Math.abs(turnLeft) > 1.2) targetSpeed *= 0.3; // 振り返るときは足を止め気味に
   if (e.swingT) targetSpeed *= 0.35; // 斧を振っている間はゆっくり
   if (e.pushing > 0) targetSpeed = Math.min(targetSpeed, PUSH_SPEED);
@@ -140,8 +144,13 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   if (dir && sameDir(dir, e.blockedDir)) {
     e.waitBlocked -= dt;
     if (e.waitBlocked <= 0) {
-      const free = stepAxes(dir, e.diagToggle).some((d3) =>
-        [0, 1, 2].slice(0, MAX_STEP + 1).some((h) => world.canMove(e.id, [d3[0], h, d3[2]])));
+      // 歩くときと同じく、段を上がるのは地面（や岩）の段差に当たったときだけ
+      const free = stepAxes(dir, e.diagToggle).some((d3) => {
+        if (world.canMove(e.id, d3)) return true;
+        if (world._fail?.via !== e || !world._fail.blocker?.ground) return false;
+        for (let h = 1; h <= MAX_STEP; h++) if (world.canMove(e.id, [d3[0], h, d3[2]])) return true;
+        return false;
+      });
       if (free) e.blockedDir = null;
       else e.waitBlocked = 0.3;
     }
@@ -151,14 +160,15 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   }
   e.speed = approach(e.speed, targetSpeed, (targetSpeed > e.speed ? ACCEL : DECEL) * dt);
 
-  // 位置: たまった移動量が1ボクセル分を超えたら1歩進む
+  // 位置: たまった移動量が1ボクセル分を超えるたびに1ボクセル進む（速いときは1ティックに数歩）。
+  // 1歩ごとに当たり判定をするので、速くても物をすり抜けない
   let pushedNow = false;
   let strain = false;
   if (e.moveDir && e.speed > 0) {
     const diag = e.moveDir[0] !== 0 && e.moveDir[1] !== 0;
     const cost = diag ? Math.SQRT1_2 : 1; // 斜めは x と z に交互に1歩ずつ
-    e.travel = Math.min(e.travel + e.speed * dt, 1.5);
-    if (e.travel >= cost) {
+    e.travel = Math.min(e.travel + e.speed * dt, 4);
+    while (e.travel >= cost) {
       let moved = null;
       let last = null;
       for (const d3 of stepAxes(e.moveDir, e.diagToggle)) {
@@ -193,7 +203,8 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   pose.run = approach(pose.run, runAmt, dt * 4);
   pose.walk = clamp(e.speed / WALK_SPEED, 0, 1) ** 0.7;
   if (strain) pose.walk = Math.max(pose.walk, 0.45);
-  const stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * pose.run;
+  pose.sprint = approach(pose.sprint ?? 0, clamp((e.speed - RUN_SPEED) / (SPRINT_SPEED - RUN_SPEED), 0, 1), dt * 3);
+  const stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * pose.run + (STRIDE_SPRINT - STRIDE_RUN) * pose.sprint;
   pose.phase = (pose.phase + (Math.max(e.speed, strain ? 2.5 : 0) * dt) / stride) % 1;
   pose.push = approach(pose.push, e.pushing > 0 ? 1 : 0, dt * 6);
   pose.crouch = approach(pose.crouch, 0, dt * 3);

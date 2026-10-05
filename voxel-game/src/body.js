@@ -1,11 +1,11 @@
 // 毎回形を描き直す大きな物（龍・倒れていく木）を世界に書き込む
 //
 // - 新しい形のセルを書き、前回のセルのうち使わなくなったものを消す
-// - 空いているセルに入る。人・NPC・木箱がいるセルは、その物を away の向きへ押しのけてから入る
+// - 空いているセルに入る。人・NPC・箱がいるセルは、その物を away の向きへ押しのけてから入る
 //   （押しのけられなければ入らない）。地形・木・岩・水などには入らない
 // - 1つのボクセルには1つの物だけ、は常に守られる
 
-import { CHUNK, chunkKey, cellIndex } from './grid.js';
+import { CHUNK, chunkKey } from './grid.js';
 
 export const MOVABLE = new Set(['player', 'npc', 'box']); // 押しのけられる物
 
@@ -46,9 +46,10 @@ export function redrawBody(world, id, prev, shape, away) {
   shape((x, y, z, color) => {
     const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
     use(chunkKey(cx, cz));
+    if (y < chunk.base) return; // 地中の奥
     chunk.ensure(y);
     if (!stamp || stamp.length !== chunk.owner.length) stamp = stampOf(chunk);
-    const i = cellIndex(x - cx * CHUNK, y, z - cz * CHUNK);
+    const i = chunk.index(x - cx * CHUNK, y, z - cz * CHUNK);
     const owner = chunk.owner[i];
     if (owner === 0) {
       chunk.owner[i] = id;
@@ -81,7 +82,7 @@ export function redrawBody(world, id, prev, shape, away) {
       c.owner[i] = id;
       c.color[i] = list[n + 2];
       stampOf(c)[i] = gen;
-      c.top = Math.max(c.top, Math.floor(i / (CHUNK * CHUNK)) + 1);
+      c.top = Math.max(c.top, c.yOf(i) + 1);
       c.changed.push(i);
       world.dirty.add(c.key);
       cells.push(list[n + 3], i);

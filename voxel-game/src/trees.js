@@ -6,7 +6,7 @@
 //   木が占有するセルは「葉がずれうる範囲」を含めて固定なので、風で何かとぶつかることはない
 
 import { mulberry32, hash3, noise3, noise2, shade } from './rng.js';
-import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt, cellIndex } from './grid.js';
+import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt } from './grid.js';
 import { BASE } from './terrain.js';
 
 export const REGION = 24; // この区画ごとに最大1本の木を置く（ボクセル）
@@ -25,6 +25,12 @@ const PALETTES = {
 const OFF = 2 ** 20;
 const SPAN = 2 ** 21;
 const cellKey = (x, y, z) => ((x + OFF) * SPAN + (z + OFF)) * HEIGHT + y; // y は 0..HEIGHT-1
+// 形を組み立てる間に使う、幹の根元からの位置の番号（小さな整数なので Map / Set が速い）。|x|, |z| < 63
+const localKey = (x, y, z) => (x + 64) + 128 * ((z + 64) + 128 * y);
+const keyX = (k) => (k % 128) - 64;
+const keyZ = (k) => (Math.floor(k / 128) % 128) - 64;
+const keyY = (k) => Math.floor(k / 16384);
+const inReach = (x, z) => x > -63 && x < 63 && z > -63 && z < 63;
 
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
@@ -44,8 +50,8 @@ class TreeShape {
     this.seed = seed;
     this.rng = mulberry32(seed);
     this.pal = palette;
-    this.wood = new Map(); // key → [x, y, z, color]
-    this.clumps = []; // { base: Map(key → [x, y, z, color]), center }
+    this.wood = new Map(); // localKey → 色
+    this.clumps = []; // { base: Map(localKey → 色), center }
   }
 
   // 先細りの枝（a → b、太さ ra → rb）
@@ -59,8 +65,9 @@ class TreeShape {
         for (let x = x0; x <= x1; x++) {
           const [d, t] = distToSegment(x + 0.5, y + 0.5, z + 0.5, a, b);
           if (d > Math.max(0.6, ra + (rb - ra) * t)) continue;
-          const key = cellKey(x, y, z);
-          if (!this.wood.has(key)) this.wood.set(key, [x, y, z, colorAt(x, y, z)]);
+          if (!inReach(x, z)) continue;
+          const key = localKey(x, y, z);
+          if (!this.wood.has(key)) this.wood.set(key, colorAt(x, y, z));
         }
       }
     }
@@ -91,26 +98,71 @@ class TreeShape {
     const base = new Map();
     const leaves = this.pal.leaves;
     const span = Math.max(1, hi[1] - lo[1]);
+    // 塊ごとの中心と半径の逆数（毎セル割り算しないように）
+    const B = new Float64Array(blobs.length * 6);
+    blobs.forEach(({ c, r }, i) => B.set([c[0], c[1], c[2], 1 / r[0], 1 / r[1], 1 / r[2]], i * 6));
+    const inner = 1 - 1.8 / size;
+    const span2 = new Float64Array(blobs.length * 4); // 行ごとの、塊の外側と空洞の x の範囲
     for (let y = Math.max(1, Math.floor(lo[1])); y <= Math.ceil(hi[1]); y++) {
       for (let z = Math.floor(lo[2]); z <= Math.ceil(hi[2]); z++) {
-        for (let x = Math.floor(lo[0]); x <= Math.ceil(hi[0]); x++) {
+        // この行で塊にかかりうる x の範囲（1 セル広めに）と、確実に空洞の範囲（1 セル狭めに）。
+        // 範囲の外や空洞はセルごとの判定でも必ず飛ばされるので、先に飛ばしても結果は同じ
+        let x0 = Infinity, x1 = -Infinity;
+        for (let i = 0, j = 0; i < B.length; i += 6, j += 4) {
+          const ay = (y + 0.5 - B[i + 1]) * B[i + 4], az = (z + 0.5 - B[i + 2]) * B[i + 5];
+          const rest = ay * ay + az * az;
+          const out = 1.18 * 1.18 - rest;
+          if (out < 0) {
+            span2[j] = 1;
+            span2[j + 1] = 0;
+            span2[j + 2] = 1;
+            span2[j + 3] = 0;
+            continue;
+          }
+          const ho = Math.sqrt(out) / B[i + 3];
+          span2[j] = Math.floor(B[i] - ho - 0.5) - 1;
+          span2[j + 1] = Math.ceil(B[i] + ho - 0.5) + 1;
+          x0 = Math.min(x0, span2[j]);
+          x1 = Math.max(x1, span2[j + 1]);
+          const inn = inner > 0 ? inner * inner - rest : -1;
+          if (inn > 0) {
+            const hi2 = Math.sqrt(inn) / B[i + 3];
+            span2[j + 2] = Math.ceil(B[i] - hi2 - 0.5) + 1;
+            span2[j + 3] = Math.floor(B[i] + hi2 - 0.5) - 1;
+          } else {
+            span2[j + 2] = 1;
+            span2[j + 3] = 0;
+          }
+        }
+        x0 = Math.max(x0, Math.floor(lo[0]));
+        x1 = Math.min(x1, Math.ceil(hi[0]));
+        for (let x = x0; x <= x1; x++) {
+          let jump = x;
+          for (let j = 2; j < span2.length; j += 4) if (span2[j] <= x && x <= span2[j + 1] && span2[j + 1] > jump) jump = span2[j + 1];
+          if (jump > x) {
+            x = jump;
+            continue;
+          }
           const px = x + 0.5, py = y + 0.5, pz = z + 0.5;
           let d = Infinity;
-          for (const { c, r } of blobs) {
-            const v = ((px - c[0]) / r[0]) ** 2 + ((py - c[1]) / r[1]) ** 2 + ((pz - c[2]) / r[2]) ** 2;
-            d = Math.min(d, v);
+          for (let i = 0; i < B.length; i += 6) {
+            const ax = (px - B[i]) * B[i + 3], ay = (py - B[i + 1]) * B[i + 4], az = (pz - B[i + 2]) * B[i + 5];
+            const v = ax * ax + ay * ay + az * az;
+            if (v < d) d = v;
           }
           d = Math.sqrt(d);
+          if (d > 1.18 || d < 1 - 1.8 / size) continue; // ノイズを見るまでもなく外 / 空洞（下の判定と同じ結果）
           const n = noise3(px * 0.35, py * 0.35, pz * 0.35, this.seed);
           if (d > 0.78 + 0.4 * n) continue; // 縁をノイズで崩す
           if (d < 1 - 1.8 / size) continue; // 中は外から見えないので空洞（厚さ 2 ボクセルほどの殻）
           const h = hash3(x, y, z ^ this.seed);
           if ((h % 1000) / 1000 < gaps) continue; // 葉の隙間
-          const key = cellKey(x, y, z);
+          if (!inReach(x, z)) continue;
+          const key = localKey(x, y, z);
           if (this.wood.has(key)) continue;
           const up = (py - lo[1]) / span; // 0 = 塊の下、1 = 上
           const f = 0.68 + 0.42 * up + (n - 0.5) * 0.25;
-          base.set(key, [x, y, z, shade(leaves[(h >>> 10) % leaves.length], f)]);
+          base.set(key, shade(leaves[(h >>> 10) % leaves.length], f));
         }
       }
     }
@@ -261,7 +313,8 @@ const smoothstep = (a, b, v) => {
 };
 
 // 区画 (rx, rz) に生える木の設計図（なければ null）。森と野原は低い周波数のノイズで分かれる。
-function regionSpec(world, rx, rz) {
+// store: false なら覚えておかない（遠景で、たくさんの区画を一度だけ見るとき）
+export function regionSpec(world, rx, rz, store = true) {
   const key = chunkKey(rx, rz);
   if (world.treeSpecs.has(key)) return world.treeSpecs.get(key);
   const rng = mulberry32(hash3(rx, rz, world.seed ^ 0x51ed));
@@ -272,10 +325,16 @@ function regionSpec(world, rx, rz) {
     const x = rx * REGION + 3 + Math.floor(rng() * (REGION - 6));
     const z = rz * REGION + 3 + Math.floor(rng() * (REGION - 6));
     const nearSpawn = Math.abs(x - 8) < 18 && Math.abs(z - 8) < 18;
-    const y = world.heightAt(x, z); // 幹の根元の高さ
-    if (!nearSpawn && y > world.waterLevel + 1) {
+    const col = world.sample(x, z, {});
+    const y = col.h; // 幹の根元の高さ
+    // 山の高い所は木がまばらになり、上の方には生えない（森林限界）。川の中や川岸、急な崖にも生えない
+    const alt = y - BASE;
+    const line = 190 + 60 * noise2(rx * 0.3, rz * 0.3, world.seed + 7);
+    const steep = alt > 40 && Math.abs(world.heightAt(x + 4, z) - world.heightAt(x - 4, z)) + Math.abs(world.heightAt(x, z + 4) - world.heightAt(x, z - 4)) > 14;
+    const ok = !nearSpawn && y > world.waterLevel + 1 && !col.water && !col.channel && !col.bank && !steep && rng() < smoothstep(line, line - 90, alt);
+    if (ok) {
       // 水辺は広葉樹とシラカバ、高い所はスギが多い
-      const elev = (y - BASE) / 30;
+      const elev = Math.min(4, (y - BASE) / 30);
       const kind = noise2(rx * 0.12 + 50, rz * 0.12, world.seed + 3) - elev * 0.18;
       const species = kind < 0.4 ? 'conifer' : kind > 0.64 ? 'birch' : rng() < 0.5 ? 'broad' : 'round';
       const young = rng() < 0.22;
@@ -286,8 +345,17 @@ function regionSpec(world, rx, rz) {
       };
     }
   }
-  world.treeSpecs.set(key, spec);
+  if (store) world.treeSpecs.set(key, spec);
   return spec;
+}
+
+// 遠景用: 列 (x, z) のあたりの森の濃さ（0..1）。col は world.sample の結果
+export function forestDensity(world, x, z, col) {
+  if (col.water || col.channel || col.bank || col.h <= world.waterLevel + 1) return 0;
+  const rx = x / REGION, rz = z / REGION;
+  const p = 0.06 + 0.86 * smoothstep(0.4, 0.68, noise2(rx * 0.17, rz * 0.17, world.seed));
+  const line = 190 + 60 * noise2(rx * 0.3, rz * 0.3, world.seed + 7);
+  return p * smoothstep(line, line - 90, col.h - BASE);
 }
 
 // 範囲 [x0, x1] × [z0, z1] に枝葉が届きうる木の設計図（区画の順に並ぶ）
@@ -333,24 +401,26 @@ function finalize(shape, spec) {
     xs.push(wx); ys.push(wy); zs.push(wz); color.push(c); clumpOf.push(clump);
     return xs.length - 1;
   };
-  for (const [key, [x, y, z, c]] of shape.wood) {
+  for (const [key, c] of shape.wood) {
     claimed.add(key);
-    push(x, y, z, c, -1);
+    push(keyX(key), keyY(key), keyZ(key), c, -1);
   }
   const clumps = shape.clumps.map((cl, ci) => {
     const cells = [];
     // 1. 静止しているときの葉
-    for (const [key, [x, y, z, c]] of cl.base) {
+    for (const [key, c] of cl.base) {
       if (claimed.has(key)) continue;
       claimed.add(key);
-      const i = push(x, y, z, c, ci);
+      const i = push(keyX(key), keyY(key), keyZ(key), c, ci);
       if (i >= 0) cells.push(i);
     }
     // 2. 風でずれたときに葉が入りうる、風下側の1ボクセル（ふだんは消灯）。風は +x / +z の間から吹く
-    for (const [, [x, y, z]] of cl.base) {
+    for (const key of cl.base.keys()) {
+      const x = keyX(key), y = keyY(key), z = keyZ(key);
       for (let dz = 0; dz <= 1; dz++) {
         for (let dx = 0; dx <= 1; dx++) {
-          const key = cellKey(x + dx, y, z + dz);
+          if (!inReach(x + dx, z + dz)) continue;
+          const key = localKey(x + dx, y, z + dz);
           if (claimed.has(key)) continue;
           claimed.add(key);
           const i = push(x + dx, y, z + dz, 0, ci);
@@ -358,9 +428,8 @@ function finalize(shape, spec) {
         }
       }
     }
-    // 葉の色は世界座標で引けるようにしておく
-    const base = new Map();
-    for (const [, [x, y, z, c]] of cl.base) base.set(cellKey(x + spec.x, y + lift, z + spec.z), c);
+    // 葉の色（静止しているとき）。幹の根元からの位置の番号で引く
+    const base = cl.base;
     const heightRatio = cl.center[1] / 80;
     return {
       cells: Int32Array.from(cells), base, ox: 0, oz: 0, level: 0,
@@ -373,7 +442,7 @@ function finalize(shape, spec) {
     xs: Int32Array.from(xs), ys: Int16Array.from(ys), zs: Int32Array.from(zs),
     color: Uint32Array.from(color), clumpOf: Int16Array.from(clumpOf),
     gone: new Uint8Array(xs.length), // 斧で切られた・倒れて木から外れたセル
-    buckets: new Map(), height: ys.reduce((m, y) => Math.max(m, y - lift), 0),
+    buckets: new Map(), height: ys.reduce((m, y) => Math.max(m, y - lift), 0), lift,
   };
   const lists = new Map();
   for (let i = 0; i < xs.length; i++) {
@@ -394,14 +463,31 @@ export function paintTreesInto(world, chunk) {
     const list = tree.buckets.get(chunk.key);
     if (!list) continue;
     for (const i of list) {
-      if (tree.gone[i]) continue;
-      const ci = cellIndex(tree.xs[i] - x0, tree.ys[i], tree.zs[i] - z0);
+      if (tree.gone[i] || tree.ys[i] < chunk.base) continue;
       chunk.ensure(tree.ys[i]);
+      const ci = chunk.index(tree.xs[i] - x0, tree.ys[i], tree.zs[i] - z0);
       if (chunk.owner[ci] !== 0) continue;
       chunk.owner[ci] = tree.id;
       chunk.color[ci] = tree.color[i];
       chunk.top = Math.max(chunk.top, tree.ys[i] + 1);
     }
+  }
+}
+
+// 片付けたチャンクにしかかかっていない木を忘れる（切ったり焼けたりした木は、記録として残す）
+export function forgetTrees(world) {
+  for (const [key, tree] of world.trees) {
+    if (tree.cut || tree.felled || tree.burnt) continue;
+    let loaded = false;
+    for (const k of tree.buckets.keys()) {
+      if (world.chunks.has(k)) {
+        loaded = true;
+        break;
+      }
+    }
+    if (loaded) continue;
+    world.trees.delete(key);
+    world.entities.delete(tree.id);
   }
 }
 
@@ -413,12 +499,12 @@ function shiftClump(world, tree, clump, ox, oz) {
   for (const i of clump.cells) {
     if (tree.gone[i]) continue;
     const x = tree.xs[i], y = tree.ys[i], z = tree.zs[i];
-    const c = clump.base.get(cellKey(x - ox, y, z - oz)) ?? 0;
+    const c = clump.base.get(localKey(x - ox - tree.spec.x, y - tree.lift, z - oz - tree.spec.z)) ?? 0;
     if (c === tree.color[i]) continue;
     tree.color[i] = c;
     const chunk = world.chunks.get(chunkKeyAt(x, z));
-    if (!chunk) continue; // まだ作られていないチャンク（作るときにこの色で塗られる）
-    const ci = cellIndex(x - chunk.cx * CHUNK, y, z - chunk.cz * CHUNK);
+    if (!chunk || y < chunk.base) continue; // まだ作られていないチャンク（作るときにこの色で塗られる）
+    const ci = chunk.index(x - chunk.cx * CHUNK, y, z - chunk.cz * CHUNK);
     if (chunk.owner[ci] !== tree.id) continue; // 隣の木が先に取ったセル
     chunk.color[ci] = c;
     chunk.changed.push(ci);
@@ -462,6 +548,7 @@ export function burnTreeCell(tree, x, y, z) {
   }
   const i = tree.index.get(cellKey(x, y, z));
   if (i === undefined) return null;
+  tree.burnt = true;
   const h = (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
   const ci = tree.clumpOf[i];
   if (ci < 0) {
@@ -470,7 +557,7 @@ export function burnTreeCell(tree, x, y, z) {
     return tree.color[i];
   }
   const cl = tree.clumps[ci];
-  const rest = cellKey(x - cl.ox, y, z - cl.oz);
+  const rest = localKey(x - cl.ox - tree.spec.x, y - tree.lift, z - cl.oz - tree.spec.z);
   if (!cl.base.get(rest)) return null; // もう焼けている / 葉のない所
   const final = (h >>> 5) % 10 < 3 ? CHAR_LEAF[(h >>> 9) % CHAR_LEAF.length] : 0;
   if (final) cl.base.set(rest, final);

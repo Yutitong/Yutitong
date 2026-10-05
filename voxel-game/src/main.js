@@ -1,14 +1,18 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, cellIndex, floorDiv } from './world.js';
+import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, floorDiv } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
+import { FarTerrain } from './far.js';
+import { LAYER } from './grid.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
 const VIEW_RADIUS = 6; // 描画するチャンクの半径
-const LOAD_BUDGET_MS = 6; // 1フレームでチャンク作りに使ってよい時間
+const KEEP_RADIUS = 24; // これより遠いチャンクは片付ける
+const LOAD_BUDGET_MS = 7; // 1フレームでチャンク作りに使ってよい時間
+const FAR_BUDGET_MS = 3; // 1フレームで遠景作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
@@ -25,9 +29,9 @@ stage.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 150, 280);
+scene.fog = new THREE.Fog(SKY, 600, 2300);
 
-const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 600);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 4000);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enablePan = false;
@@ -52,8 +56,8 @@ scene.add(sun);
 // セルが変わったら、そのセルのインスタンスだけ書き換える。
 
 const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-// 水面は少し低く薄くする
-const waterBox = new THREE.BoxGeometry(1, 0.8, 1).translate(0, -0.1, 0);
+// 水面（滝の段で側面も見えるので、ほかのボクセルと同じ大きさ）
+const waterBox = new THREE.BoxGeometry(1, 1, 1);
 const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
 
 // ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
@@ -139,7 +143,7 @@ function writeCell(v, chunk, i) {
     if (layer.count >= layer.capacity) return false;
     slot = layer.count++;
     layer.slots.set(i, slot);
-    const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = Math.floor(i / (CHUNK * CHUNK));
+    const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = chunk.yOf(i);
     layer.cell.set([lx + 0.5, y + 0.5, lz + 0.5, 1], slot * 4);
   } else if (layer.cell[slot * 4 + 3] === 0) {
     layer.cell[slot * 4 + 3] = 1;
@@ -160,7 +164,7 @@ function buildView(chunk) {
     old.solid.dispose();
     old.water.dispose();
   }
-  const limit = CHUNK * CHUNK * chunk.top;
+  const limit = Math.min(chunk.color.length, LAYER * (chunk.top - chunk.base));
   let solid = 0;
   let water = 0;
   for (let i = 0; i < limit; i++) {
@@ -234,6 +238,7 @@ function syncChunks() {
   }
   for (const key of world.dirty) {
     const chunk = world.chunks.get(key);
+    if (!chunk) continue;
     if (!near(chunk)) {
       chunk.changed.length = 0;
       continue;
@@ -242,14 +247,35 @@ function syncChunks() {
   }
   world.dirty.clear();
   for (const [key, v] of views) {
-    if (!near(world.chunks.get(key))) {
+    const chunk = world.chunks.get(key);
+    if (!chunk || !near(chunk)) {
       v.solid.dispose();
       v.water.dispose();
       views.delete(key);
     }
   }
-  for (const chunk of world.chunks.values()) {
-    if (near(chunk) && !views.has(chunk.key)) buildView(chunk);
+  let all = true;
+  for (let dz = -VIEW_RADIUS; dz <= VIEW_RADIUS; dz++) {
+    for (let dx = -VIEW_RADIUS; dx <= VIEW_RADIUS; dx++) {
+      const chunk = world.chunks.get(chunkKey(pcx + dx, pcz + dz));
+      if (!chunk) all = false;
+      else if (!views.has(chunk.key)) buildView(chunk);
+    }
+  }
+  // チャンクがそろったら、その範囲の遠景を隠す
+  if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (VIEW_RADIUS + 0.5) * CHUNK };
+}
+let shown = null; // チャンクで描いている正方形
+
+// 遠景と、遠くのチャンクの片付け
+const far = new FarTerrain(scene, world);
+let frames = 0;
+function syncFar() {
+  far.update(controls.target.x, controls.target.z, shown, FAR_BUDGET_MS);
+  if (++frames % 120 === 0) {
+    const centers = [[player.pos[0], player.pos[2]], [controls.target.x, controls.target.z]];
+    if (dragon) centers.push([dragon.head[0], dragon.head[2]]);
+    forgetFar(world, centers, KEEP_RADIUS);
   }
 }
 
@@ -503,8 +529,8 @@ function markOwners(ids) {
     if (!e) continue;
     for (const [x, y, z] of world.cellsOf(e)) {
       const chunk = world.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
-      if (!chunk) continue;
-      chunk.changed.push(cellIndex(x - chunk.cx * CHUNK, y, z - chunk.cz * CHUNK));
+      if (!chunk || y < chunk.base) continue;
+      chunk.changed.push(chunk.index(x - chunk.cx * CHUNK, y, z - chunk.cz * CHUNK));
       world.dirty.add(chunk.key);
     }
   }
@@ -557,12 +583,16 @@ function frame(now) {
   }
   follow(dt / 1000);
   controls.update();
+  // カメラが丘や山の中に入らないように
+  const ground = world.heightAt(Math.floor(camera.position.x), Math.floor(camera.position.z)) + 4;
+  if (camera.position.y < ground) camera.position.y = ground;
   syncChunks();
+  syncFar();
   cutaway.uHead.value.copy(controls.target).y += 6;
-  // 霧はカメラからの距離に合わせて遠ざける（引いて見ても世界の端が霧に隠れるように）
+  // 霧はカメラからの距離に合わせて遠ざける。遠くの山はかすんで見える
   const dist = camera.position.distanceTo(controls.target);
-  scene.fog.near = dist + 60;
-  scene.fog.far = dist + 190;
+  scene.fog.near = dist + 350;
+  scene.fog.far = dist + 2300;
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

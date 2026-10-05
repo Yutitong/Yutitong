@@ -11,13 +11,13 @@ import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, humanColors } from './
 import { initCharacter, updateCharacter } from './character.js';
 import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
 import { hash3, mulberry32, shade } from './rng.js';
-import { terrainHeight, groundColor, waterColor, WATER_LEVEL } from './terrain.js';
-import { paintTreesInto, updateWind } from './trees.js';
+import { Terrain, groundColor, waterColor, foamColor, rockCell, WATER_LEVEL } from './terrain.js';
+import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
 import { chop, dropFalling } from './axe.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
-import { EMPTY, GROUND_ID, WATER_ID } from './ids.js';
-export { EMPTY, GROUND_ID, WATER_ID };
+import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID } from './ids.js';
+export { EMPTY, GROUND_ID, WATER_ID, ROCK_ID };
 export const WATER_FLAG = 0x1000000; // 色にこの印がついたセルは半透明（水面）で描く
 export const VOXEL_METERS = 0.15;
 export const WIND_RADIUS = 140; // プレイヤーからこの距離（ボクセル）以内の木だけ風で揺らす
@@ -47,24 +47,38 @@ export const DIRS8 = [
 
 // ---- 世界 ------------------------------------------------------------------------
 
+// チャンクは高さ base から上のセルだけを持つ（base より下は地中の奥で、すべて地面）。
+// 山の上のチャンクでも、地表のまわりと上の空だけを持てばよい
 class Chunk {
-  constructor(cx, cz) {
+  constructor(cx, cz, base = 0) {
     this.cx = cx;
     this.cz = cz;
     this.key = chunkKey(cx, cz);
+    this.base = base;
     // 持ち主 id（0 = 空き）と表示色（0 = 消灯）。使った高さの分だけ持ち、必要になったら上に継ぎ足す
     this.owner = new Int32Array(LAYER * 16);
     this.color = new Uint32Array(LAYER * 16);
-    this.height = new Uint8Array(CHUNK * CHUNK); // 列ごとの地面の高さ
-    this.water = new Uint8Array(CHUNK * CHUNK); // 列ごとの水面の高さ（0 = 水なし）
-    this.top = 1; // これより上のセルはすべて空（描画で調べる範囲を減らす）
+    this.height = new Uint16Array(CHUNK * CHUNK); // 列ごとの地面の高さ
+    this.water = new Uint16Array(CHUNK * CHUNK); // 列ごとの水面の高さ（0 = 水なし）
+    this.top = base + 1; // これより上のセルはすべて空（描画で調べる範囲を減らす）
     this.changed = []; // 前回描画してから変わったセル（描画側が読んで空にする）
+  }
+
+  // チャンクの中の位置 (lx, y, lz) のセル番号（y は base 以上）
+  index(lx, y, lz) {
+    return cellIndex(lx, y - this.base, lz);
+  }
+
+  // セル番号 i の高さ
+  yOf(i) {
+    return this.base + Math.floor(i / LAYER);
   }
 
   // 高さ y のセルまで書けるように配列を広げる（16 段ずつ）
   ensure(y) {
+    y -= this.base;
     if ((y + 1) * LAYER <= this.owner.length) return;
-    const size = Math.min(HEIGHT, Math.ceil((y + 1) / 16) * 16) * LAYER;
+    const size = Math.min(HEIGHT - this.base, Math.ceil((y + 1) / 16) * 16) * LAYER;
     const owner = new Int32Array(size);
     const color = new Uint32Array(size);
     owner.set(this.owner);
@@ -93,18 +107,22 @@ export class World {
   constructor({ seed = 1, generate = true, heightAt = null, waterLevel = null } = {}) {
     this.seed = seed;
     this.generate = generate;
-    this.heightAt = heightAt ?? (generate ? (x, z) => terrainHeight(seed, x, z) : () => 1);
+    // 山と川のある地形。heightAt を渡したとき（テスト用）は、その高さと一定の水面だけの地形
+    this.terrain = generate && !heightAt ? new Terrain(seed) : null;
+    this.heightAt = heightAt ?? (this.terrain ? (x, z) => this.terrain.height(x, z) : () => 1);
     this.waterLevel = waterLevel ?? (generate ? WATER_LEVEL : 0);
     this.chunks = new Map();
     this.dirty = new Set(); // 描画を更新すべきチャンクの key
     this.entities = new Map();
     this.entities.set(GROUND_ID, { id: GROUND_ID, kind: 'terrain', name: '地面', ground: true, priority: PRIORITY.TERRAIN, pos: [0, 0, 0], ...NO_CELLS });
     this.entities.set(WATER_ID, { id: WATER_ID, kind: 'water', name: '水', priority: PRIORITY.WATER, pos: [0, 0, 0], ...NO_CELLS });
+    // 川の岩は地面と同じく、低い段なら登れる（岩から岩へ渡れる）
+    this.entities.set(ROCK_ID, { id: ROCK_ID, kind: 'terrain', name: '岩', ground: true, priority: PRIORITY.TERRAIN, pos: [0, 0, 0], ...NO_CELLS });
     this.deepWater = { id: WATER_ID, kind: 'water', name: '深い水', priority: PRIORITY.TERRAIN };
-    this.nextId = WATER_ID + 1;
+    this.nextId = ROCK_ID + 1;
     this.tickCount = 0;
     this.player = null;
-    this.counts = { npc: 0, crate: 0 }; // 名前の通し番号
+    this.counts = { npc: 0 }; // 名前の通し番号
     this.trees = new Map(); // 区画 → 木
     this.treeSpecs = new Map(); // 区画 → 木の設計図（なければ null）
     this.felling = []; // 倒れていく木
@@ -115,11 +133,24 @@ export class World {
     const key = chunkKey(cx, cz);
     let c = this.chunks.get(key);
     if (!c) {
-      c = new Chunk(cx, cz);
+      // まわり 1 列も含めた列の情報（地面・水面・川）
+      const S = CHUNK + 2;
+      const cols = new Array(S * S);
+      let lo = Infinity;
+      for (let z = -1; z <= CHUNK; z++) {
+        for (let x = -1; x <= CHUNK; x++) {
+          const col = this.sample(cx * CHUNK + x, cz * CHUNK + z, {});
+          col.h = Math.min(HEIGHT - 1, col.h);
+          cols[(x + 1) + S * (z + 1)] = col;
+          lo = Math.min(lo, col.h);
+        }
+      }
+      c = new Chunk(cx, cz, Math.max(0, lo - 2));
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
-      fillTerrain(this, c);
+      fillTerrain(this, c, cols);
       if (this.generate) {
         paintTreesInto(this, c); // 木は隣の区画から枝を伸ばしてくることもあるので先に塗る
+        if (this.terrain) paintRocksInto(this, c);
         generateChunk(this, c);
       }
       this.dirty.add(key);
@@ -127,17 +158,32 @@ export class World {
     return c;
   }
 
-  // 範囲外（地面より下 / 空の上限）は -1
+  // 列 (x, z) の地形: { h: 地面の高さ, water: 水面（0 = なし）, channel: 川の中, bank: 川岸, f: 川の上流(0)〜下流(1), lowland }
+  sample(x, z, out = {}) {
+    if (this.terrain) return this.terrain.sample(x, z, out);
+    const h = this.heightAt(x, z);
+    out.h = h;
+    out.water = h < this.waterLevel ? this.waterLevel : 0;
+    out.channel = false;
+    out.bank = false;
+    out.f = 1;
+    out.lowland = 0;
+    return out;
+  }
+
+  // 範囲外（空の上限より上・y < 0）は -1。チャンクが持たない地中の奥は地面
   ownerAt(x, y, z) {
     if (y < 0 || y >= HEIGHT) return -1;
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-    return c.owner[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? EMPTY;
+    if (y < c.base) return GROUND_ID;
+    return c.owner[c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? EMPTY;
   }
 
   colorAt(x, y, z) {
     if (y < 0 || y >= HEIGHT) return 0;
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-    return c.color[cellIndex(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? 0;
+    if (y < c.base) return 0;
+    return c.color[c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK)] ?? 0;
   }
 
   // 地面の高さ（その列で最初の空でないセルの1つ上）
@@ -157,14 +203,15 @@ export class World {
   // - 物が占有していても消灯しているセルが水面の高さにあれば、水面の色を見せる
   setCell(x, y, z, owner, color) {
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
+    if (y < c.base) return; // 地中の奥は書き換えられない
     const lx = x - c.cx * CHUNK, lz = z - c.cz * CHUNK;
-    const i = cellIndex(lx, y, lz);
+    const i = c.index(lx, y, lz);
     const col = lx + CHUNK * lz;
     const level = c.water[col];
     c.ensure(y);
     if (level && y < level && y >= c.height[col]) {
       if (owner === EMPTY) owner = WATER_ID;
-      if (color === 0 && y === level - 1) color = waterColor(x, z, level - c.height[col]) | WATER_FLAG;
+      if (color === 0 && y === level - 1) color = waterColor(x, z, level - c.height[col], level > this.waterLevel) | WATER_FLAG;
     }
     c.owner[i] = owner;
     c.color[i] = color;
@@ -290,7 +337,7 @@ export class World {
       }
       if (!this.planMove(other, dir, power, depth + 1, plan)) return false;
     }
-    // 重力のない物（木箱）は、足場のない所へは動かない（宙に浮かないように）
+    // 重力のない物（needsSupport の箱など）は、足場のない所へは動かない（宙に浮かないように）
     if (e.needsSupport && !this.supported(e, nx, ny, nz, plan)) {
       this._fail = { blocker: null, via: e, reason: 'support' };
       return false;
@@ -390,54 +437,77 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
 
 // ---- 地形とチャンクの中身 ---------------------------------------------------------
 
+const SPLASH = 0xd6ecef | WATER_FLAG; // 滝の落ち口の水面（泡立って白い）
+
 // 地面と水を塗る。地中のセルは地面が占有するが、外から見えるセル（地表と、隣より高い崖の側面）だけ色をつける。
-function fillTerrain(world, c) {
+// cols: まわり 1 列も含めた列の情報（world.sample の結果）
+function fillTerrain(world, c, cols) {
   const S = CHUNK + 2;
-  const hs = new Int32Array(S * S); // まわり1列も含めた高さ
-  for (let z = -1; z <= CHUNK; z++) {
-    for (let x = -1; x <= CHUNK; x++) {
-      hs[(x + 1) + S * (z + 1)] = Math.min(HEIGHT - 1, world.heightAt(c.cx * CHUNK + x, c.cz * CHUNK + z));
-    }
-  }
-  const W = world.waterLevel;
+  const level = (n) => (n.water > n.h ? n.water : n.h); // 水面（水がなければ地面）
   for (let lz = 0; lz < CHUNK; lz++) {
     for (let lx = 0; lx < CHUNK; lx++) {
-      const at = (dx, dz) => hs[(lx + 1 + dx) + S * (lz + 1 + dz)];
-      const h = at(0, 0);
+      const at = (dx, dz) => cols[(lx + 1 + dx) + S * (lz + 1 + dz)];
+      const info = at(0, 0);
+      const h = info.h;
       const ns = [at(1, 0), at(-1, 0), at(0, 1), at(0, -1)];
-      const lowest = Math.min(...ns);
-      const slope = Math.max(...ns.map((n) => Math.abs(n - h)));
+      let lowest = h, slope = 0;
+      for (const n of ns) {
+        lowest = Math.min(lowest, n.h);
+        slope = Math.max(slope, Math.abs(n.h - h));
+      }
       const x = c.cx * CHUNK + lx, z = c.cz * CHUNK + lz;
       const col = lx + CHUNK * lz;
+      const W = info.water > h ? Math.min(HEIGHT - 1, info.water) : 0;
       c.height[col] = h;
       c.ensure(Math.max(h, W));
-      for (let y = 0; y < h; y++) {
-        const i = cellIndex(lx, y, lz);
+      for (let y = c.base; y < h; y++) {
+        const i = c.index(lx, y, lz);
         c.owner[i] = GROUND_ID;
-        if (y >= Math.min(lowest, h - 1)) c.color[i] = groundColor(world.seed, x, y, z, h, slope);
+        if (y >= Math.min(lowest, h - 1)) c.color[i] = groundColor(world.seed, x, y, z, info, slope);
       }
-      if (h < W) {
+      if (W) {
         c.water[col] = W;
-        for (let y = h; y < W; y++) c.owner[cellIndex(lx, y, lz)] = WATER_ID;
-        c.color[cellIndex(lx, W - 1, lz)] = waterColor(x, z, W - h) | WATER_FLAG;
+        for (let y = h; y < W; y++) c.owner[c.index(lx, y, lz)] = WATER_ID;
+        // 隣の水面がこれより低い所（滝・早瀬）は、落ちていく水の側面が白く見える
+        let low = W;
+        let fall = false;
+        for (const n of ns) {
+          low = Math.min(low, level(n));
+          if (n.water > W) fall = true; // 上から水が落ちてくる
+        }
+        for (let y = Math.max(h, low); y < W - 1; y++) c.color[c.index(lx, y, lz)] = foamColor(x, y, z);
+        c.color[c.index(lx, W - 1, lz)] = fall ? SPLASH : waterColor(x, z, W - h, W > world.waterLevel) | WATER_FLAG;
       }
-      c.top = Math.max(c.top, h, h < W ? W : 0);
+      c.top = Math.max(c.top, h, W);
     }
   }
 }
 
-function crateVoxels() {
-  const v = [];
-  const n = 5;
-  for (let y = 0; y < n; y++) {
-    for (let z = 0; z < n; z++) {
-      for (let x = 0; x < n; x++) {
-        const edges = (x === 0 || x === n - 1) + (y === 0 || y === n - 1) + (z === 0 || z === n - 1);
-        v.push([x, y, z, edges >= 2 ? 0x7a4f2a : (x + y + z) % 2 ? 0xb5824c : 0xa87643]);
+// 川の岩を塗る。地面より上で、空いているか水のセルだけ（岩は水面から頭を出す）。外から見えるセルだけ色をつける
+function paintRocksInto(world, c) {
+  const x0 = c.cx * CHUNK, z0 = c.cz * CHUNK;
+  for (const rock of world.terrain.rocksNear(x0, z0, x0 + CHUNK - 1, z0 + CHUNK - 1)) {
+    const R = Math.ceil(rock.r * 1.3) + 1;
+    const ylo = Math.floor(rock.y - rock.r), yhi = Math.ceil(rock.y + rock.r);
+    for (let z = Math.max(z0, Math.floor(rock.z) - R); z <= Math.min(z0 + CHUNK - 1, Math.floor(rock.z) + R); z++) {
+      for (let x = Math.max(x0, Math.floor(rock.x) - R); x <= Math.min(x0 + CHUNK - 1, Math.floor(rock.x) + R); x++) {
+        const col = (x - x0) + CHUNK * (z - z0);
+        for (let y = Math.max(ylo, c.height[col]); y <= yhi; y++) {
+          const color = rockCell(rock, x, y, z);
+          if (!color) continue;
+          c.ensure(y);
+          const i = c.index(x - x0, y, z - z0);
+          if (c.owner[i] !== EMPTY && c.owner[i] !== WATER_ID) continue;
+          c.owner[i] = ROCK_ID;
+          // 中に埋もれたセルは消灯（6 方向のどれかが岩の外なら見える）
+          const seen = !rockCell(rock, x, y + 1, z) || !rockCell(rock, x + 1, y, z) || !rockCell(rock, x - 1, y, z)
+            || !rockCell(rock, x, y, z + 1) || !rockCell(rock, x, y, z - 1);
+          c.color[i] = seen ? color : 0;
+          if (y >= c.top) c.top = y + 1;
+        }
       }
     }
   }
-  return v;
 }
 
 function rockVoxels(rng) {
@@ -468,7 +538,7 @@ function generateChunk(world, c) {
   const tries = rng() < 0.5 ? 0 : 1 + Math.floor(rng() * 1.6);
   for (let t = 0; t < tries; t++) {
     const r = rng();
-    if (r < 0.3) {
+    if (r < 0.35) {
       // 岩は地面に半分埋まる（地面と重なるセルは削る）
       const [x, z] = pick(8);
       const f = world.footprint(x, z, 8, 8);
@@ -477,13 +547,7 @@ function generateChunk(world, c) {
       const pos = [x, f.lo - 1, z];
       const free = voxels.filter(([vx, vy, vz]) => world.ownerAt(x + vx, pos[1] + vy, z + vz) === EMPTY);
       if (free.length) world.spawn({ kind: 'terrain', name: '岩', priority: PRIORITY.TERRAIN, pos, voxels: free });
-    } else if (r < 0.75) {
-      const [x, z] = pick(5);
-      const f = world.footprint(x, z, 5, 5);
-      if (f.wet) continue;
-      const e = world.spawn({ kind: 'box', name: `木箱-${world.counts.crate + 1}`, priority: PRIORITY.BOX, needsSupport: true, pos: [x, f.hi, z], voxels: crateVoxels() });
-      if (e) world.counts.crate++;
-    } else if (r < 0.92) {
+    } else if (r < 0.55) {
       const palette = PALETTES.npc[Math.floor(rng() * PALETTES.npc.length)];
       const yaw = Math.floor(rng() * 8) * (Math.PI / 4);
       // 森の中は木の枝で場所がふさがりやすいので、何か所か試す
@@ -532,4 +596,49 @@ export function ensureAround(world, x, z, radius) {
   for (let dz = -radius; dz <= radius; dz++) {
     for (let dx = -radius; dx <= radius; dx++) world.chunkAt(cx + dx, cz + dz);
   }
+}
+
+// 遠く離れたチャンクを片付ける（速く走り回ってもメモリが増え続けないように）。
+// centers: 残しておく場所 [[x, z], ...]（プレイヤー・龍）。そこから keep チャンクより遠いものを片付ける。
+// 片付けたチャンクは、また近づいたときに種から作り直される（木の切り口や焦げ跡は木の記録に残る）。
+// そこにいた NPC はいなくなる（作り直したときに新しく置かれる）
+export function forgetFar(world, centers, keep) {
+  const far = (cx, cz) => centers.every(([x, z]) => Math.max(Math.abs(cx - floorDiv(x, CHUNK)), Math.abs(cz - floorDiv(z, CHUNK))) > keep);
+  const gone = [];
+  for (const c of world.chunks.values()) if (far(c.cx, c.cz)) gone.push(c);
+  if (!gone.length) return 0;
+  const keys = new Set(gone.map((c) => c.key));
+  // 片付けるチャンクに体がかかっている物（NPC・岩・切り落とされた尾など）は、先に消しておく
+  for (const e of [...world.entities.values()]) {
+    if (e.kind === 'player' || !e.offsets?.length) continue;
+    if (!e._box) {
+      let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+      for (let o = 0; o < e.offsets.length; o += 3) {
+        x0 = Math.min(x0, e.offsets[o]);
+        x1 = Math.max(x1, e.offsets[o]);
+        z0 = Math.min(z0, e.offsets[o + 2]);
+        z1 = Math.max(z1, e.offsets[o + 2]);
+      }
+      e._box = [x0, z0, x1, z1];
+    }
+    const [x0, z0, x1, z1] = e._box;
+    let touches = false;
+    for (let cz = floorDiv(e.pos[2] + z0, CHUNK); cz <= floorDiv(e.pos[2] + z1, CHUNK) && !touches; cz++) {
+      for (let cx = floorDiv(e.pos[0] + x0, CHUNK); cx <= floorDiv(e.pos[0] + x1, CHUNK); cx++) {
+        if (keys.has(chunkKey(cx, cz))) {
+          touches = true;
+          break;
+        }
+      }
+    }
+    if (!touches) continue;
+    world.paint(e, false);
+    world.entities.delete(e.id);
+  }
+  for (const c of gone) {
+    world.chunks.delete(c.key);
+    world.dirty.delete(c.key);
+  }
+  forgetTrees(world);
+  return gone.length;
 }

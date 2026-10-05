@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, PRIORITY, GROUND_ID, WATER_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
+import { World, PRIORITY, GROUND_ID, WATER_ID, ROCK_ID, WATER_FLAG, EMPTY, step, spawnPlayer, ensureAround } from '../src/world.js';
 import { HUMAN_SIZE, PALETTES, createPose, rasterizeHuman, rasterizeTool, CHOP_IMPACT } from '../src/humanoid.js';
-import { WALK_SPEED, RUN_SPEED } from '../src/character.js';
-import { CHUNK, chunkKeyAt, cellIndex } from '../src/grid.js';
+import { WALK_SPEED, RUN_SPEED, SPRINT_SPEED } from '../src/character.js';
+import { CHUNK, chunkKeyAt } from '../src/grid.js';
 
 const X = [1, 0, 0];
 
@@ -31,7 +31,7 @@ function assertConsistent(w) {
   // 毎回形を描き直す物（龍・炎・斧・倒れていく木）は offsets を持たないので数えない
   const trees = new Set([...w.entities.values()].filter((e) => e.tree || !e.offsets.length).map((e) => e.id));
   let owned = 0;
-  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && o !== WATER_ID && !trees.has(o)) owned++;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o !== EMPTY && o !== GROUND_ID && o !== WATER_ID && o !== ROCK_ID && !trees.has(o)) owned++;
   assert.equal(owned, expected);
 }
 
@@ -170,7 +170,7 @@ test('歩き出しは加速し、止まると減速して立ち姿に戻る', ()
   for (let i = 0; i < 25; i++) step(w, walkInput(1, 0));
   assert.equal(p.speed, WALK_SPEED);
   const walked = p.pos[0] - x0;
-  assert.ok(walked > 5 && walked < 10, `walked ${walked}`);
+  assert.ok(walked > 8 && walked < 15, `walked ${walked}`);
   for (let i = 0; i < 25; i++) step(w, idle);
   assert.equal(p.speed, 0);
   assert.ok(p.pose.walk < 0.01);
@@ -189,6 +189,30 @@ test('走ると歩きより速い', () => {
   const run = dist(true);
   assert.ok(run > walk * 1.8, `walk ${walk} run ${run}`);
   assert.ok(RUN_SPEED > WALK_SPEED);
+});
+
+test('歩き 2m/s・走り 5m/s。走り続けると全力疾走（8m/s）になり、1ティックに数歩進んでもすり抜けない', () => {
+  const w = flat();
+  const p = spawnPlayer(w);
+  assert.ok(Math.abs(WALK_SPEED * 0.15 - 2) < 0.1 && Math.abs(RUN_SPEED * 0.15 - 5) < 0.1 && Math.abs(SPRINT_SPEED * 0.15 - 8) < 0.1);
+  let top = 0;
+  for (let i = 0; i < 20; i++) {
+    step(w, walkInput(1, 0, true));
+    top = Math.max(top, p.speed);
+  }
+  assert.ok(top <= RUN_SPEED + 1e-9, '走り出してすぐは全力疾走にならない');
+  const x0 = p.pos[0];
+  for (let i = 0; i < 50; i++) step(w, walkInput(1, 0, true));
+  assert.equal(p.speed, SPRINT_SPEED);
+  const per = (p.pos[0] - x0) / 50;
+  assert.ok(per > 1.6, `1ティックに ${per} ボクセル`);
+  assert.ok(p.pose.sprint > 0.8);
+  assertConsistent(w);
+  // 全力疾走で岩に向かっても、岩の手前で止まる
+  const rock = w.spawn({ kind: 'terrain', name: '岩', priority: PRIORITY.TERRAIN, pos: [p.pos[0] + 40, 1, p.pos[2]], voxels: Array.from({ length: 9 * 16 }, (_, k) => [0, k % 16, Math.floor(k / 16), 1]) });
+  for (let i = 0; i < 40; i++) step(w, walkInput(1, 0, true));
+  assert.ok(p.pos[0] + 9 <= rock.pos[0], `x ${p.pos[0]} 岩 ${rock.pos[0]}`);
+  assertConsistent(w);
 });
 
 test('向きはすぐには変わらず、少しずつ回る', () => {
@@ -248,7 +272,7 @@ test('同じシードなら同じ世界ができる', () => {
 });
 
 test('広い世界を長く歩き回っても重なりは起きない', () => {
-  const w = new World({ seed: 4 }); // 出発地点の近くに NPC と木箱がいるシード
+  const w = new World({ seed: 4 }); // 出発地点の近くに NPC がいるシード
   const p = spawnPlayer(w);
   ensureAround(w, p.pos[0], p.pos[2], 3);
   let seed = 42;
@@ -260,7 +284,8 @@ test('広い世界を長く歩き回っても重なりは起きない', () => {
     step(w, rng() < 0.1 ? idle : { dir, run: rng() < 0.3 }, rng);
     if (t % 50 === 0) ensureAround(w, p.pos[0], p.pos[2], 3);
   }
-  assert.ok(w.counts.npc > 0 && w.counts.crate > 0);
+  assert.ok(w.counts.npc > 0);
+  assert.ok(![...w.entities.values()].some((e) => e.kind === 'box'), '木箱はもう置かない');
   assertConsistent(w);
 });
 
@@ -286,8 +311,8 @@ function treeCells(w, tree) {
   let lit = 0;
   for (let i = 0; i < tree.xs.length; i++) {
     const c = w.chunks.get(chunkKeyAt(tree.xs[i], tree.zs[i]));
-    if (!c) continue;
-    const ci = cellIndex(tree.xs[i] - c.cx * CHUNK, tree.ys[i], tree.zs[i] - c.cz * CHUNK);
+    if (!c || tree.ys[i] < c.base) continue;
+    const ci = c.index(tree.xs[i] - c.cx * CHUNK, tree.ys[i], tree.zs[i] - c.cz * CHUNK);
     if (c.owner[ci] !== tree.id) continue;
     owned++;
     assert.equal(c.color[ci], tree.color[i]);
@@ -322,7 +347,7 @@ test('木: チャンクを作る順番が違っても同じ森になる', () => 
   for (const [cx, cz] of [...order].reverse()) b.chunkAt(cx, cz);
   const who = (w, id) => {
     const e = w.entities.get(id);
-    return e ? `${e.name.replace(/-\d+$/, '')}@${e.pos}` : 'empty'; // 木箱などの通し番号は作る順で変わる
+    return e ? `${e.name.replace(/-\d+$/, '')}@${e.pos}` : 'empty'; // NPC などの通し番号は作る順で変わる
   };
   for (const [cx, cz] of order) {
     const ca = a.chunkAt(cx, cz);
@@ -390,11 +415,11 @@ test('地形: 地面の下はすべて地面、水面より下で地面より上
     for (let col = 0; col < 256; col++) {
       const lx = col % 16, lz = Math.floor(col / 16);
       const h = c.height[col];
-      for (let y = 0; y < h; y++) assert.equal(c.owner[cellIndex(lx, y, lz)], GROUND_ID);
+      for (let y = 0; y < h; y++) assert.equal(w.ownerAt(c.cx * CHUNK + lx, y, c.cz * CHUNK + lz), GROUND_ID);
       if (c.water[col]) {
         water++;
         assert.ok(h < c.water[col]);
-        assert.equal(c.owner[cellIndex(lx, c.water[col] - 1, lz)] !== EMPTY, true);
+        assert.equal(c.owner[c.index(lx, c.water[col] - 1, lz)] !== EMPTY, true);
       }
     }
   }
@@ -473,6 +498,100 @@ test('木箱は足場のない所（水の上）へは押せない', () => {
   for (let i = 0; i < 80; i++) step(w, walkInput(1, 0));
   assert.equal(box.pos[0], 19); // 岸の端で止まる（水の上に浮かない）
   assertConsistent(w);
+});
+
+// ---- 山と川 --------------------------------------------------------------------
+
+test('山: 出発地点から見える所に 40〜60m の山がある', async () => {
+  const { Terrain, BASE } = await import('../src/terrain.js');
+  const t = new Terrain(20261004);
+  let top = 0;
+  for (let x = 0; x < 1400; x += 8) for (let z = -1400; z < 400; z += 8) top = Math.max(top, t.height(x, z));
+  const m = (top - BASE) * 0.15;
+  assert.ok(m >= 40 && m <= 62, `山の高さ ${m.toFixed(1)}m`);
+});
+
+test('川: 山から下流へ水面が下がり続け、上流は狭く下流は広い。上流ほど大小の岩が多い', async () => {
+  const { Terrain, WATER_LEVEL } = await import('../src/terrain.js');
+  const t = new Terrain(20261004);
+  t.prepare(0, -1);
+  const rivers = t.cell(0, -1).rivers;
+  assert.ok(rivers.length >= 3);
+  let reachLowland = 0;
+  const upRocks = [], downRocks = [];
+  for (const r of rivers) {
+    for (let i = 1; i < r.pts.length; i++) assert.ok(r.pts[i].S <= r.pts[i - 1].S, '水面は下流で上がらない');
+    const first = r.pts[0], last = r.pts[r.pts.length - 1];
+    assert.ok(first.w < last.w);
+    if (last.S === WATER_LEVEL) reachLowland++;
+    for (const k of r.rocks) {
+      // 岩のいちばん近い川の点の上流度
+      let best = null, bd = Infinity;
+      for (const q of r.pts) {
+        const d = (q.x - k.x) ** 2 + (q.z - k.z) ** 2;
+        if (d < bd) [bd, best] = [d, q];
+      }
+      (best.f < 0.5 ? upRocks : downRocks).push(k.r);
+    }
+  }
+  assert.ok(reachLowland >= 2, '平地まで流れ下る川がある');
+  const all = [...upRocks, ...downRocks];
+  assert.ok(Math.min(...all) < 2 && Math.max(...all) > 6, '岩の大きさはまちまち');
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  assert.ok(upRocks.length > downRocks.length && mean(upRocks) > mean(downRocks), '上流ほど岩が多く大きい');
+});
+
+test('川: 山の中の水面は平地より高く、段の所は滝のしぶきが見える。岩が水から頭を出す', async () => {
+  const { WATER_LEVEL } = await import('../src/terrain.js');
+  const w = new World({ seed: 20261004 });
+  w.terrain.prepare(0, -1);
+  const pts = w.terrain.cell(0, -1).rivers[0].pts;
+  // 上流の、段（滝）のある所
+  const k = pts.findIndex((q, i) => i > 4 && q.f < 0.5 && pts[i - 1].S - q.S >= 3);
+  assert.ok(k > 0);
+  const q = pts[k];
+  let foam = 0, high = 0, rock = 0;
+  for (let cz = -1; cz <= 1; cz++) {
+    for (let cx = -1; cx <= 1; cx++) {
+      const c = w.chunkAt(Math.floor(q.x / 16) + cx, Math.floor(q.z / 16) + cz);
+      for (let col = 0; col < 256; col++) {
+        if (c.water[col] > WATER_LEVEL) high++;
+        const lx = col % 16, lz = Math.floor(col / 16);
+        for (let y = c.height[col]; y < c.water[col] - 1; y++) if (c.color[c.index(lx, y, lz)] && !(c.color[c.index(lx, y, lz)] & WATER_FLAG)) foam++;
+      }
+      for (const o of c.owner) if (o === ROCK_ID) rock++;
+    }
+  }
+  assert.ok(high > 20 && foam > 0, `水面 ${high} しぶき ${foam}`);
+  assert.ok(rock > 0, '岩');
+});
+
+test('山の上のチャンクは地表のまわりから上だけを持つ。それより下は地面として扱う', () => {
+  const w = new World({ seed: 20261004 });
+  const c = w.chunkAt(40, -33); // 出発地点の山の頂上のあたり
+  assert.ok(c.base > 200, `base ${c.base}`);
+  assert.ok(c.owner.length < (c.top - c.base + 32) * 256);
+  assert.equal(w.ownerAt(c.cx * 16, 5, c.cz * 16), GROUND_ID);
+  assert.equal(w.ownerAt(c.cx * 16, c.base - 1, c.cz * 16), GROUND_ID);
+  assert.equal(w.colorAt(c.cx * 16, c.base - 1, c.cz * 16), 0);
+  const h = c.height[0];
+  assert.equal(w.ownerAt(c.cx * 16, h - 1, c.cz * 16), GROUND_ID);
+  assert.notEqual(w.ownerAt(c.cx * 16, h + 30, c.cz * 16), GROUND_ID);
+});
+
+test('遠くのチャンクは片付けられ、戻ってくると同じ地形が作り直される', async () => {
+  const { forgetFar } = await import('../src/world.js');
+  const w = new World({ seed: 4 });
+  ensureAround(w, 300, 0, 2);
+  const before = w.chunkAt(18, 0).height.slice();
+  ensureAround(w, 0, 0, 2);
+  const npcs = [...w.entities.values()].filter((e) => e.kind === 'npc').length;
+  const gone = forgetFar(w, [[0, 0]], 4);
+  assert.ok(gone >= 25);
+  assert.ok(!w.chunks.has(chunkKeyAt(300, 0)));
+  assert.ok([...w.entities.values()].filter((e) => e.kind === 'npc').length <= npcs);
+  assertConsistent(w);
+  assert.deepEqual(w.chunkAt(18, 0).height, before);
 });
 
 // ---- 龍 ----------------------------------------------------------------------

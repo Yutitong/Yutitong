@@ -4,10 +4,10 @@
 // - 胴は太さの変わる管で、厚さ 2 ボクセルほどの殻だけを点灯・占有する（中は空）
 // - 頭（角・鬣・髭・目・口）、短い四肢と爪、背びれ、腹板、尾の先の炎のような房
 // - 1日の流れ: 飛ぶ → 開けた所へ降りる → 地面を這うように歩く（ときどき立ち止まって火を吹く）→ 飛び立つ
-// - 1つのボクセルには1つの物だけ: 龍は地形・木・岩には入らない。人・NPC・木箱にぶつかったら押しのける
+// - 1つのボクセルには1つの物だけ: 龍は地形・木・岩には入らない。人・NPC にぶつかったら押しのける
 
 import { mulberry32, hash3, shade } from './rng.js';
-import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt, cellIndex } from './grid.js';
+import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt } from './grid.js';
 import { Fire } from './fire.js';
 import { redrawBody, MOVABLE } from './body.js';
 
@@ -234,7 +234,7 @@ export class Dragon {
   }
 
   // (x, z) のまわりで、龍以外の物がある一番高い所。まだ作られていない場所は地形 + 大木の高さとみなす
-  // ignoreMovable: 人・NPC・木箱は数えない（歩くときは押しのけるので）
+  // ignoreMovable: 人・NPC は数えない（歩くときは押しのけるので）
   clearance(x, z, radius = 20, ignoreMovable = false) {
     let top = 0;
     const step = radius > 10 ? 4 : 3;
@@ -251,8 +251,8 @@ export class Dragon {
     const c = w.chunks.get(chunkKeyAt(x, z));
     if (!c) return w.heightAt(x, z) + 95;
     const lx = x - c.cx * CHUNK, lz = z - c.cz * CHUNK;
-    for (let y = c.top - 1; y > 0; y--) {
-      const o = c.owner[cellIndex(lx, y, lz)];
+    for (let y = c.top - 1; y > Math.max(0, c.base - 1); y--) {
+      const o = c.owner[c.index(lx, y, lz)];
       if (!o || o === this.id || o === this.fireId) continue;
       if (ignoreMovable && MOVABLE.has(w.entities.get(o)?.kind)) continue;
       return y + 1;
@@ -492,7 +492,7 @@ export class Dragon {
     this.yaw += turn;
     this.roll += (Math.max(-0.6, Math.min(0.6, (turn / dt) * 1.4)) - this.roll) * Math.min(1, dt * 2);
     let wantPitch = Math.atan2(to[1], Math.hypot(to[0], to[2]));
-    // 先の方に木や丘があれば上がる。降りる場所の近くでは、人や木箱は気にせず地面まで降りる
+    // 先の方に木や丘があれば上がる。降りる場所の近くでは、人は気にせず地面まで降りる
     const nearLanding = descending && Math.hypot(to[0], to[2]) < 70;
     const gap = nearLanding ? HEAD_FLOOR - 2 : SAFE;
     const fwd = [Math.sin(this.yaw), 0, Math.cos(this.yaw)];
@@ -794,7 +794,7 @@ export class Dragon {
     this.entity.pos = this.head.map(Math.round);
   }
 
-  // 体を描き直す。人・NPC・木箱がいるセルは、その物を体から離れる向きへ押しのけてから入る
+  // 体を描き直す。人・NPC がいるセルは、その物を体から離れる向きへ押しのけてから入る
   draw() {
     const { cells, pushed } = redrawBody(this.world, this.id, this.cells, (emit) => this.shape(emit), (m) => this.awayFrom(m));
     this.cells = cells;

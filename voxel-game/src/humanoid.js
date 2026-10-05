@@ -61,6 +61,7 @@ export function createPose() {
     phase: 0, // 歩行周期の位置 0..1（1周期で左右1歩ずつ）
     walk: 0, // 歩き・走りの振れ幅 0..1（0 = 立ち姿）
     run: 0, // 歩き → 走りの混ざり具合 0..1
+    sprint: 0, // 走り → 全力疾走 0..1（脚を大きく振り、前に倒れ込む）
     push: 0, // 押す姿勢 0..1
     breath: 0, // 呼吸 0..1
     sway: 0, // 立っているときの重心移動 -1..1
@@ -116,11 +117,12 @@ function buildParts(p, pal) {
   const c = Math.cos(ph);
   const w = p.walk;
   const r = p.run;
+  const sp = p.sprint ?? 0;
   const push = p.push;
 
   // 脚: 太ももの振り角 a と膝の曲がり k。振り出している脚（遊脚）ほど膝が大きく曲がる。
-  const A = lerp(0.42, 0.72, r) * w * (1 - 0.35 * push);
-  const kSwing = lerp(1.0, 1.9, r) * w;
+  const A = (lerp(0.42, 0.72, r) + 0.16 * sp) * w * (1 - 0.35 * push);
+  const kSwing = (lerp(1.0, 1.9, r) + 0.3 * sp) * w;
   const kStance = lerp(0.08, 0.4, r) * w + 0.04 + 0.25 * push + 0.35 * p.air;
   // しゃがむ: 腿を前に出し、膝を曲げる（骨盤が下がり、足は地面に残る）
   const squatA = p.crouch * 0.5;
@@ -133,7 +135,7 @@ function buildParts(p, pal) {
     leg.height = B.thigh * Math.cos(leg.a) + B.shin * Math.cos(leg.a - leg.k) + B.ankle;
   }
   // 骨盤の高さは、地面に着いている方の脚の長さで決まる → 自然な上下動になる
-  const flight = r * w * 0.9 * s * s; // 走りでは脚が開いた瞬間に両足が浮く
+  const flight = (r * 0.9 + sp * 0.4) * w * s * s; // 走りでは脚が開いた瞬間に両足が浮く
   const hipY = Math.max(legs[0].height, legs[1].height) + flight;
   const sway = p.sway * 0.35 * (1 - w);
 
@@ -157,7 +159,7 @@ function buildParts(p, pal) {
   }
 
   // 胴: 前傾（歩き < 走り < 押す）と、呼吸での胸のふくらみ
-  const lean = 0.05 * w + 0.2 * r * w + 0.35 * push + 0.25 * p.crouch;
+  const lean = 0.05 * w + (0.2 * r + 0.14 * sp) * w + 0.35 * push + 0.25 * p.crouch;
   const pelvis = [sway, hipY + 0.35, 0];
   const up = (len) => add(pelvis, tilt([0, len, 0], lean));
   const breathLift = p.breath * 0.3;
@@ -167,7 +169,7 @@ function buildParts(p, pal) {
   const neckBase = up(B.spine);
 
   // 腕: 同じ側の脚と逆向きに振る。肩も少しひねる。
-  const armAmp = lerp(0.38, 0.95, r) * w * (1 - push);
+  const armAmp = (lerp(0.38, 0.95, r) + 0.25 * sp) * w * (1 - push);
   const twist = 0.25 * w * s;
   for (const side of [-1, 1]) {
     const shoulder = add(neckBase, [side * B.shoulderHalf, -0.6 + breathLift, side * twist]);
