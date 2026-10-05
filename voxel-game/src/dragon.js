@@ -265,6 +265,11 @@ export class Dragon {
     const w = this.world;
     x = Math.round(x);
     z = Math.round(z);
+    // まだ作られていない所は、地形の計算だけで求める（チャンクを作り始めると重い）
+    if (!w.chunks.has(chunkKeyAt(x, z))) {
+      const s = w.sample(x, z, {});
+      return Math.max(s.h, s.water);
+    }
     return Math.max(w.groundAt(x, z), w.waterAt(x, z));
   }
 

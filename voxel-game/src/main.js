@@ -10,13 +10,14 @@ import { ALPHA_SHIFT } from './terrain.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
-const VIEW_RADIUS = 6; // 描画するチャンクの半径
+let viewRadius = 6; // 描画するチャンクの半径（重いときは自動で狭める）
 const KEEP_RADIUS = 24; // これより遠いチャンクは片付ける
 const LOAD_BUDGET_MS = 7; // 1フレームでチャンク作りに使ってよい時間
 const FAR_BUDGET_MS = 3; // 1フレームで遠景作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
+world.bodyMakesChunks = false; // 龍の体が、まだ作っていない遠くのチャンクを作り始めないように
 const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
@@ -64,7 +65,8 @@ const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
 
 // ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
 function voxelMaterial(options, alpha = false) {
-  const m = new THREE.MeshLambertMaterial({ vertexColors: true, vertexAlphas: alpha, ...options });
+  // 色の属性が 4 つ組（不透明度つき）なら、three.js が自動で不透明度も使う
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, ...options });
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHead = cutaway.uHead;
     shader.uniforms.uCut = cutaway.uCut;
@@ -115,7 +117,7 @@ function makeLayer(chunk, capacity, shape, material) {
   if (material.transparent) mesh.renderOrder = 1;
   scene.add(mesh);
   return {
-    mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array, ch,
+    mesh, geo, cellAttr, rgbAttr, cell: cellAttr.array, rgb: rgbAttr.array, ch, shape, material,
     slots: new Map(), count: 0, hidden: 0, capacity, lo: Infinity, hi: -1,
     touch(slot) {
       if (slot < this.lo) this.lo = slot;
@@ -135,19 +137,37 @@ function makeLayer(chunk, capacity, shape, material) {
   };
 }
 
-// セル i の色を、そのセルの層（不透明 / 水）に書く。入りきらなければ false
+// 層が満杯になったら、2 倍の大きさの層に移す（チャンク全体を作り直すより、ずっと軽い）
+function growLayer(v, layer, chunk) {
+  const name = layer === v.solid ? 'solid' : layer === v.water ? 'water' : 'fall';
+  const next = makeLayer(chunk, layer.capacity * 2, layer.shape, layer.material);
+  next.cell.set(layer.cell);
+  next.rgb.set(layer.rgb);
+  next.slots = layer.slots;
+  next.count = layer.count;
+  next.hidden = layer.hidden;
+  next.lo = 0;
+  next.hi = layer.count - 1;
+  next.full = true;
+  layer.dispose();
+  v[name] = next;
+  return next;
+}
+
+// セル i の色を、そのセルの層（不透明 / 水 / 滝）に書く
 function writeCell(v, chunk, i) {
   const c = chunk.color[i];
   const water = (c & WATER_FLAG) !== 0;
-  const layer = !water ? v.solid : chunk.owner[i] === FALL_ID ? v.fall : v.water;
-  for (const other of [v.solid, v.water, v.fall]) if (other !== layer) other.hide(i);
+  const target = !water ? v.solid : chunk.owner[i] === FALL_ID ? v.fall : v.water;
+  for (const other of [v.solid, v.water, v.fall]) if (other !== target) other.hide(i);
   if (!c) {
-    layer.hide(i);
-    return true;
+    target.hide(i);
+    return;
   }
+  let layer = target;
   let slot = layer.slots.get(i);
   if (slot === undefined) {
-    if (layer.count >= layer.capacity) return false;
+    if (layer.count >= layer.capacity) layer = growLayer(v, layer, chunk);
     slot = layer.count++;
     layer.slots.set(i, slot);
     const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK, y = chunk.yOf(i);
@@ -166,7 +186,6 @@ function writeCell(v, chunk, i) {
     layer.rgb[k + 3] = Math.round((a ? a / 15 : WATER_ALPHA) * 255);
   }
   layer.touch(slot);
-  return true;
 }
 
 // チャンクの描画を一から作る（初回・入りきらないとき・隠れたインスタンスが増えたとき）
@@ -206,6 +225,10 @@ function buildView(chunk) {
 }
 
 function upload(layer, all) {
+  if (layer.full) {
+    all = true;
+    layer.full = false;
+  }
   layer.geo.instanceCount = layer.count;
   for (const [attr, size] of [[layer.cellAttr, 4], [layer.rgbAttr, layer.ch]]) {
     if (!all && layer.hi >= layer.lo) {
@@ -222,12 +245,7 @@ function upload(layer, all) {
 function updateView(chunk) {
   const v = views.get(chunk.key);
   if (!v) return;
-  for (const i of chunk.changed) {
-    if (!writeCell(v, chunk, i)) {
-      buildView(chunk);
-      return;
-    }
-  }
+  for (const i of chunk.changed) writeCell(v, chunk, i);
   chunk.changed.length = 0;
   const wasteful = (l) => l.hidden > 2000 && l.hidden > l.count / 2;
   if (wasteful(v.solid) || wasteful(v.water) || wasteful(v.fall)) {
@@ -244,9 +262,9 @@ function updateView(chunk) {
 function syncChunks() {
   const pcx = floorDiv(Math.floor(controls.target.x), CHUNK);
   const pcz = floorDiv(Math.floor(controls.target.z), CHUNK);
-  const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= VIEW_RADIUS;
+  const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= viewRadius;
   const start = performance.now();
-  outer: for (let r = 0; r <= VIEW_RADIUS; r++) {
+  outer: for (let r = 0; r <= viewRadius; r++) {
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
@@ -276,15 +294,15 @@ function syncChunks() {
     }
   }
   let all = true;
-  for (let dz = -VIEW_RADIUS; dz <= VIEW_RADIUS; dz++) {
-    for (let dx = -VIEW_RADIUS; dx <= VIEW_RADIUS; dx++) {
+  for (let dz = -viewRadius; dz <= viewRadius; dz++) {
+    for (let dx = -viewRadius; dx <= viewRadius; dx++) {
       const chunk = world.chunks.get(chunkKey(pcx + dx, pcz + dz));
       if (!chunk) all = false;
       else if (!views.has(chunk.key)) buildView(chunk);
     }
   }
   // チャンクがそろったら、その範囲の遠景を隠す
-  if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (VIEW_RADIUS + 0.5) * CHUNK };
+  if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (viewRadius + 0.5) * CHUNK };
 }
 let shown = null; // チャンクで描いている正方形
 
@@ -323,7 +341,7 @@ function syncHitboxes() {
   if (!hitboxGroup.visible) return;
   for (const e of world.entities.values()) {
     if (e.kind === 'terrain' || !e.offsets.length) continue;
-    const far = Math.max(Math.abs(e.pos[0] - player.pos[0]), Math.abs(e.pos[2] - player.pos[2])) > VIEW_RADIUS * CHUNK;
+    const far = Math.max(Math.abs(e.pos[0] - player.pos[0]), Math.abs(e.pos[2] - player.pos[2])) > viewRadius * CHUNK;
     let line = hitboxes.get(e.id);
     if (far) {
       if (line) line.visible = false;
@@ -592,16 +610,50 @@ function follow(dt) {
   camera.position.add(delta);
 }
 
+// 重いときは描く範囲を自動で狭める（フレームの時間をならして見る）
+const fpsLabel = document.getElementById('fps');
+let frameAvg = 16;
+let slowFor = 0, fastFor = 0, fpsShown = 0;
+const QUALITY = [{ view: 3, far: 1 }, { view: 4, far: 2 }, { view: 5, far: 3 }, { view: 6, far: 3 }];
+let quality = QUALITY.length - 1;
+function adjustQuality(dt) {
+  frameAvg += (dt - frameAvg) * 0.05;
+  fpsShown += dt;
+  if (fpsShown > 500) {
+    fpsShown = 0;
+    fpsLabel.textContent = Math.round(1000 / frameAvg);
+  }
+  slowFor = frameAvg > 50 ? slowFor + dt : 0;
+  fastFor = frameAvg < 22 ? fastFor + dt : 0;
+  if (slowFor > 1500 && quality > 0) setQuality(quality - 1);
+  else if (fastFor > 8000 && quality < QUALITY.length - 1) setQuality(quality + 1);
+}
+function setQuality(q) {
+  quality = q;
+  slowFor = fastFor = 0;
+  viewRadius = QUALITY[q].view;
+  far.setLevels(QUALITY[q].far);
+  shown = null;
+}
+
 let last = performance.now();
 let acc = 0;
 function frame(now) {
   const dt = Math.min(now - last, 500);
   last = now;
   acc += dt;
+  // 1 フレームで進めるのは 2 ティックまで。追いつけないときは遅れを捨てる
+  // （遅れを取り戻そうとして 1 フレームに何十ティックも進めると、ますます重くなって止まってしまう）
+  let ticks = 0;
   while (acc >= TICK_MS) {
     acc -= TICK_MS;
     if (!paused) tick();
+    if (++ticks >= 2) {
+      acc = Math.min(acc, TICK_MS);
+      break;
+    }
   }
+  adjustQuality(dt);
   follow(dt / 1000);
   controls.update();
   // カメラが丘や山の中に入らないように

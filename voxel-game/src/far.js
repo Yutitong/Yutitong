@@ -83,11 +83,19 @@ export class FarTerrain {
     this.color = new THREE.Color();
   }
 
+  // 使う段の数を変える（重いときは遠い段を描かない）
+  setLevels(n) {
+    this.active = n;
+    this.levels.forEach((L, k) => {
+      for (const mesh of L.tiles.values()) mesh.visible = k < n;
+    });
+  }
+
   // (x, z) のまわりのタイルを、近い順に budget ミリ秒まで作る。
   // near: チャンクで細かく描いている正方形 { x, z, half }（なければ null）
   update(x, z, near, budget = 4) {
     const start = performance.now();
-    for (const L of this.levels) {
+    for (const L of this.levels.slice(0, this.active ?? this.levels.length)) {
       const tx = floorDiv(x, L.tile), tz = floorDiv(z, L.tile);
       let ready = true;
       for (let r = 0; r <= L.reach && ready; r++) {

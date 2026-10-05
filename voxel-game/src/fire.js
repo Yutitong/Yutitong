@@ -7,7 +7,7 @@
 
 import { GROUND_ID } from './ids.js';
 import { burnTreeCell } from './trees.js';
-import { CHUNK, floorDiv } from './grid.js';
+import { CHUNK, floorDiv, chunkKey } from './grid.js';
 
 export const FIRE_SPEED = 80; // ボクセル/秒（≈ 12 m/s）
 
@@ -129,8 +129,8 @@ export class Fire {
 
   // セルをしばらく燃えさしの色で光らせ、そのあと final の色にする
   ignite(x, y, z, owner, final) {
-    const c = this.world.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-    if (y < c.base) return;
+    const c = this.world.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+    if (!c || y < c.base) return;
     const i = c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK);
     const glow = EMBER[(this.rand() * EMBER.length) | 0];
     c.color[i] = glow;
@@ -175,8 +175,8 @@ export class Fire {
             if (dx * dx + dy * dy + dz * dz > r * r) continue;
             const x = Math.floor(px + dx), y = Math.floor(py + dy), z = Math.floor(pz + dz);
             if (y < 1) continue;
-            const c = w.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
-            if (y < c.base) continue;
+            const c = w.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+            if (!c || y < c.base) continue;
             c.ensure(y);
             const i = c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK);
             if (c.owner[i] !== 0) continue; // 空いている所だけ（ほかの粒が先に取った所も含む）

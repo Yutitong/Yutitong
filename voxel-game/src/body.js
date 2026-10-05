@@ -5,11 +5,14 @@
 //   （押しのけられなければ入らない）。地形・木・岩・水などには入らない
 // - 1つのボクセルには1つの物だけ、は常に守られる
 
-import { CHUNK, chunkKey } from './grid.js';
+import { CHUNK, LAYER, chunkKey } from './grid.js';
 
 export const MOVABLE = new Set(['player', 'npc', 'box']); // 押しのけられる物
 
-const chunkOf = (world, key) => world.chunks.get(key) ?? world.chunkAt(Math.floor(key / 65536) - 32768, (key % 65536) - 32768);
+// world.bodyMakesChunks が false なら、まだ作られていない（または片付けた）チャンクには描かない。
+// ゲームではそうする: 龍の体は長く遠くまで届くので、そこのチャンクを作り始めると重くなる（見えない所なので描かなくてよい）
+const chunkOf = (world, key) => world.chunks.get(key)
+  ?? (world.bodyMakesChunks === false ? null : world.chunkAt(Math.floor(key / 65536) - 32768, (key % 65536) - 32768));
 
 // セルごとに「この描き直しで書いたか」の印（世代番号）を持たせる。チャンクの配列が伸びたら合わせて伸ばす
 function stampOf(chunk) {
@@ -33,41 +36,54 @@ export function redrawBody(world, id, prev, shape, away) {
   let chunk = null;
   let stamp = null;
   let ck = -1;
+  let ccx = NaN, ccz = NaN; // いま開いているチャンクの番号
   const use = (key) => {
     if (key !== ck) {
       ck = key;
       chunk = chunkOf(world, key);
       stamp = null;
-      world.dirty.add(key);
+      ccx = NaN;
+      if (chunk) world.dirty.add(key);
     }
   };
   const cells = [];
   const blocked = new Map(); // 押しのける物の id → [チャンク, セル番号, 色, チャンクの番号, ...]
   shape((x, y, z, color) => {
     const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
-    use(chunkKey(cx, cz));
-    if (y < chunk.base) return; // 地中の奥
-    chunk.ensure(y);
-    if (!stamp || stamp.length !== chunk.owner.length) stamp = stampOf(chunk);
-    const i = chunk.index(x - cx * CHUNK, y, z - cz * CHUNK);
+    if (cx !== ccx || cz !== ccz) {
+      use(chunkKey(cx, cz));
+      ccx = cx;
+      ccz = cz;
+    }
+    if (!chunk || y < chunk.base) return; // 作られていない所・地中の奥
+    if ((y - chunk.base + 1) * LAYER > chunk.owner.length) {
+      chunk.ensure(y);
+      stamp = null;
+    }
+    if (stamp === null) stamp = stampOf(chunk);
+    const i = (x - cx * CHUNK) + CHUNK * ((z - cz * CHUNK) + CHUNK * (y - chunk.base));
+    // 同じセルが何度か来ることがある（2 回目からは何もしない。最初の色になる）
+    if (stamp[i] === gen && chunk.owner[i] === id) return;
     const owner = chunk.owner[i];
-    const other = owner === 0 || owner === id ? null : world.entities.get(owner);
-    if (owner === 0 || other?.yields) {
-      // 空いている所と、いつでも場所をゆずる物（滝の水・炎など）の所に入る
-      chunk.owner[i] = id;
-      if (y >= chunk.top) chunk.top = y + 1;
-    } else if (owner !== id) {
-      if (MOVABLE.has(other?.kind)) {
-        let list = blocked.get(owner);
-        if (!list) blocked.set(owner, (list = []));
-        list.push(chunk, i, color, ck);
+    if (owner !== 0 && owner !== id) {
+      const other = world.entities.get(owner);
+      if (other?.yields) {
+        // いつでも場所をゆずる物（滝の水・炎など）の所には入る
+        chunk.owner[i] = id;
+      } else {
+        if (MOVABLE.has(other?.kind)) {
+          let list = blocked.get(owner);
+          if (!list) blocked.set(owner, (list = []));
+          list.push(chunk, i, color, ck);
+        }
+        return;
       }
-      return;
+    } else if (owner === 0) {
+      chunk.owner[i] = id;
     }
-    if (stamp[i] !== gen) {
-      stamp[i] = gen;
-      cells.push(ck, i);
-    }
+    if (y >= chunk.top) chunk.top = y + 1;
+    stamp[i] = gen;
+    cells.push(ck, i);
     if (chunk.color[i] !== color) {
       chunk.color[i] = color;
       chunk.changed.push(i);
@@ -94,7 +110,7 @@ export function redrawBody(world, id, prev, shape, away) {
   for (let n = 0; n < prev.length; n += 2) {
     use(prev[n]);
     const i = prev[n + 1];
-    if (chunk.owner[i] !== id || stampOf(chunk)[i] === gen) continue;
+    if (!chunk || chunk.owner[i] !== id || stampOf(chunk)[i] === gen) continue;
     chunk.owner[i] = 0;
     chunk.color[i] = 0;
     chunk.changed.push(i);
