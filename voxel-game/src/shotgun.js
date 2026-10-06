@@ -1,7 +1,8 @@
 // ショットガン: 散弾を扇形に撃つ
 //
 // - F で撃つ（1 発ごとに 0.6 秒。弾は無限）。9 粒の散弾が前へ扇形に広がって飛ぶ。届くのは 25m（167 ボクセル）まで
-// - 黄色い球体が前の方（左右 26° 以内）にいれば、そちらへ向けて撃つ（上下も合わせる）
+// - 一人称のときは、目から視線の先（画面の真ん中の照準）へ向けて撃つ
+// - 三人称のときは、黄色い球体が前の方（左右 26° 以内）にいれば、そちらへ向けて撃つ（上下も合わせる）
 // - 近いほど大きくえぐれる。正八面体のときだけ、当たった所が欠けたまま戻らない（monster.js の hit）
 // - 散弾は木や地面に当たると止まる（何も壊さない）
 // - 弾の通り道は一瞬だけ光の筋として見える（いつでも場所をゆずる）
@@ -35,14 +36,25 @@ export function muzzleOf(e) {
   return [e.pos[0] + 4.5 + Math.sin(yaw) * 9.5, e.pos[1] + 10.5, e.pos[2] + 4.5 + Math.cos(yaw) * 9.5];
 }
 
+// 目の位置（一人称のカメラの位置）
+export function eyeOf(e) {
+  return [e.pos[0] + 4.5, e.pos[1] + EYE, e.pos[2] + 4.5];
+}
+export const EYE = 13.5; // 足元から目までの高さ（ボクセル）
+
 // 撃つ。戻り値は出来事 { type: 'shoot', actor, target, result: 'dent' | 'chip' | 'killed' | 'blocked' | 'miss', hits }
 export function shoot(world, e) {
   const ev = { type: 'shoot', actor: e, target: null, result: 'miss', hits: 0 };
   const rng = mulberry32(world.tickCount * 7919 + 13);
   const muzzle = muzzleOf(e);
   let yaw = e.pose.yaw, pitch = 0;
+  // 弾の飛び始め: 一人称なら目（照準の先に飛ぶ）、三人称なら銃口
+  let from = muzzle;
   const mon = world.monster;
-  if (mon && !mon.dead) {
+  if (e.aimPitch !== null && e.aimPitch !== undefined) {
+    pitch = e.aimPitch;
+    from = eyeOf(e);
+  } else if (mon && !mon.dead) {
     const dx = mon.c[0] - muzzle[0], dy = mon.c[1] - muzzle[1], dz = mon.c[2] - muzzle[2];
     const h = Math.hypot(dx, dz);
     const a = Math.atan2(dx, dz);
@@ -61,7 +73,7 @@ export function shoot(world, e) {
     const dir = [Math.sin(yaw + da) * cp, Math.sin(pitch + dp), Math.cos(yaw + da) * cp];
     let end = SHOT_RANGE;
     for (let s = 0; s <= SHOT_RANGE; s += 0.5) {
-      const p = [muzzle[0] + dir[0] * s, muzzle[1] + dir[1] * s, muzzle[2] + dir[2] * s];
+      const p = [from[0] + dir[0] * s, from[1] + dir[1] * s, from[2] + dir[2] * s];
       const o = ownerLoaded(world, Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
       if (o === -1) break; // 空の上・地の底
       if (o === 0 || o === e.id || o === e.toolId || o === WATER_ID || o === FALL_ID) continue;
@@ -81,7 +93,11 @@ export function shoot(world, e) {
       }
       break;
     }
-    trails.push([muzzle, dir, end]);
+    // 光の筋は銃口から、弾が止まった所まで
+    const hit = [from[0] + dir[0] * end, from[1] + dir[1] * end, from[2] + dir[2] * end];
+    const v = [hit[0] - muzzle[0], hit[1] - muzzle[1], hit[2] - muzzle[2]];
+    const len = Math.hypot(...v) || 1;
+    trails.push([muzzle, v.map((c) => c / len), len]);
   }
   if (results.has('killed')) ev.result = 'killed';
   else if (results.has('chip')) ev.result = 'chip';

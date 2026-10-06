@@ -718,7 +718,7 @@ export function respawnPlayer(world) {
   });
   if (pos) p.pos = pos;
   world.paint(p, true);
-  Object.assign(p, { hp: PLAYER_HP, vy: 0, fall: 0, fallen: 0, speed: 0, travel: 0, swingT: 0, hurtAt: -Infinity });
+  Object.assign(p, { hp: PLAYER_HP, vy: 0, fall: 0, fallen: 0, speed: 0, sub: [0, 0], swingT: 0, hurtAt: -Infinity });
   return p;
 }
 

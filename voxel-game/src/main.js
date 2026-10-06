@@ -5,6 +5,7 @@ import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOX
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { spawnMonster } from './monster.js';
+import { EYE } from './shotgun.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -49,6 +50,78 @@ controls.target.copy(center(player));
 camera.position.copy(controls.target).add(new THREE.Vector3(-34, 40, 66));
 controls.update();
 
+// ---- 視点: 一人称（はじめ）と三人称（V で切り替え） ---------------------------------
+//
+// 一人称: 画面をクリックするとマウスカーソルが固定され、マウスを動かすだけで上下左右どこでも見回せる（Esc で解除）。
+// 固定中は左クリックで道具を使い、右クリックで土を盛る。スマホは画面をドラッグして見回す。
+// 三人称: いままでどおり、ドラッグでプレイヤーのまわりを回る
+let firstPerson = true;
+let lookYaw = 0; // 視線の左右（0 で +z）
+let lookPitch = -0.12; // 視線の上下（上が正）
+const canvas = renderer.domElement;
+
+function setView(fp) {
+  firstPerson = fp;
+  controls.enabled = !fp;
+  camera.fov = fp ? 75 : 40;
+  camera.near = fp ? 0.2 : 0.5;
+  camera.updateProjectionMatrix();
+  stage.classList.toggle('fp', fp);
+  cutaway.uCut.value = fp || watchDragon ? 0 : 1;
+  if (fp) {
+    lookYaw = player.pose.yaw;
+    eyeAt.set(player.pos[0] + 4.5, player.pos[1] + EYE, player.pos[2] + 4.5);
+  } else {
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    cutaway.uSelf.value.w = 0;
+    // 視線の後ろ上からプレイヤーを見る
+    controls.target.copy(center(player));
+    camera.position.copy(controls.target).add(new THREE.Vector3(-Math.sin(lookYaw) * 70, 42, -Math.cos(lookYaw) * 70));
+    camera.lookAt(controls.target);
+  }
+}
+
+function look(dx, dy, speed) {
+  lookYaw -= dx * speed;
+  lookPitch = Math.max(-1.55, Math.min(1.55, lookPitch - dy * speed));
+}
+
+let dragLook = null; // スマホで見回している指
+canvas.addEventListener('pointerdown', (e) => {
+  if (!firstPerson || watchDragon) return;
+  if (e.pointerType === 'mouse') {
+    if (document.pointerLockElement !== canvas) {
+      canvas.requestPointerLock?.();
+      return;
+    }
+    if (e.button === 0) chopHeld = chopPending = true;
+    if (e.button === 2) placeHeld = placePending = true;
+  } else {
+    dragLook = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragLook || e.pointerId !== dragLook.id) return;
+  look(e.clientX - dragLook.x, e.clientY - dragLook.y, 0.006);
+  dragLook.x = e.clientX;
+  dragLook.y = e.clientY;
+});
+window.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') {
+    if (e.button === 0) chopHeld = false;
+    if (e.button === 2) placeHeld = false;
+  }
+  if (dragLook && e.pointerId === dragLook.id) dragLook = null;
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement === canvas) look(e.movementX, e.movementY, 0.0022);
+});
+document.addEventListener('pointerlockchange', () => {
+  stage.classList.toggle('locked', document.pointerLockElement === canvas);
+  if (document.pointerLockElement !== canvas) chopHeld = placeHeld = false;
+});
+
 scene.add(new THREE.HemisphereLight(0xeaf2ff, 0x4a5a3a, 1.5));
 const sun = new THREE.DirectionalLight(0xfff3dd, 1.9);
 sun.position.set(0.6, 1, 0.35);
@@ -64,7 +137,7 @@ const box = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
 // 水面は上の面だけの板（となりの水面との境目が透けて格子に見えないように）。滝は箱で描く
 const waterTop = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0.4, 0);
 const fallBox = new THREE.BoxGeometry(1, 1, 1);
-const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 } };
+const cutaway = { uHead: { value: new THREE.Vector3() }, uCut: { value: 1 }, uSelf: { value: new THREE.Vector4() } };
 
 // ボクセル用のマテリアル。インスタンスごとの位置・表示・色をシェーダーで読む
 function voxelMaterial(options, alpha = false) {
@@ -73,8 +146,9 @@ function voxelMaterial(options, alpha = false) {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHead = cutaway.uHead;
     shader.uniforms.uCut = cutaway.uCut;
+    shader.uniforms.uSelf = cutaway.uSelf;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;')
+      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;\nuniform vec4 uSelf;')
       // 色は sRGB で持っている（水は不透明度も持つ）
       .replace('#include <color_vertex>', alpha ? 'vColor = vec4(pow(color.rgb, vec3(2.2)), color.a);' : 'vColor = pow(color, vec3(2.2));')
       .replace('#include <begin_vertex>', `
@@ -86,6 +160,8 @@ function voxelMaterial(options, alpha = false) {
         float t = clamp(dot(wc - cameraPosition, seg) / dot(seg, seg), 0.0, 1.0);
         float d = length(wc - (cameraPosition + seg * t));
         if (uCut > 0.5 && t < 0.97 && wc.y > uHead.y - 3.0 && d < 10.0) show = 0.0;
+        // 一人称のときは、自分の体（当たり判定の円柱の中）を描かない（道具ははみ出した所だけ見える）
+        if (uSelf.w > 0.5 && wc.y > uSelf.z && wc.y < uSelf.z + 15.0 && length(wc.xz - uSelf.xy) < 4.65) show = 0.0;
         transformed = transformed * show + iCell.xyz;
       `);
   };
@@ -375,7 +451,7 @@ new ResizeObserver(resize).observe(stage);
 // ---- 入力 -------------------------------------------------------------------
 
 // 画面上の向き（前後左右）を、カメラの向きに最も近い世界の軸に合わせる。
-// 2つのキーを同時に押すと斜め（8方向）。Shift を押している間は走る。
+// 移動は視点の向き基準（W で見ている方へ、A / D で横へ。2つ同時で斜め）。Shift を押している間は走る。
 const KEYMAP = {
   KeyW: 'f', ArrowUp: 'f',
   KeyS: 'b', ArrowDown: 'b',
@@ -393,31 +469,39 @@ let toolWanted = null; // 次のティックで持ち替える道具
 const TOOL_KEYS = { Digit1: 'axe', Digit2: 'shovel', Digit3: 'sword', Digit4: 'gun' };
 const TOOL_NAMES = { axe: '斧', shovel: 'シャベル', sword: '太刀', gun: 'ショットガン' };
 
-function worldDir(rel) {
-  const fx = controls.target.x - camera.position.x;
-  const fz = controls.target.z - camera.position.z;
-  const f = Math.abs(fx) > Math.abs(fz) ? [Math.sign(fx), 0] : [0, Math.sign(fz)];
-  const r = [-f[1], f[0]];
-  const d = { f, b: [-f[0], -f[1]], r, l: [-r[0], -r[1]] }[rel];
-  return [d[0], 0, d[1]];
+// 視点の向き（ラジアン。0 で +z、前 = (sin, cos)）。一人称では視線、三人称ではカメラの向き
+function viewYaw() {
+  if (firstPerson && !watchDragon) return lookYaw;
+  return Math.atan2(controls.target.x - camera.position.x, controls.target.z - camera.position.z);
 }
 
+// 押しているキーから、行きたい向き（視点の向き基準。どの角度でもよい）
 function playerInput() {
-  let dx = 0;
-  let dz = 0;
+  let fwd = 0;
+  let side = 0;
   for (const rel of held) {
-    const [x, , z] = worldDir(rel);
-    dx += x;
-    dz += z;
+    if (rel === 'f') fwd++;
+    else if (rel === 'b') fwd--;
+    else if (rel === 'r') side++;
+    else side--;
   }
-  dx = Math.sign(dx);
-  dz = Math.sign(dz);
+  const yaw = viewYaw();
+  const dx = Math.sin(yaw) * fwd - Math.cos(yaw) * side;
+  const dz = Math.cos(yaw) * fwd + Math.sin(yaw) * side;
   const chop = chopHeld || chopPending;
   const place = placeHeld || placePending;
   const tool = toolWanted;
   chopPending = placePending = false;
   toolWanted = null;
-  return { dir: dx || dz ? [dx, dz] : null, run: running || runButton, chop, place, tool };
+  const moving = Boolean(fwd || side);
+  const fp = firstPerson && !watchDragon;
+  return {
+    dir: moving ? [dx, dz] : null, run: running || runButton, chop, place, tool,
+    // 一人称: 体はいつも視線の向きを向き、道具は視線の先（上下も）へ使う。
+    // 三人称: 立ち止まって道具を使うときは、カメラの向いている方を向く
+    face: fp ? lookYaw : !moving && (chop || place) ? yaw : null,
+    pitch: fp ? lookPitch : null,
+  };
 }
 
 function press(rel) {
@@ -435,6 +519,8 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) press(KEYMAP[e.code]);
   } else if (TOOL_KEYS[e.code]) {
     toolWanted = TOOL_KEYS[e.code];
+  } else if (e.code === 'KeyV' && !e.repeat) {
+    if (!watchDragon) setView(!firstPerson);
   } else if (e.code === 'KeyG') {
     e.preventDefault();
     placeHeld = true;
@@ -629,8 +715,17 @@ function setPaused(v) {
 pauseBtn.addEventListener('click', () => setPaused(!paused));
 stepBtn.addEventListener('click', () => tick());
 document.getElementById('watchDragon').addEventListener('change', (e) => {
+  // 龍を追うときは三人称にする（やめたら元の視点に戻す）
+  if (e.target.checked && firstPerson) {
+    setView(false);
+    resumeFirstPerson = true;
+  }
   watchDragon = e.target.checked;
   cutaway.uCut.value = watchDragon ? 0 : 1;
+  if (!watchDragon && resumeFirstPerson) {
+    resumeFirstPerson = false;
+    setView(true);
+  }
   if (watchDragon && camera.position.distanceTo(controls.target) < 200) {
     // 龍の全体が入るように引く
     const offset = camera.position.clone().sub(controls.target).setLength(240);
@@ -685,7 +780,24 @@ function tick() {
 // カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）
 const followed = new THREE.Vector3();
 let watchDragon = false;
+let resumeFirstPerson = false;
+const eyeAt = new THREE.Vector3(); // 一人称のカメラの位置（体の動きよりなめらかに追う）
 function follow(dt) {
+  if (firstPerson && !watchDragon) {
+    // 一人称: 目の位置から視線の向きを見る。体は1ボクセルずつ動くので、カメラはなめらかに追う
+    const tx = player.pos[0] + 4.5, ty = player.pos[1] + EYE, tz = player.pos[2] + 4.5;
+    if (Math.hypot(tx - eyeAt.x, ty - eyeAt.y, tz - eyeAt.z) > 20) eyeAt.set(tx, ty, tz); // 出発地点に戻ったときなど
+    const k = 1 - Math.exp(-dt * 22);
+    eyeAt.x += (tx - eyeAt.x) * k;
+    eyeAt.y += (ty - eyeAt.y) * k;
+    eyeAt.z += (tz - eyeAt.z) * k;
+    camera.position.copy(eyeAt);
+    camera.rotation.set(lookPitch, lookYaw + Math.PI, 0, 'YXZ');
+    controls.target.copy(eyeAt); // 描くチャンクの中心など
+    cutaway.uSelf.value.set(tx, tz, player.pos[1], 1);
+    return;
+  }
+  cutaway.uSelf.value.w = 0;
   if (watchDragon) {
     // 龍の胴のなかほどを見る
     const mid = dragon.spine()[120]?.c ?? dragon.head;
@@ -744,15 +856,17 @@ function frame(now) {
   }
   adjustQuality(dt);
   follow(dt / 1000);
-  controls.update();
-  // カメラが丘や山の中に入らないように
-  const ground = world.heightAt(Math.floor(camera.position.x), Math.floor(camera.position.z)) + 4;
-  if (camera.position.y < ground) camera.position.y = ground;
+  if (!firstPerson || watchDragon) {
+    controls.update();
+    // カメラが丘や山の中に入らないように
+    const ground = world.heightAt(Math.floor(camera.position.x), Math.floor(camera.position.z)) + 4;
+    if (camera.position.y < ground) camera.position.y = ground;
+  }
   syncChunks();
   syncFar();
   cutaway.uHead.value.copy(controls.target).y += 6;
   // 霧はカメラからの距離に合わせて遠ざける。遠くの山はかすんで見える
-  const dist = camera.position.distanceTo(controls.target);
+  const dist = firstPerson && !watchDragon ? 0 : camera.position.distanceTo(controls.target);
   scene.fog.near = dist + 350;
   scene.fog.far = dist + 2300;
   renderer.render(scene, camera);
@@ -760,6 +874,7 @@ function frame(now) {
 }
 
 resize();
+setView(true);
 syncChunks();
 tick();
 requestAnimationFrame(frame);

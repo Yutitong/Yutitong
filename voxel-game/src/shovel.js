@@ -14,11 +14,27 @@ export const SOIL_MAX = 200; // 持てる土（ボクセル）
 const REACH = 7.5; // 体の中心から、えぐる所の中心まで（足元はえぐらない）
 const SCOOP = [2.8, 2.2]; // えぐるお椀の半径（横・深さ）
 const DUMP = 40; // 1 回に盛る土
+const AIM_REACH = 18; // 一人称のとき、視線の先の地面が（水平に）これより遠ければ届かない（ふつうの前の所を掘る）
 
-// 体の前の、えぐる所（盛る所）の中心の列
-function frontCenter(e) {
+// 体の前の、えぐる所（盛る所）の中心の列。
+// 一人称のとき（視線の上下 e.aimPitch がある）は、目から視線の先をたどって当たった地面（届く所まで）
+function frontCenter(world, e) {
   const yaw = e.pose.yaw;
-  return [e.pos[0] + 4.5 + Math.sin(yaw) * REACH, e.pos[2] + 4.5 + Math.cos(yaw) * REACH];
+  const fx = Math.sin(yaw), fz = Math.cos(yaw);
+  if (e.aimPitch !== null && e.aimPitch !== undefined) {
+    const cp = Math.cos(e.aimPitch), sp = Math.sin(e.aimPitch);
+    const eye = [e.pos[0] + 4.5, e.pos[1] + 13.5, e.pos[2] + 4.5];
+    for (let s = 3; s <= AIM_REACH * 2; s += 0.5) {
+      const x = eye[0] + fx * cp * s, y = eye[1] + sp * s, z = eye[2] + fz * cp * s;
+      const o = world.ownerAt(Math.floor(x), Math.floor(y), Math.floor(z));
+      if (o === EMPTY || o === e.id || o === e.toolId || o === WATER_ID || o === FALL_ID || o === PLANT_ID) continue;
+      if (world.entities.get(o)?.yields) continue;
+      const h = Math.hypot(x - eye[0], z - eye[2]);
+      if (h < 4.5 || h > AIM_REACH) break; // 足元すぎる所・遠すぎる所は、ふつうの前の所
+      return [x, z];
+    }
+  }
+  return [e.pos[0] + 4.5 + fx * REACH, e.pos[2] + 4.5 + fz * REACH];
 }
 
 // もとの地形（掘る前）と、まわりとの高さの差。同じ列は 1 回の作業の間は使い回す
@@ -60,7 +76,7 @@ export function dig(world, e) {
   }
   const memo = new Map();
   const feet = e.pos[1];
-  const [cx, cz] = frontCenter(e);
+  const [cx, cz] = frontCenter(world, e);
   const top = world.groundAt(Math.floor(cx), Math.floor(cz)) - 1; // 刃が入る所の地面
   if (top < feet - 7 || top > feet + 3) return ev; // 届かない
   const [R, D] = SCOOP;
@@ -114,7 +130,7 @@ export function place(world, e) {
     return ev;
   }
   const feet = e.pos[1];
-  const [cx, cz] = frontCenter(e);
+  const [cx, cz] = frontCenter(world, e);
   const R = SCOOP[0];
   const cols = [];
   for (let z = Math.floor(cz - R); z <= Math.floor(cz + R); z++) {

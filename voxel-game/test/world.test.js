@@ -1319,3 +1319,58 @@ test('プレイヤーの体力が 0 になると出発地点に戻り、体力�
   assert.ok(Math.hypot(p.pos[0] - start[0], p.pos[2] - start[2]) < 10);
   assertConsistent(w);
 });
+
+// ---- 一人称（視線の向きに自由に動く・視線の先へ道具を使う） ---------------------------
+
+test('一人称: どの角度へも歩け、視線の向きを向いたまま横歩き・後ずさりできる', () => {
+  const w = flat();
+  const p = spawnPlayer(w);
+  // 30° の向きへ歩く（8 方向ではない）
+  const a = Math.PI / 6;
+  const [x0, , z0] = p.pos;
+  for (let i = 0; i < 60; i++) step(w, { dir: [Math.sin(a), Math.cos(a)], run: false, face: a, pitch: 0 });
+  const dx = p.pos[0] - x0, dz = p.pos[2] - z0;
+  assert.ok(dz > 15, `dz ${dz}`);
+  assert.ok(Math.abs(Math.atan2(dx, dz) - a) < 0.08, `向き ${Math.atan2(dx, dz).toFixed(2)}`);
+  assert.ok(Math.abs(p.pose.yaw - a) < 1e-9, '体は視線の向き');
+  // 視線は +z のまま、右（-x）へ横歩き
+  const [x1, , z1] = p.pos;
+  for (let i = 0; i < 40; i++) step(w, { dir: [-1, 0], run: false, face: 0, pitch: 0 });
+  assert.ok(x1 - p.pos[0] > 10 && Math.abs(p.pos[2] - z1) <= 1, `横歩き ${x1 - p.pos[0]}`);
+  assert.equal(p.pose.yaw, 0);
+  assertConsistent(w);
+});
+
+test('一人称: ショットガンは視線の先（上下も）へ撃つ', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  // 真上に近い所に浮かぶ球体
+  const m = new Monster(w, [p.pos[0] + 4.5, p.pos[1] + 13.5 + 30, p.pos[2] + 4.5 + 12]);
+  w.monster = m;
+  m.update = () => {}; // 動かないようにする
+  m.draw();
+  const pitch = Math.atan2(30, 12);
+  // 視線を水平にしていれば当たらない
+  let ev = step(w, { dir: null, run: false, chop: true, tool: 'gun', face: 0, pitch: 0 }).find((e) => e.type === 'shoot');
+  assert.equal(ev.hits, 0);
+  for (let k = 0; k < 16; k++) step(w, { dir: null, run: false, face: 0, pitch: 0 });
+  m.draw();
+  ev = step(w, { dir: null, run: false, chop: true, face: 0, pitch }).find((e) => e.type === 'shoot');
+  assert.ok(ev.hits >= 5, `当たった粒 ${ev.hits}`);
+  assert.equal(ev.result, 'dent');
+});
+
+test('一人称: シャベルは視線の先の地面を掘る', () => {
+  const w2 = new World({ generate: false, heightAt: () => 10 });
+  const p = spawnPlayer(w2);
+  // 少し右下の、体から 2m ほど先の地面を見る
+  const yaw = 0.6, dist = 14;
+  const pitch = -Math.atan2(13.5, dist);
+  const ev = [];
+  for (let k = 0; k < 20; k++) ev.push(...step(w2, { dir: null, run: false, chop: k === 0, tool: 'shovel', face: yaw, pitch }));
+  const dug = ev.find((e) => e.type === 'dig');
+  assert.equal(dug.result, 'dug');
+  const cx = p.pos[0] + 4.5 + Math.sin(yaw) * dist, cz = p.pos[2] + 4.5 + Math.cos(yaw) * dist;
+  assert.ok(w2.groundAt(Math.floor(cx), Math.floor(cz)) < 10, '見ていた所に穴があいた');
+  assertConsistent(w2);
+});

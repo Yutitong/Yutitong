@@ -27,22 +27,23 @@ const DOWN = [0, -1, 0];
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const approach = (v, target, maxStep) => (v < target ? Math.min(target, v + maxStep) : Math.max(target, v - maxStep));
-const sameDir = (a, b) => Boolean(b) && a[0] === b[0] && a[1] === b[1];
+const sameDir = (a, b) => Boolean(b) && a[0] * b[0] + a[1] * b[1] > 0.98; // ほぼ同じ向き（長さ 1 の向き同士）
 const wrapAngle = (a) => ((((a + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
 
-// 1歩で試す移動（斜めは x と z を交互に。先に試す方が塞がっていたらもう一方へ）
-function stepAxes(dir, toggle) {
-  const x = [dir[0], 0, 0];
-  const z = [0, 0, dir[1]];
-  if (dir[0] && dir[1]) return toggle ? [x, z] : [z, x];
-  return [dir[0] ? x : z];
+// 向き dir（長さ 1）へ進むときに試す1歩（x か z に1ボクセル）。成分の大きい方の軸から。ほとんど動かない軸は試さない
+function stepAxes(dir) {
+  const out = [];
+  if (Math.abs(dir[0]) > 0.15) out.push([Math.sign(dir[0]), 0, 0]);
+  if (Math.abs(dir[1]) > 0.15) out.push([0, 0, Math.sign(dir[1])]);
+  if (Math.abs(dir[1]) > Math.abs(dir[0])) out.reverse();
+  return out;
 }
 
 export function initCharacter(e, rng = Math.random) {
   e.pose = createPose();
   e.pose.yaw = e.yaw ?? 0;
   e.speed = 0;
-  e.travel = 0; // まだ使っていない移動量（ボクセル）
+  e.sub = [0, 0]; // まだ使っていない x / z の移動量（ボクセル）
   e.moveDir = null;
   e.diagToggle = false;
   e.pushing = 0;
@@ -107,13 +108,18 @@ function stepOnce(world, e, d3) {
 }
 
 // 1ティック分キャラを動かす。
-// input: { dir: [dx, dz]（各 -1..1、8方向）または null, run: boolean }
+// input: { dir: [dx, dz]（どの向きでもよい。長さは問わない）または null, run: boolean,
+//   face: 体を向ける向き（一人称の視線。なければ進む向きへ回る）, pitch: 視線の上下（道具を視線の先へ向ける。なければ null） }
 // report(e, result) は移動の結果（押し出し・止められた）を出来事として記録する。
 // input.tool で道具を持ち替える（'axe' | 'shovel' | 'sword' | 'gun'）。input.chop が true なら持っている道具を使う
 // （斧なら振る、シャベルなら掘る、太刀なら振り下ろしと横薙ぎを交互に、ショットガンなら撃つ）。input.place が true ならシャベルで土を盛る。
 // 刃が当たる（弾が出る）瞬間に onChop(e, action) を呼ぶ（action: 'chop' | 'dig' | 'place' | 'slashV' | 'slashH' | 'shoot'）
 export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   const pose = e.pose;
+  // 視線: 体はすぐにその向きを向き（横歩き・後ずさりもできる）、道具はその先へ使う（道具を使う前に決める）
+  const hasFace = input.face !== undefined && input.face !== null;
+  if (hasFace) pose.yaw = wrapAngle(input.face);
+  e.aimPitch = input.pitch ?? null;
   const tools = Boolean(e.palette.axe); // 道具を持っているのはプレイヤーだけ
   if (tools && input.tool && !e.swingT) e.tool = input.tool;
   const tool = e.tool ?? 'axe';
@@ -147,17 +153,22 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   pose.action = e.action ?? 'chop';
   pose.carry = e.soil > 0 ? 1 : 0;
   const airborne = applyGravity(world, e, dt);
-  const dir = input.dir && (input.dir[0] || input.dir[1]) ? input.dir : null;
+  let dir = null;
+  if (input.dir && (input.dir[0] || input.dir[1])) {
+    const l = Math.hypot(input.dir[0], input.dir[1]);
+    dir = [input.dir[0] / l, input.dir[1] / l];
+  }
 
-  // 向き: 行きたい方向へ一定の速さで回る。大きく向きを変えるときは減速する。
+  // 向き: 視線（face）があればすぐにそちらを向く（はじめに済ませてある）。
+  // なければ行きたい方向へ一定の速さで回る。大きく向きを変えるときは減速する。
   let turnLeft = 0;
-  if (dir) {
+  if (!hasFace && dir) {
     const target = Math.atan2(dir[0], dir[1]);
     turnLeft = wrapAngle(target - pose.yaw);
     pose.yaw = wrapAngle(pose.yaw + clamp(turnLeft, -TURN_RATE * dt, TURN_RATE * dt));
     turnLeft = wrapAngle(target - pose.yaw);
-    e.moveDir = dir;
   }
+  if (dir) e.moveDir = dir;
 
   // 速度: 加速・減速は一定の割合で。走り続けると全力疾走になる
   e.runFor = dir && input.run && e.speed > WALK_SPEED ? (e.runFor ?? 0) + dt : 0;
@@ -171,7 +182,7 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
     e.waitBlocked -= dt;
     if (e.waitBlocked <= 0) {
       // 歩くときと同じく、段を上がるのは地面（や岩）の段差に当たったときだけ
-      const free = stepAxes(dir, e.diagToggle).some((d3) => {
+      const free = stepAxes(dir).some((d3) => {
         if (world.canMove(e.id, d3)) return true;
         if (world._fail?.via !== e || !world._fail.blocker?.ground) return false;
         for (let h = 1; h <= MAX_STEP; h++) if (world.canMove(e.id, [d3[0], h, d3[2]])) return true;
@@ -186,39 +197,53 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   }
   e.speed = approach(e.speed, targetSpeed, (targetSpeed > e.speed ? ACCEL : DECEL) * dt);
 
-  // 位置: たまった移動量が1ボクセル分を超えるたびに1ボクセル進む（速いときは1ティックに数歩）。
-  // 1歩ごとに当たり判定をするので、速くても物をすり抜けない
+  // 位置: x と z それぞれにたまった移動量が1ボクセル分を超えるたびに、その軸へ1ボクセル進む（速いときは1ティックに数歩）。
+  // どの角度へも進める（斜めなら x と z に交互に進む）。1歩ごとに当たり判定をするので、速くても物をすり抜けない。
+  // 片方の軸が塞がっていれば、もう一方の軸に沿って壁ぞいに滑る
   let pushedNow = false;
   let strain = false;
   if (e.moveDir && e.speed > 0) {
-    const diag = e.moveDir[0] !== 0 && e.moveDir[1] !== 0;
-    const cost = diag ? Math.SQRT1_2 : 1; // 斜めは x と z に交互に1歩ずつ
-    e.travel = Math.min(e.travel + e.speed * dt, 4);
-    while (e.travel >= cost) {
+    const md = e.moveDir;
+    const sub = e.sub;
+    for (const a of [0, 1]) {
+      if (sub[a] * md[a] < 0) sub[a] = 0; // 向きを変えたら、逆向きにたまった分は捨てる
+      sub[a] = clamp(sub[a] + md[a] * e.speed * dt, -4, 4);
+    }
+    let movedAny = false;
+    let failed = null;
+    while (Math.abs(sub[0]) >= 1 || Math.abs(sub[1]) >= 1) {
+      const ax = Math.abs(sub[0]), az = Math.abs(sub[1]);
+      const first = ax > az || (ax === az && e.diagToggle) ? 0 : 1;
       let moved = null;
-      let last = null;
-      for (const d3 of stepAxes(e.moveDir, e.diagToggle)) {
-        last = stepOnce(world, e, d3);
-        if (last.ok) {
-          moved = last;
+      for (const a of [first, 1 - first]) {
+        // たまっていない軸も、先の軸が塞がっていれば試す（壁ぞいに滑る）
+        if (Math.abs(sub[a]) < 1 && !(a !== first && failed && Math.abs(md[a]) > 0.15)) continue;
+        const sgn = Math.abs(sub[a]) >= 1 ? Math.sign(sub[a]) : Math.sign(md[a]);
+        const r = stepOnce(world, e, a === 0 ? [sgn, 0, 0] : [0, 0, sgn]);
+        if (r.ok) {
+          moved = r;
+          sub[a] -= sgn;
           break;
         }
+        failed = r;
+        sub[a] = 0; // この軸は塞がっている
       }
-      report(e, moved ?? last);
-      if (moved) {
-        e.travel -= cost;
-        e.diagToggle = !e.diagToggle;
-        if (moved.pushed.length) pushedNow = true;
-      } else {
-        e.travel = 0;
-        // 自分より弱い物に阻まれた（押そうとしたが動かない）ときは踏ん張る
-        const b = last.blocker;
-        strain = Boolean(dir) && b && (last.via !== e || b.priority < e.priority);
-        e.speed = strain ? Math.min(e.speed, 2.5) : 0;
-        if (!strain && dir) {
-          e.waitBlocked = 0.3;
-          e.blockedDir = dir;
-        }
+      if (!moved) break;
+      movedAny = true;
+      report(e, moved);
+      e.diagToggle = !e.diagToggle;
+      if (moved.pushed.length) pushedNow = true;
+    }
+    if (!movedAny && failed) {
+      report(e, failed);
+      sub[0] = sub[1] = 0;
+      // 自分より弱い物に阻まれた（押そうとしたが動かない）ときは踏ん張る
+      const b = failed.blocker;
+      strain = Boolean(dir) && b && (failed.via !== e || b.priority < e.priority);
+      e.speed = strain ? Math.min(e.speed, 2.5) : 0;
+      if (!strain && dir) {
+        e.waitBlocked = 0.3;
+        e.blockedDir = dir;
       }
     }
   }

@@ -97,6 +97,36 @@
   .hp .track { display: block; width: 140px; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
   .hp .fill { display: block; height: 100%; width: 100%; background: #6fd27a; transition: width 0.15s; }
   .hp .fill[data-low="true"] { background: #ff5a5a; }
+  /* 一人称の照準と、マウス視点の案内 */
+  .crosshair {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    background:
+      linear-gradient(#fff, #fff) center / 2px 18px no-repeat,
+      linear-gradient(#fff, #fff) center / 18px 2px no-repeat;
+    opacity: 0.85;
+    mix-blend-mode: difference;
+  }
+  .look-hint {
+    position: absolute;
+    left: 50%;
+    top: calc(50% + 36px);
+    transform: translateX(-50%);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font: 12px var(--font-body);
+    color: var(--fg);
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .stage:not(.fp) .crosshair, .stage:not(.fp) .look-hint, .stage.locked .look-hint { display: none; }
+  @media (pointer: coarse) { .look-hint { display: none; } }
   .hp b { color: var(--fg); font-weight: 500; min-width: 3ch; }
 
   .dpad {
@@ -239,6 +269,8 @@
       <span>土 <b id="soil">0/40</b></span>
       <span>球体 <b id="monsterState">ただよっている</b></span>
     </div>
+    <div class="crosshair" aria-hidden="true"></div>
+    <div class="look-hint">クリックでマウス視点（Esc で解除）・V で三人称</div>
     <div class="hp" aria-label="体力">体力 <span class="track"><span class="fill" id="hpBar"></span></span><b id="hpText">100</b></div>
     <div class="dpad" aria-label="移動">
       <button type="button" data-dir="f" aria-label="前へ">▲</button>
@@ -293,7 +325,7 @@
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
         <label class="check"><input type="checkbox" id="watchDragon">カメラで龍を追う</label>
       </div>
-      <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準、2つ同時で斜め）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> で道具を使う（斧を振る・シャベルで掘る・太刀で斬る・撃つ。押し続けると続ける）、<kbd>G</kbd> で土を盛る、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
+      <p class="keys" style="margin-top:10px">一人称視点で始まる。画面をクリックするとマウスで上下左右どこでも見回せる（<kbd>Esc</kbd> で解除。スマホは画面をドラッグ）。<kbd>V</kbd> で三人称視点と切り替え。<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（視線の向き基準。どの角度へも歩ける。<kbd>A</kbd><kbd>D</kbd> で横歩き）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> / 左クリックで道具を使う（視線の先へ。斧を振る・シャベルで掘る・太刀で斬る・照準へ撃つ。押し続けると続ける）、<kbd>G</kbd> / 右クリックで土を盛る、三人称ではドラッグで視点回転・ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
 
     <section>
