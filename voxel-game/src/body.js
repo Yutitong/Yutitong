@@ -29,10 +29,30 @@ function stampOf(chunk) {
 // away(m, e): 位置 m にいる物 e を押しのける向き [dx, dz]（長さは問わない）。null なら押しのけない（そのセルには入らない）
 // 戻り値: { cells: 今回のセル, pushed: [押しのけた物] }
 //
+// 戻り値の cells は Uint32Array（物ごとに 2 つの配列を交互に使い回す。毎回大きな配列を作るとメモリの片付けが重いので）。
+// 呼んだ側は、次に描き直すときに prev として渡すだけにすること（ほかの所で取っておかない）
+//
 // 前回のセルを全部消してから書き直すのではなく、新しい形を書いてから、今回使わなかった前回のセルだけを消す。
 // 前回と同じ所・同じ色のセルは書き換えないので、描画側の手間も少ない
+const buffers = new Map(); // 物の id → [配列, 配列]
+
 export function redrawBody(world, id, prev, shape, away) {
   const gen = (world.bodyGen = (world.bodyGen ?? 0) + 1);
+  // 今回のセルを書く配列: 前回のセルが入っていない方
+  let pair = buffers.get(id);
+  if (!pair) buffers.set(id, (pair = [new Uint32Array(1024), new Uint32Array(1024)])); // チャンクの番号は 2^31 を超えるので符号なし
+  const side = prev.buffer === pair[0].buffer ? 1 : 0;
+  let out = pair[side];
+  let n = 0;
+  const push = (key, i) => {
+    if (n + 2 > out.length) {
+      const bigger = new Uint32Array(out.length * 2);
+      bigger.set(out);
+      out = pair[side] = bigger;
+    }
+    out[n++] = key;
+    out[n++] = i;
+  };
   let chunk = null;
   let stamp = null;
   let ck = -1;
@@ -46,7 +66,6 @@ export function redrawBody(world, id, prev, shape, away) {
       if (chunk) world.dirty.add(key);
     }
   };
-  const cells = [];
   const blocked = new Map(); // 押しのける物の id → [チャンク, セル番号, 色, チャンクの番号, ...]
   shape((x, y, z, color) => {
     const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
@@ -83,7 +102,7 @@ export function redrawBody(world, id, prev, shape, away) {
     }
     if (y >= chunk.top) chunk.top = y + 1;
     stamp[i] = gen;
-    cells.push(ck, i);
+    push(ck, i);
     if (chunk.color[i] !== color) {
       chunk.color[i] = color;
       chunk.changed.push(i);
@@ -94,28 +113,28 @@ export function redrawBody(world, id, prev, shape, away) {
     const e = world.entities.get(eid);
     if (shove(world, e, list, away)) pushed.push(e);
     // 空いたセルに入る
-    for (let n = 0; n < list.length; n += 4) {
-      const c = list[n], i = list[n + 1];
+    for (let k = 0; k < list.length; k += 4) {
+      const c = list[k], i = list[k + 1];
       if (c.owner[i] !== 0) continue;
       c.owner[i] = id;
-      c.color[i] = list[n + 2];
+      c.color[i] = list[k + 2];
       stampOf(c)[i] = gen;
       c.top = Math.max(c.top, c.yOf(i) + 1);
       c.changed.push(i);
       world.dirty.add(c.key);
-      cells.push(list[n + 3], i);
+      push(list[k + 3], i);
     }
   }
   // 前回のセルのうち、今回使わなかったものを消す
-  for (let n = 0; n < prev.length; n += 2) {
-    use(prev[n]);
-    const i = prev[n + 1];
+  for (let k = 0; k < prev.length; k += 2) {
+    use(prev[k]);
+    const i = prev[k + 1];
     if (!chunk || chunk.owner[i] !== id || stampOf(chunk)[i] === gen) continue;
     chunk.owner[i] = 0;
     chunk.color[i] = 0;
     chunk.changed.push(i);
   }
-  return { cells, pushed };
+  return { cells: out.subarray(0, n), pushed };
 }
 
 // 物 e を1ボクセルずつ押しのける。セルの一覧 list と重ならなくなるまで

@@ -37,6 +37,16 @@ export const DRAGON_MODES = {
   breathe: '火を吹いている', takeoff: '飛び立つ',
 };
 
+// 速い atan2（誤差 0.005 ラジアンほど。鱗の模様に使うだけなので十分）
+function fastAtan2(y, x) {
+  const ax = Math.abs(x), ay = Math.abs(y);
+  const a = Math.min(ax, ay) / (Math.max(ax, ay) || 1);
+  const s = a * a;
+  let r = ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a;
+  if (ay > ax) r = 1.57079637 - r;
+  if (x < 0) r = 3.14159274 - r;
+  return y < 0 ? -r : r;
+}
 const approach = (v, target, step) => (v < target ? Math.min(target, v + step) : Math.max(target, v - step));
 const wrap = (a) => ((a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
 
@@ -120,12 +130,19 @@ function buildHead() {
     { f: ell([-2, 0, -9.5], [5, 4, 2.5]), color: 'cheek' },
   ];
   const points = [];
-  // 点の間隔 0.55（1/√3 より細かい）・殻の厚さ 2 ボクセル以上: 頭がどの向きに回っても、
-  // どのボクセルにも点が入るので、点の間に隙間ができない
-  const step = 0.55;
-  for (let f = -14; f <= 34; f += step) {
-    for (let u = -11; u <= 13; u += step) {
-      for (let l = -13; l <= 13; l += step) {
+  // 頭の殻（表面から厚さ 2 ボクセル）は、頭の座標の 0.5 ボクセルごとの格子に色を入れておく。
+  // 描くときは、頭のまわりのボクセルの中心を頭の座標へ戻して格子を引く（殻は 2 ボクセル以上の厚さなので、
+  // 頭がどの向きに回っても隙間はできない）。点を回して並べるより、ずっと少ない計算ですむ
+  const G = { f0: -14, u0: -11, l0: -13, nf: 97, nu: 49, nl: 53, step: 0.5 };
+  const grid = new Uint8Array(G.nf * G.nu * G.nl); // 色の番号（palette の何番目か。0 = なし）。小さい配列の方が速く引ける
+  const palette = [0];
+  const paletteIndex = new Map();
+  for (let i = 0; i < G.nf; i++) {
+    const f = G.f0 + i * G.step;
+    for (let j = 0; j < G.nu; j++) {
+      const u = G.u0 + j * G.step;
+      for (let k = 0; k < G.nl; k++) {
+        const l = G.l0 + k * G.step;
         const p = [f, u, l];
         let best = null;
         let bestD = Infinity;
@@ -145,7 +162,11 @@ function buildHead() {
         else if (best.color === 'cheek') color = h % 2 ? C.fin : C.finTip;
         else if (best.color === 'nose') color = u > 3 && Math.abs(l) < 2.5 && f > 29 ? 0x14261f : C.nose;
         else color = u < -3.5 ? (best.color === 'snout' && f > 6 ? C.mouth : C.belly) : (h % 4 === 0 ? C.scaleB : C.scaleA);
-        points.push([f, u, l, color]);
+        if (!paletteIndex.has(color)) {
+          paletteIndex.set(color, palette.length);
+          palette.push(color);
+        }
+        grid[i + G.nf * (j + G.nu * k)] = paletteIndex.get(color);
       }
     }
   }
@@ -185,7 +206,7 @@ function buildHead() {
     horn([-11, 14, s * 5.5], [-13, 22, s * 7], 0.9, 0.5, C.horn);
     horn([-21, 18, s * 7], [-22, 25, s * 9.5], 0.8, 0.4, C.horn);
   }
-  return points;
+  return { points, grid, palette, G };
 }
 
 // ---- 龍 -----------------------------------------------------------------------
@@ -575,12 +596,20 @@ export class Dragon {
   // いまの姿のセルを作る
   // emit(x, y, z, color) を、龍の体の各セルについて呼ぶ（同じセルが何度か来ることもある）
   // from / to: 頭からの距離でこの範囲だけ描く（尾を切り落とすときに使う）
-  shape(emit, from = 0, to = this.length) {
+  // all: プレイヤーから遠い所も描く（world.drawRadius があるときは、ふだんはプレイヤーのまわりだけ描く）
+  shape(emit, from = 0, to = this.length, all = false) {
     const put = (p, color) => {
       const y = Math.floor(p[1]);
       if (y < 1 || y >= HEIGHT) return;
       emit(Math.floor(p[0]), y, Math.floor(p[2]), color);
     };
+    const putXYZ = (x, y, z, color) => {
+      if (y < 1 || y >= HEIGHT) return;
+      emit(Math.floor(x), Math.floor(y), Math.floor(z), color);
+    };
+    // 描かなくてよい所: 見えている範囲（チャンクを描く範囲）より遠い所。描いても誰にも見えず、重くなるだけなので
+    const F = all ? null : this.drawFocus, FR = this.world.drawRadius;
+    const far = (p, extra) => Boolean(F && FR) && Math.max(Math.abs(p[0] - F[0]), Math.abs(p[2] - F[2])) > FR + extra;
     const pts = this.spine();
     const t = this.time;
     const keep = (s) => s >= from && s <= to;
@@ -610,7 +639,7 @@ export class Dragon {
     }
     for (let k = 0; k < rings.length; k++) {
       const { s, c, T, N, B } = rings[k];
-      if (s < 3 || !keep(s)) continue;
+      if (s < 3 || !keep(s) || far(c, 20)) continue;
       const r = radiusAt(s);
       const band = Math.floor(s / 2.2);
       // 急に曲がる所では、曲がりの外側がとなりの点の受け持ちから外れないよう、受け持つ厚みを広げる
@@ -630,24 +659,35 @@ export class Dragon {
       const ax = Math.abs(T[0]) >= Math.abs(T[1]) && Math.abs(T[0]) >= Math.abs(T[2]) ? 0 : Math.abs(T[1]) >= Math.abs(T[2]) ? 1 : 2;
       const [a1, a2] = [0, 1, 2].filter((a) => a !== ax);
       const ext = (a) => Math.abs(T[a]) * SLAB + Math.sqrt(Math.max(0, 1 - T[a] * T[a])) * r + 0.5;
+      // 輪の厚みの中で、背骨からの距離がどれだけ変わりうるか（輪の端と真ん中の差）
+      const pad = SLAB * Math.sqrt(Math.max(0, 1 - T[ax] * T[ax])) / Math.max(0.3, Math.abs(T[ax])) + 0.9;
       const cell = [0, 0, 0];
-      for (let i1 = Math.floor(c[a1] - ext(a1)); i1 <= Math.floor(c[a1] + ext(a1)); i1++) {
+      const e1 = ext(a1), e2 = ext(a2);
+      const i1a = Math.floor(c[a1] - e1), i1b = Math.floor(c[a1] + e1), i2a = Math.floor(c[a2] - e2), i2b = Math.floor(c[a2] + e2);
+      const Ta1 = T[a1], Ta2 = T[a2], Tax = T[ax], Na1 = N[a1], Na2 = N[a2], Nax = N[ax], Ba1 = B[a1], Ba2 = B[a2], Bax = B[ax];
+      const nCuts = cuts.length;
+      for (let i1 = i1a; i1 <= i1b; i1++) {
         const d1 = i1 + 0.5 - c[a1];
-        for (let i2 = Math.floor(c[a2] - ext(a2)); i2 <= Math.floor(c[a2] + ext(a2)); i2++) {
+        for (let i2 = i2a; i2 <= i2b; i2++) {
           const d2 = i2 + 0.5 - c[a2];
           // t = d1*T[a1] + d2*T[a2] + d3*T[ax] が ±SLAB に入る d3 の範囲
-          const t0 = d1 * T[a1] + d2 * T[a2];
-          const u0 = d1 * N[a1] + d2 * N[a2];
-          const v0 = d1 * B[a1] + d2 * B[a2];
-          const ta = (-SLAB - t0) / T[ax], tb = (SLAB - t0) / T[ax];
+          const t0 = d1 * Ta1 + d2 * Ta2;
+          const u0 = d1 * Na1 + d2 * Na2;
+          const v0 = d1 * Ba1 + d2 * Ba2;
+          // 輪の真ん中（t = 0）での背骨からの距離が、殻から大きく外れていれば飛ばす
+          const dm = -t0 / Tax;
+          const um = u0 + dm * Nax, vm = v0 + dm * Bax;
+          const rm2 = um * um + vm * vm;
+          if (rm2 > (r + pad) * (r + pad) || (inner2 > 0 && rm2 < Math.max(0, inner - pad) ** 2)) continue;
+          const ta = (-SLAB - t0) / Tax, tb = (SLAB - t0) / Tax;
           const lo3 = Math.ceil(Math.min(ta, tb) + c[ax] - 0.5), hi3 = Math.floor(Math.max(ta, tb) + c[ax] - 0.5);
           for (let i3 = lo3; i3 <= hi3; i3++) {
             const d3 = i3 + 0.5 - c[ax];
-            const u = u0 + d3 * N[ax];
-            const v = v0 + d3 * B[ax];
+            const u = u0 + d3 * Nax;
+            const v = v0 + d3 * Bax;
             const rho2 = u * u + v * v;
             if (rho2 > r2 || rho2 < inner2) continue;
-            const t = t0 + d3 * T[ax];
+            const t = t0 + d3 * Tax;
             cell[a1] = i1;
             cell[a2] = i2;
             cell[ax] = i3;
@@ -656,7 +696,7 @@ export class Dragon {
             // 切り傷で削れた所は描かない。削れた面のすぐ下は肉の断面
             let face = Infinity;
             let removed = false;
-            for (const q of cuts) {
+            if (nCuts) for (const q of cuts) {
               const ds = Math.abs(s + t - q.ws);
               if (ds > q.half) continue;
               const e = u * q.cu0 + v * q.su0 - (q.deep + (r - q.deep) * (ds / q.half));
@@ -679,7 +719,7 @@ export class Dragon {
               if (cu < -0.55) color = band % 3 === 0 ? C.bellyLine : C.belly;
               else if (cu > 0.93) color = C.ridge;
               else {
-                const th = Math.atan2(v, u) + Math.PI;
+                const th = fastAtan2(v, u) + Math.PI;
                 const cellc = (band + Math.floor((th * r) / 2.2)) % 2;
                 color = cellc ? C.scaleA : (hash3(band, Math.floor(th * 6), 3) % 5 === 0 ? C.scaleC : C.scaleB);
               }
@@ -692,7 +732,7 @@ export class Dragon {
       // 背びれ: のこぎり状
       if (s > 40 && s < DRAGON_LENGTH - 28 && !cuts.some((q) => q.c0 < r * 0.2 && q.cu0 > 0.3)) {
         const hgt = 1.5 + 2.8 * ((s % 7) / 7) * Math.min(1, r / 4);
-        for (let h = 0.5; h <= hgt; h += 0.5) put(add(c, mul(N, r + h)), h > hgt - 1 ? C.finTip : C.fin);
+        for (let h = 0.5; h <= hgt; h += 0.5) putXYZ(c[0] + N[0] * (r + h), c[1] + N[1] * (r + h), c[2] + N[2] * (r + h), h > hgt - 1 ? C.finTip : C.fin);
       }
       // 尾の先の炎のような房
       if (s > DRAGON_LENGTH - 30) {
@@ -701,7 +741,8 @@ export class Dragon {
         for (const [dn, db] of [[1, 0], [-1, 0], [0.7, 0.7], [0.7, -0.7], [-0.6, 0.8], [-0.6, -0.8]]) {
           const flick = Math.sin(t * 6 + s * 0.5 + dn * 3) * 1.2;
           for (let h = 0; h <= len; h += 0.5) {
-            put(add(c, add(mul(N, dn * (r + h)), mul(B, db * (r + h) + flick * (h / len)))), h > len * 0.6 ? C.finTip : C.fin);
+            const a = dn * (r + h), b = db * (r + h) + flick * (h / len);
+            putXYZ(c[0] + N[0] * a + B[0] * b, c[1] + N[1] * a + B[1] * b, c[2] + N[2] * a + B[2] * b, h > len * 0.6 ? C.finTip : C.fin);
           }
         }
       }
@@ -715,6 +756,7 @@ export class Dragon {
       if (!keep(sLeg)) continue;
       const k = Math.round(sLeg / SPINE_STEP);
       const { c, T, N, B, w } = pts[k];
+      if (far(c, 30)) continue;
       const r = radiusAt(sLeg);
       const Th = norm([T[0], 0, T[2]]);
       const Bh = norm(cross(Th, [0, 1, 0]));
@@ -739,16 +781,64 @@ export class Dragon {
           ankle = lerp3(ankle, foot, w);
           claws = claws.map((cl, n) => norm(lerp3(cl, wClaws[n], w)));
         }
-        tube(put, hip, knee, 2.4, 1.8, C.scaleA);
-        tube(put, knee, ankle, 1.8, 1.3, C.scaleB);
-        for (const claw of claws) tube(put, ankle, add(ankle, mul(claw, 3.5)), 0.6, 0.4, C.claw);
+        tube(emit, hip, knee, 2.4, 1.8, C.scaleA);
+        tube(emit, knee, ankle, 1.8, 1.3, C.scaleB);
+        for (const claw of claws) tube(emit, ankle, add(ankle, mul(claw, 3.5)), 0.6, 0.4, C.claw);
       }
     }
 
-    if (from > 0) return; // 頭・髭・鬣は頭の側だけ
+    if (from > 0 || far(pts[0].c, 60)) return; // 頭・髭・鬣は頭の側だけ
     // 頭: 首の向きに合わせて頭の形を置く
     const { c: hc, T: hT, N: hN, B: hB } = pts[0];
-    for (const [f, u, l, color] of this.headModel) {
+    // 頭の殻: 頭のまわりの箱の中のボクセルごとに、頭の座標の格子を引く
+    const { grid, palette, G } = this.headModel;
+    const f1 = G.f0 + (G.nf - 1) * G.step, u1 = G.u0 + (G.nu - 1) * G.step, l1 = G.l0 + (G.nl - 1) * G.step;
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const f of [G.f0, f1]) for (const u of [G.u0, u1]) for (const l of [G.l0, l1]) {
+      for (let a = 0; a < 3; a++) {
+        const v = hc[a] + hT[a] * f + hN[a] * u + hB[a] * l;
+        lo[a] = Math.min(lo[a], v);
+        hi[a] = Math.max(hi[a], v);
+      }
+    }
+    const inv = 1 / G.step;
+    const x0 = Math.floor(lo[0]), x1 = Math.floor(hi[0]);
+    // 行ごとに、頭の座標の 3 つの範囲に入る x の区間だけを調べる（x に沿って f, u, l は一定の割合で変わる）
+    const clip = (base, slope, a, b, range) => {
+      // a <= base + slope * (x + 0.5 - hc0) <= b を満たす x の範囲を range に重ねる
+      if (Math.abs(slope) < 1e-9) {
+        if (base < a || base > b) range[0] = Infinity;
+        return;
+      }
+      let p = (a - base) / slope + hc[0] - 0.5, q = (b - base) / slope + hc[0] - 0.5;
+      if (p > q) [p, q] = [q, p];
+      range[0] = Math.max(range[0], Math.ceil(p));
+      range[1] = Math.min(range[1], Math.floor(q));
+    };
+    const range = [0, 0];
+    for (let y = Math.max(1, Math.floor(lo[1])); y <= Math.min(HEIGHT - 1, Math.floor(hi[1])); y++) {
+      const dy = y + 0.5 - hc[1];
+      for (let z = Math.floor(lo[2]); z <= Math.floor(hi[2]); z++) {
+        const dz = z + 0.5 - hc[2];
+        const bf = dy * hT[1] + dz * hT[2], bu = dy * hN[1] + dz * hN[2], bl = dy * hB[1] + dz * hB[2];
+        range[0] = x0;
+        range[1] = x1;
+        clip(bf, hT[0], G.f0 - 0.25, f1 + 0.25, range);
+        clip(bu, hN[0], G.u0 - 0.25, u1 + 0.25, range);
+        clip(bl, hB[0], G.l0 - 0.25, l1 + 0.25, range);
+        for (let x = range[0]; x <= range[1]; x++) {
+          const dx = x + 0.5 - hc[0];
+          const i = Math.round((dx * hT[0] + bf - G.f0) * inv);
+          const j = Math.round((dx * hN[0] + bu - G.u0) * inv);
+          const k = Math.round((dx * hB[0] + bl - G.l0) * inv);
+          if (i < 0 || i >= G.nf || j < 0 || j >= G.nu || k < 0 || k >= G.nl) continue;
+          const color = grid[i + G.nf * (j + G.nu * k)];
+          if (color) emit(x, y, z, palette[color]);
+        }
+      }
+    }
+    // 牙・目・角（細かいので点で置く）
+    for (const [f, u, l, color] of this.headModel.points) {
       const y = Math.floor(hc[1] + hT[1] * f + hN[1] * u + hB[1] * l);
       if (y < 1 || y >= HEIGHT) continue;
       const x = Math.floor(hc[0] + hT[0] * f + hN[0] * u + hB[0] * l);
@@ -757,13 +847,19 @@ export class Dragon {
     }
     const h0 = pts[0];
     // 髭: 鼻先から後ろへ長くなびく
+    const { T: T0, N: N0, B: B0 } = h0;
     for (const side of [-1, 1]) {
-      let p = add(h0.c, add(add(mul(h0.T, 26), mul(h0.N, -1)), mul(h0.B, side * 5)));
+      let px = h0.c[0] + T0[0] * 26 - N0[0] + B0[0] * side * 5;
+      let py = h0.c[1] + T0[1] * 26 - N0[1] + B0[1] * side * 5;
+      let pz = h0.c[2] + T0[2] * 26 - N0[2] + B0[2] * side * 5;
       for (let i = 0; i < 90; i++) {
-        const bend = Math.sin(t * 3 + i * 0.12) * 0.35;
-        const d = norm(add(add(mul(h0.T, -1), mul(h0.B, side * (0.35 + bend))), mul(h0.N, -0.25 + Math.cos(t * 2 + i * 0.1) * 0.2)));
-        p = add(p, mul(d, 0.5));
-        put(p, C.whisker);
+        const b = side * (0.35 + Math.sin(t * 3 + i * 0.12) * 0.35), n = -0.25 + Math.cos(t * 2 + i * 0.1) * 0.2;
+        const dx = -T0[0] + B0[0] * b + N0[0] * n, dy = -T0[1] + B0[1] * b + N0[1] * n, dz = -T0[2] + B0[2] * b + N0[2] * n;
+        const l = 0.5 / (Math.hypot(dx, dy, dz) || 1);
+        px += dx * l;
+        py += dy * l;
+        pz += dz * l;
+        putXYZ(px, py, pz, C.whisker);
       }
     }
     // 鬣: 頭の後ろから首にかけて、炎のように後ろへなびく房
@@ -771,13 +867,18 @@ export class Dragon {
       const { c, T, N, B } = pts[Math.round(s / SPINE_STEP)];
       const r = radiusAt(s);
       for (const side of [-1, 0, 1]) {
-        let p = add(c, add(mul(N, r * 0.8), mul(B, side * r * 0.6)));
+        let px = c[0] + N[0] * r * 0.8 + B[0] * side * r * 0.6;
+        let py = c[1] + N[1] * r * 0.8 + B[1] * side * r * 0.6;
+        let pz = c[2] + N[2] * r * 0.8 + B[2] * side * r * 0.6;
         const len = 9 * (1 - s / 90);
         for (let h = 0; h < len; h += 0.5) {
-          const sway = Math.sin(t * 4 + s * 0.3 + h * 0.4) * 0.5;
-          const d = norm(add(add(mul(N, 0.8), mul(T, -1)), mul(B, side * 0.6 + sway)));
-          p = add(p, mul(d, 0.5));
-          put(p, h > len * 0.6 ? C.maneTip : C.mane);
+          const b = side * 0.6 + Math.sin(t * 4 + s * 0.3 + h * 0.4) * 0.5;
+          const dx = N[0] * 0.8 - T[0] + B[0] * b, dy = N[1] * 0.8 - T[1] + B[1] * b, dz = N[2] * 0.8 - T[2] + B[2] * b;
+          const l = 0.5 / (Math.hypot(dx, dy, dz) || 1);
+          px += dx * l;
+          py += dy * l;
+          pz += dz * l;
+          putXYZ(px, py, pz, h > len * 0.6 ? C.maneTip : C.mane);
         }
       }
     }
@@ -787,9 +888,13 @@ export class Dragon {
   update(dt, around) {
     this.events = [];
     this.advance(dt, around);
+    this.drawFocus = around;
     this.fire.update(dt); // 炎の粒を動かし、当たった物を焦がす
     this.fire.clear();
-    this.draw();
+    // プレイヤーから離れているときは、体を描き直すのは 2 回に 1 回（動きは毎回進める）。近くでは毎回
+    const near = !this.world.drawRadius || !this.pts || this.pts.some((q) => Math.abs(q.c[0] - around[0]) + Math.abs(q.c[2] - around[2]) < 120);
+    this.skipped = !near && !this.skipped;
+    if (!this.skipped) this.draw();
     // 火を吹く: 口から相手へ向けて、少し首を振りながら
     if (this.mode === 'breathe' && this.rear > 0.55 && this.modeTime < BREATH_TIME) {
       const { mouth, dir } = this.mouth();
@@ -904,7 +1009,7 @@ export class Dragon {
     const w = this.world;
     this.wounds = this.wounds.filter((q) => Math.abs(q.s - sCut) > 5);
     const tail = new Map();
-    this.shape((x, y, z, color) => tail.set(`${x},${y},${z}`, [x, y, z, color]), sCut + SPINE_STEP, this.length);
+    this.shape((x, y, z, color) => tail.set(`${x},${y},${z}`, [x, y, z, color]), sCut + SPINE_STEP, this.length, true);
     this.length = sCut;
     this.wounds = this.wounds.filter((q) => q.s < sCut);
     this.draw(); // 尾の側のセルが空く
@@ -938,19 +1043,25 @@ export class Dragon {
 }
 
 // 太さの変わる管（短い部位用）
-function tube(put, a, b, r0, r1, color) {
-  const d = sub(b, a);
-  const len = Math.hypot(...d);
-  const T = norm(d);
-  const B = norm(Math.abs(T[1]) > 0.9 ? cross(T, [1, 0, 0]) : cross(T, [0, 1, 0]));
-  const N = cross(B, T);
-  // 中まで詰まった管（細いので、殻にせず全部埋める。点の間隔 0.45 なら斜めでも隙間ができない）
-  for (let s = 0; s <= len; s += 0.45) {
-    const c = add(a, mul(T, s));
-    const r = r0 + (r1 - r0) * (s / len);
-    for (let u = -r; u <= r; u += 0.45) {
-      const L = Math.sqrt(Math.max(0, r * r - u * u));
-      for (let v = -L; v <= L; v += 0.45) put(add(c, add(mul(N, u), mul(B, v))), color);
+function tube(emit, a, b, r0, r1, color) {
+  // 中まで詰まった管。管のまわりの箱の中のボクセルごとに、中心から管の芯までの距離を測る
+  // （管が通るボクセルはすべて点灯するように、半径に半ボクセル足す）
+  const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const len2 = abx * abx + aby * aby + abz * abz || 1e-9;
+  const R = Math.max(r0, r1) + 0.45;
+  const x0 = Math.floor(Math.min(a[0], b[0]) - R), x1 = Math.floor(Math.max(a[0], b[0]) + R);
+  const y0 = Math.max(1, Math.floor(Math.min(a[1], b[1]) - R)), y1 = Math.min(HEIGHT - 1, Math.floor(Math.max(a[1], b[1]) + R));
+  const z0 = Math.floor(Math.min(a[2], b[2]) - R), z1 = Math.floor(Math.max(a[2], b[2]) + R);
+  for (let y = y0; y <= y1; y++) {
+    for (let z = z0; z <= z1; z++) {
+      for (let x = x0; x <= x1; x++) {
+        const px = x + 0.5 - a[0], py = y + 0.5 - a[1], pz = z + 0.5 - a[2];
+        let t = (px * abx + py * aby + pz * abz) / len2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const dx = px - abx * t, dy = py - aby * t, dz = pz - abz * t;
+        const r = r0 + (r1 - r0) * t + 0.45;
+        if (dx * dx + dy * dy + dz * dz <= r * r) emit(x, y, z, color);
+      }
     }
   }
 }

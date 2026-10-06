@@ -465,7 +465,10 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
 
   for (const e of [...world.entities.values()]) {
     if (e.kind !== 'npc' || e.held) continue; // 黄色い球体に包まれている NPC は動けない
-    if (p && Math.max(Math.abs(e.pos[0] - p.pos[0]), Math.abs(e.pos[2] - p.pos[2])) > SIM_RADIUS) continue;
+    const dist = p ? Math.max(Math.abs(e.pos[0] - p.pos[0]), Math.abs(e.pos[2] - p.pos[2])) : 0;
+    if (dist > SIM_RADIUS) continue;
+    // 少し離れた NPC は、体の動き（姿勢の描き直し）を 3 回に 1 回にする（歩く・押すなどの動きは毎回）
+    e.lazyPose = dist > 48 && (world.tickCount + e.id) % 3 !== 0;
     const before = events.length;
     updateCharacter(world, e, npcInput(e, rng, dt), dt, rng, report);
     // 何かにぶつかったら次は別の方向へ
@@ -473,7 +476,8 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   }
   // 葉の揺れと水の流れ、龍は1ティックおき（1秒に12.5回）に、交互に動かす
   if (p && world.tickCount % 2 === 0) {
-    updateWind(world, world.time, p.pos[0], p.pos[2], WIND_RADIUS);
+    // 葉の揺れは 1 秒に 6 回ほどで十分（突風はゆっくり流れていく）
+    if (world.tickCount % 4 === 0) updateWind(world, world.time, p.pos[0], p.pos[2], WIND_RADIUS);
     if (world.terrain) (world.water ??= new WaterSim(world)).update(dt * 2, p.pos);
   }
   if (p && world.dragon && world.tickCount % 2 === 1) {

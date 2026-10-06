@@ -313,7 +313,8 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   }
   pose.headYaw = approach(pose.headYaw, e.headTarget, dt * 2.5);
 
-  // 姿勢からボクセルを描き直し、変わったセルだけ塗り替える
+  // 姿勢からボクセルを描き直し、変わったセルだけ塗り替える（離れた NPC はときどき）
+  if (e.lazyPose) return;
   humanColors(e.palette, pose, e.look);
   world.recolor(e, e.look);
   if (e.toolId) drawTool(world, e);

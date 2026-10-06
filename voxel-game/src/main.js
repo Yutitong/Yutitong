@@ -21,6 +21,7 @@ const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
 world.bodyMakesChunks = false; // 龍の体が、まだ作っていない遠くのチャンクを作り始めないように
+world.drawRadius = 150; // 龍の体は、プレイヤーからこの距離（ボクセル）までだけ描く（チャンクを描く範囲より少し広く）
 const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
