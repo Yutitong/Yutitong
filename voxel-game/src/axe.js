@@ -198,6 +198,7 @@ export class FallingTree {
     this.angle = next;
     this.draw();
     if (this.done) {
+      splashAlong(this.world, (h) => this.rotate([this.pivot[0], this.pivot[1] + h, this.pivot[2]], this.angle), this.height, 3);
       // 倒木になる: もう動かず、誰にも押されない
       this.entity.kind = 'terrain';
       this.entity.name = `${this.name}の倒木`;
@@ -231,8 +232,9 @@ export class FallingTree {
   }
 }
 
-// 支えのない物（切り落とされた龍の尾）を重力で落とす
+// 支えのない物（切り落とされた龍の尾・崩れた岩・かけら）を重力で落とす。水に落ちると、しぶきが上がる
 export function dropFalling(world, e, dt) {
+  e.wade = Infinity; // 落ちていく物は水に沈む（水は場所をゆずる）
   e.vy = Math.min(e.vy + GRAVITY * dt, 40);
   e.fall += e.vy * dt;
   while (e.fall >= 1) {
@@ -242,5 +244,39 @@ export function dropFalling(world, e, dt) {
       return;
     }
     e.fall -= 1;
+    splashIfEntering(world, e);
+  }
+}
+
+// 物の底が水面を通り過ぎたら、しぶきを上げる（大きくて速いほど大きい）
+function splashIfEntering(world, e) {
+  if (!e._bb) {
+    let minY = Infinity, x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let o = 0; o < e.offsets.length; o += 3) {
+      x0 = Math.min(x0, e.offsets[o]);
+      x1 = Math.max(x1, e.offsets[o]);
+      minY = Math.min(minY, e.offsets[o + 1]);
+      z0 = Math.min(z0, e.offsets[o + 2]);
+      z1 = Math.max(z1, e.offsets[o + 2]);
+    }
+    e._bb = { minY, cx: (x0 + x1 + 1) / 2, cz: (z0 + z1 + 1) / 2 };
+  }
+  const x = e.pos[0] + e._bb.cx, z = e.pos[2] + e._bb.cz, bottom = e.pos[1] + e._bb.minY;
+  const level = world.loadedWaterAt(Math.floor(x), Math.floor(z));
+  if (!level || e.splashed || bottom >= level) return;
+  e.splashed = true;
+  const size = Math.min(10, (e.colors.length / 150) * (0.4 + e.vy / 40));
+  world.splashes?.splash(x, level, z, Math.max(1, size));
+}
+
+// 倒れた木が水に横たわったら、幹に沿ってしぶきを上げる。p(h): 根元から h の所の幹の中心
+export function splashAlong(world, p, length, size) {
+  let n = 0;
+  for (let h = 8; h <= length && n < 6; h += 10) {
+    const [x, y, z] = p(h);
+    const level = world.loadedWaterAt(Math.floor(x), Math.floor(z));
+    if (!level || y - 3 > level) continue;
+    world.splashes?.splash(x, level, z, size);
+    n++;
   }
 }

@@ -1585,3 +1585,134 @@ test('別のスレッドで作ったチャンクは、その場で作ったチ�
   }
   compare(cx, cz);
 });
+
+// ---- 崩れる・落ちる、水しぶき -------------------------------------------------------
+
+test('崩れる: 盛り土の柱は崩れて 45° の山になり、宙に浮いた土は落ちる', () => {
+  const w = new World({ generate: false, heightAt: () => 10 });
+  // 高さ 12 の盛り土の柱と、宙に浮いた土
+  for (let y = 10; y < 22; y++) {
+    w.setCell(0, y, 0, SOIL_ID, 0x6b4f35);
+    w.physics.wake(0, y, 0, false);
+  }
+  w.recomputeHeight(0, 0);
+  w.setCell(8, 18, 8, SOIL_ID, 0x6b4f35);
+  w.physics.wake(8, 18, 8, false);
+  for (let k = 0; k < 400 && w.physics.active.size; k++) w.physics.step();
+  assert.equal(w.physics.active.size, 0, '止まった');
+  assert.equal(w.ownerAt(8, 18, 8), EMPTY);
+  assert.equal(w.ownerAt(8, 10, 8), SOIL_ID, '浮いていた土は地面まで落ちた');
+  // 土の量は変わらず、どこも 1 段より急な段差はない
+  let count = 0;
+  const h = (x, z) => w.groundAt(x, z);
+  for (let z = -8; z <= 16; z++) {
+    for (let x = -8; x <= 16; x++) {
+      for (let y = 10; y < 25; y++) if (w.ownerAt(x, y, z) === SOIL_ID) count++;
+      for (const [dx, dz] of [[1, 0], [0, 1]]) assert.ok(Math.abs(h(x, z) - h(x + dx, z + dz)) <= 1, `段差 ${x},${z}`);
+    }
+  }
+  assert.equal(count, 13);
+  assert.ok(h(0, 0) <= 13, `山の高さ ${h(0, 0) - 10}`);
+});
+
+test('崩れる: 地面から切り離された岩の塊は、まるごと落ちる（つながっている所は落ちない）', () => {
+  const w = new World({ generate: false, heightAt: () => 10 });
+  // 地面から立つ岩の柱の上に、5×5×5 の岩の塊
+  // （チャンクの真ん中に置く。まだ作られていないとなりのチャンクにかかると、つながっているかもしれないので落とさない）
+  for (let y = 10; y < 20; y++) w.setCell(8, y, 8, ROCK_ID, 0x8a8f98);
+  for (let y = 20; y < 25; y++) for (let z = 6; z < 11; z++) for (let x = 6; x < 11; x++) w.setCell(x, y, z, ROCK_ID, 0x8a8f98);
+  w.physics.wake(8, 12, 8);
+  for (let k = 0; k < 10; k++) w.physics.step();
+  assert.equal(w.physics.fallen.length, 0, 'つながっている間は落ちない');
+  // 柱を途中で切る
+  w.setCell(8, 15, 8, EMPTY, 0);
+  w.physics.wake(8, 15, 8);
+  for (let k = 0; k < 10; k++) w.physics.step();
+  assert.equal(w.physics.fallen.length, 1);
+  const piece = w.physics.fallen[0];
+  assert.equal(piece.colors.length, 125 + 4);
+  assert.equal(w.ownerAt(8, 22, 8), piece.id);
+  assert.equal(w.ownerAt(8, 12, 8), ROCK_ID, '下の柱は残る');
+  for (let k = 0; k < 60; k++) step(w, idle);
+  assert.equal(piece.falling, false);
+  assert.ok(piece.pos[1] <= 16, `落ちた ${piece.pos[1]}`);
+  assertConsistent(w);
+});
+
+test('崩れる: 地面の下をえぐると、上の土が落ちてくる', () => {
+  const w = new World({ seed: 20261004 });
+  const p = spawnPlayer(w);
+  const x = p.pos[0] + 30, z = p.pos[2] + 30;
+  const top = w.groundAt(x, z);
+  // 地表から 2〜6 段下（土の層）を横に長くえぐる（天井の土が残る）
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let y = top - 6; y <= top - 3; y++) {
+      w.setCell(x + dx, y, z, EMPTY, 0);
+      w.physics.wake(x + dx, y, z);
+    }
+  }
+  for (let k = 0; k < 200; k++) w.physics.step();
+  assert.ok(w.physics.moved > 0, '土が動いた');
+  assert.ok(w.groundAt(x, z) < top, `地表が下がった ${top} → ${w.groundAt(x, z)}`);
+});
+
+test('水しぶき: 岩の塊が水に落ちると、しぶきが上がって水に戻る', () => {
+  const w = new World({ generate: false, heightAt: () => 10, waterLevel: 16 });
+  w.chunkAt(0, 0);
+  const piece = w.spawn({
+    kind: 'carcass', name: '崩れた岩', priority: 8, falling: true, vy: 0, fall: 0, pos: [4, 30, 4],
+    voxels: Array.from({ length: 27 }, (_, k) => [k % 3, Math.floor(k / 9), Math.floor(k / 3) % 3, 0x8a8f98]),
+  });
+  let maxParts = 0;
+  for (let k = 0; k < 120; k++) {
+    step(w, idle);
+    maxParts = Math.max(maxParts, w.splashes.parts.length);
+  }
+  assert.equal(w.splashes.count, 1, 'しぶきは 1 回');
+  assert.ok(maxParts >= 10, `しぶきの粒 ${maxParts}`);
+  assert.equal(w.splashes.parts.length, 0, 'しぶきは水に戻って消えた');
+  assert.equal(piece.falling, false);
+  assert.ok(piece.pos[1] < 16, '水の底に沈んだ');
+  assertConsistent(w);
+});
+
+test('水しぶき: 落ちた所のまわりの水を外へ押し出し、真ん中がへこんで、まわりが盛り上がる', async () => {
+  const { sim, pts, k } = await riverAtStep();
+  const N = Math.round(Math.sqrt(sim.L.length));
+  // 淵の中で、いちばん深い列
+  let best = -1, depth = 0;
+  for (let m = k - 8; m < k; m++) {
+    const i = Math.floor(pts[m].x) - sim.ox, j = Math.floor(pts[m].z) - sim.oz;
+    const a = i + N * j;
+    if (sim.L[a] - sim.F[a] > depth) {
+      depth = sim.L[a] - sim.F[a];
+      best = a;
+    }
+  }
+  assert.ok(depth > 1, `淵の深さ ${depth.toFixed(2)}`);
+  const x = sim.ox + (best % N), z = sim.oz + Math.floor(best / N);
+  // 押し出す前の状態を取っておき、押し出さずに流した場合と比べる
+  const save = { L: sim.L.slice(), ux: sim.ux.slice(), uz: sim.uz.slice() };
+  const run = (push) => {
+    sim.L.set(save.L);
+    sim.ux.set(save.ux);
+    sim.uz.set(save.uz);
+    if (push) sim.impulse(x, z, 9, 4);
+    sim.flow(0.08);
+    // 真ん中（半径 1 以内）と、そのまわり（半径 4 以内）の水の量
+    let inner = 0, ring = 0;
+    for (let j = -4; j <= 4; j++) {
+      for (let i = -4; i <= 4; i++) {
+        const r = Math.hypot(i, j), a = best + i + N * j;
+        const v = Math.max(0, sim.L[a] - sim.F[a]);
+        if (r <= 1) inner += v;
+        else if (r <= 4) ring += v;
+      }
+    }
+    return { center: sim.L[best], inner, ring };
+  };
+  const calm = run(false);
+  const hit = run(true);
+  assert.ok(hit.center < calm.center - 0.02, `真ん中がへこむ ${calm.center.toFixed(3)} → ${hit.center.toFixed(3)}`);
+  assert.ok(hit.inner < calm.inner && hit.ring > calm.ring, `真ん中の水がまわりへ ${(calm.inner - hit.inner).toFixed(2)} / ${(hit.ring - calm.ring).toFixed(2)}`);
+});

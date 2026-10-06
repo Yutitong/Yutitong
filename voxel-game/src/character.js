@@ -94,6 +94,11 @@ function applyGravity(world, e, dt) {
     return true;
   }
   if (e.fallen > MAX_STEP) e.pose.crouch = Math.min(1, e.fallen / 10); // 着地
+  // 高い所から水に落ちたら、しぶきが上がる
+  if (e.fallen > 5) {
+    const level = world.loadedWaterAt(e.pos[0] + 4, e.pos[2] + 4);
+    if (level > e.pos[1]) world.splashes?.splash(e.pos[0] + 4.5, level, e.pos[2] + 4.5, Math.min(4, e.fallen / 8));
+  }
   e.vy = 0;
   e.fall = 0;
   e.fallen = 0;

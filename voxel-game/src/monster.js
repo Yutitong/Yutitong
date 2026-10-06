@@ -763,10 +763,14 @@ export class Monster {
       const o = c.owner[c.index(x - c.cx * CHUNK, y, z - c.cz * CHUNK)];
       if (o === EMPTY || o === this.id || o === this.beamId || o === WATER_ID || o === FALL_ID || gone.has(o)) continue;
       if (o === GROUND_ID || o === SOIL_ID) {
-        if (y - 1 >= c.base) removeCell(w, x, y, z, memo);
+        if (y - 1 >= c.base) {
+          removeCell(w, x, y, z, memo);
+          w.physics?.wake(x, y, z); // えぐった所のまわりは崩れるかもしれない
+        }
       } else if (o === ROCK_ID) {
         w.setCell(x, y, z, EMPTY, 0);
         exposeRock(w, x, y, z);
+        w.physics?.wake(x, y, z);
       } else if (o === PLANT_ID) {
         w.setCell(x, y, z, EMPTY, 0);
       } else {

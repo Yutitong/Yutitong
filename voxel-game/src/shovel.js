@@ -113,6 +113,7 @@ export function dig(world, e) {
       }
     }
     removeCell(world, x, y, z, memo);
+    world.physics?.wake(x, y, z); // 穴の壁の土が崩れるかもしれない
     e.soil++;
     ev.amount++;
   }
@@ -150,6 +151,7 @@ export function place(world, e) {
       if (!passable(world.ownerAt(x, y, z))) continue; // 人・岩・木などがある
       world.setCell(x, y, z, SOIL_ID, soilColor(x, y, z));
       world.recomputeHeight(x, z);
+      world.physics?.wake(x, y, z, false); // 盛った土は 45° まで崩れる
       e.soil--;
       ev.amount++;
     }

@@ -60,6 +60,28 @@ export class WaterSim {
     this.count = 0;
   }
 
+  // (x, z) に物が落ちた: まわりの水を外向きに押し出す（真ん中がへこみ、盛り上がった輪が外へ広がる）。
+  // strength: 押し出す速さ（ボクセル/秒）、radius: 押し出す範囲（ボクセル）
+  impulse(x, z, strength, radius) {
+    if (this.cx === null) return;
+    const cx = x + 0.5 - this.ox, cz = z + 0.5 - this.oz;
+    const i0 = Math.max(0, Math.floor(cx - radius)), i1 = Math.min(N - 2, Math.ceil(cx + radius));
+    const j0 = Math.max(0, Math.floor(cz - radius)), j1 = Math.min(N - 2, Math.ceil(cz + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const a = i + N * j;
+        if (this.kind[a] === ABSENT || this.L[a] <= this.F[a]) continue;
+        // x の境目（i と i+1 の間）と、z の境目（j と j+1 の間）
+        for (const [ex, ez, U] of [[i + 1 - cx, j + 0.5 - cz, this.ux], [i + 0.5 - cx, j + 1 - cz, this.uz]]) {
+          const d = Math.hypot(ex, ez);
+          if (d > radius || d < 1e-3) continue;
+          const fall = 1 - d / radius;
+          U[a] += strength * fall * (U === this.ux ? ex : ez) / d;
+        }
+      }
+    }
+  }
+
   // 列 (x, z) の流れの速さ（範囲の外は 0）
   velocity(x, z) {
     const i = x - this.ox, j = z - this.oz;

@@ -18,6 +18,8 @@ import { dig, place } from './shovel.js';
 import { slash } from './sword.js';
 import { shoot, updateShots } from './shotgun.js';
 import { WaterSim } from './water.js';
+import { Physics } from './physics.js';
+import { Splashes } from './splash.js';
 import { paintGiantsInto, forgetGiants, giantZone, giantSpec, getGiant, refreshGiantsIn } from './giant.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
@@ -140,6 +142,8 @@ export class World {
     this.felling = []; // 倒れていく木
     this.giants = new Map(); // 区画 → 巨大樹
     this.giantSpecs = new Map(); // 区画 → 巨大樹の設計図（なければ null）
+    this.physics = new Physics(this); // 崩れる土砂と岩
+    this.splashes = new Splashes(this); // 水しぶき
     this.time = 0;
   }
 
@@ -225,6 +229,17 @@ export class World {
   groundAt(x, z) {
     const c = this.chunkAt(floorDiv(x, CHUNK), floorDiv(z, CHUNK));
     return c.height[x - c.cx * CHUNK + CHUNK * (z - c.cz * CHUNK)];
+  }
+
+  // 作られているチャンクだけを見る、地面と水面の高さ（作られていなければ 0。チャンクを作り始めない）
+  loadedGroundAt(x, z) {
+    const c = this.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+    return c ? c.height[x - c.cx * CHUNK + CHUNK * (z - c.cz * CHUNK)] : 0;
+  }
+
+  loadedWaterAt(x, z) {
+    const c = this.chunks.get(chunkKey(floorDiv(x, CHUNK), floorDiv(z, CHUNK)));
+    return c ? c.water[x - c.cx * CHUNK + CHUNK * (z - c.cz * CHUNK)] : 0;
   }
 
   // 水面の高さ（水がなければ 0）
@@ -490,6 +505,9 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     m.update(dt * 2, p);
     events.push(...m.events);
   }
+  // 崩れる土砂と岩、水しぶき
+  world.physics.step();
+  world.splashes.update(dt);
   return events;
 }
 

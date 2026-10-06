@@ -12,6 +12,7 @@ import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, chunkKeyAt } from './grid.js'
 import { mulberry32, hash3, noise2, noise3, shade } from './rng.js';
 import { BASE } from './terrain.js';
 import { redrawBody } from './body.js';
+import { splashAlong } from './axe.js';
 import { EMPTY, GROUND_ID } from './ids.js';
 
 export const GIANT_CELL = 210; // この区画ごとに最大 1 本（≈ 30m おき）
@@ -815,6 +816,8 @@ export class FallingGiant {
   // 地面に着いた: 倒れる物を消して、倒木として形から塗り直す
   finish() {
     const w = this.world, g = this.g, S = shapeOf(g);
+    const Mf = rotation(this.axis, this.angle);
+    splashAlong(w, (h) => this.rotate([this.pivot[0], this.pivot[1] + h, this.pivot[2]], Mf), this.length, 8);
     redrawBody(w, this.id, this.cells, () => {}, () => null);
     this.cells = [];
     this.pushed = [];
