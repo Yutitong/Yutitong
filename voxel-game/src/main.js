@@ -8,6 +8,7 @@ import { spawnMonster } from './monster.js';
 import { EYE } from './shotgun.js';
 import { ChunkGenerator, LodGenerator } from './genclient.js';
 import { LodRings } from './lodview.js';
+import { FarDragon } from './fardragon.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -25,7 +26,8 @@ const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
 world.bodyMakesChunks = false; // 龍の体が、まだ作っていない遠くのチャンクを作り始めないように
-world.drawRadius = 150; // 龍の体は、プレイヤーからこの距離（ボクセル）までだけ描く（チャンクを描く範囲より少し広く）
+// 龍の体は、細かく描く正方形（チャンク）の中だけチャンクに描く。その外は粗いブロックで別に描く（FarDragon）
+world.drawRadius = (viewRadius + 0.5) * CHUNK;
 const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
@@ -194,6 +196,7 @@ const views = new Map(); // チャンク key → 描画の状態
 // 細かく描く範囲のまわりは、ボクセルをまとめた粗いブロックで描く（別のスレッドで作る）
 const lod = new LodRings(scene, world, solidMaterial, new LodGenerator(world), VOXEL_SIZE);
 lod.hasView = (key) => views.has(key);
+const farDragon = new FarDragon(scene, solidMaterial, VOXEL_SIZE);
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
 // 1つのメッシュ（不透明 / 水）。セル番号 → インスタンス番号の対応を持つ
@@ -362,6 +365,9 @@ function updateView(chunk) {
 function syncChunks() {
   const pcx = floorDiv(Math.floor(controls.target.x), CHUNK);
   const pcz = floorDiv(Math.floor(controls.target.z), CHUNK);
+  // 龍の体をチャンクに描く範囲 = 細かく描く正方形
+  world.drawCenter = [(pcx + 0.5) * CHUNK, 0, (pcz + 0.5) * CHUNK];
+  world.drawRadius = (viewRadius + 0.5) * CHUNK;
   const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= viewRadius;
   const start = performance.now();
   const threaded = generator.ok;
@@ -413,6 +419,8 @@ function syncChunks() {
   }
   // そのまわりの粗いブロック
   lod.update(pcx, pcz, LOD_BUDGET_MS);
+  // 正方形の外の龍
+  farDragon.update(dragon, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
   // チャンク（と粗いブロック）がそろったら、その範囲の遠景を隠す
   if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (Math.max(viewRadius, lod.ready) + 0.5) * CHUNK };
 }

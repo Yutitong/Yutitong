@@ -754,6 +754,44 @@ test('龍: 全長 300 ボクセル以上で、木や地面の上を飛び、ほ�
   assert.ok(minGap >= 9, `gap ${minGap}`);
 });
 
+test('龍: 細かく描く正方形の中だけチャンクに描き、外の部分は遠くの龍の形として漏れなく作れる', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const w = new World({ seed: 20261004 });
+  w.bodyMakesChunks = false;
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 6);
+  const d = spawnDragon(w, p.pos);
+  const R = 40;
+  w.drawCenter = [p.pos[0], 0, p.pos[2]];
+  w.drawRadius = R;
+  for (let i = 0; i < 20; i++) d.update(0.08, p.pos);
+  const cheb = (x, z) => Math.max(Math.abs(x + 0.5 - w.drawCenter[0]), Math.abs(z + 0.5 - w.drawCenter[2]));
+  // 体のぜんぶのセルのうち、正方形の外のもの
+  const outside = new Set();
+  d.shape((x, y, z) => {
+    if (cheb(x, z) >= R) outside.add(`${x},${y},${z}`);
+  }, 0, d.length, true);
+  assert.ok(outside.size > 1000, `outside ${outside.size}`);
+  // 正方形の中をとばして作っても、外のセルは 1 つも欠けない
+  const far = new Set();
+  d.shape((x, y, z) => {
+    if (cheb(x, z) >= R) far.add(`${x},${y},${z}`);
+  }, 0, d.length, true, (q, extra) => Math.max(Math.abs(q[0] - w.drawCenter[0]), Math.abs(q[2] - w.drawCenter[2])) < R - extra);
+  assert.equal(far.size, outside.size);
+  for (const k of outside) assert.ok(far.has(k), k);
+  // チャンクに描いた龍のセルは、正方形のまわりだけ
+  let painted = 0;
+  for (const c of w.chunks.values()) {
+    for (let i = 0; i < c.owner.length; i++) {
+      if (c.owner[i] !== d.id) continue;
+      painted++;
+      const lx = i % CHUNK, lz = Math.floor(i / CHUNK) % CHUNK;
+      assert.ok(cheb(c.cx * CHUNK + lx, c.cz * CHUNK + lz) < R + 60);
+    }
+  }
+  assert.ok(painted > 0);
+});
+
 test('龍: 地面を歩くときは地面に沿い、行く手の人を押しのける（重ならない）', async () => {
   const { Dragon } = await import('../src/dragon.js');
   const w = new World({ generate: false });

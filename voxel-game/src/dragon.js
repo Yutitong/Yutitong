@@ -597,7 +597,8 @@ export class Dragon {
   // emit(x, y, z, color) を、龍の体の各セルについて呼ぶ（同じセルが何度か来ることもある）
   // from / to: 頭からの距離でこの範囲だけ描く（尾を切り落とすときに使う）
   // all: プレイヤーから遠い所も描く（world.drawRadius があるときは、ふだんはプレイヤーのまわりだけ描く）
-  shape(emit, from = 0, to = this.length, all = false) {
+  // skip(中心, 大きさ): 描かなくてよい部分（なければ、細かく描く範囲の外）
+  shape(emit, from = 0, to = this.length, all = false, skip = null) {
     const put = (p, color) => {
       const y = Math.floor(p[1]);
       if (y < 1 || y >= HEIGHT) return;
@@ -609,7 +610,7 @@ export class Dragon {
     };
     // 描かなくてよい所: 見えている範囲（チャンクを描く範囲）より遠い所。描いても誰にも見えず、重くなるだけなので
     const F = all ? null : this.drawFocus, FR = this.world.drawRadius;
-    const far = (p, extra) => Boolean(F && FR) && Math.max(Math.abs(p[0] - F[0]), Math.abs(p[2] - F[2])) > FR + extra;
+    const far = skip ?? ((p, extra) => Boolean(F && FR) && Math.max(Math.abs(p[0] - F[0]), Math.abs(p[2] - F[2])) > FR + extra);
     const pts = this.spine();
     const t = this.time;
     const keep = (s) => s >= from && s <= to;
@@ -888,11 +889,14 @@ export class Dragon {
   update(dt, around) {
     this.events = [];
     this.advance(dt, around);
-    this.drawFocus = around;
+    // 細かく描く範囲の中心（画面の側が決める。なければプレイヤーのまわり）
+    this.drawFocus = this.world.drawCenter ?? around;
+    this.version = (this.version ?? 0) + 1;
     this.fire.update(dt); // 炎の粒を動かし、当たった物を焦がす
     this.fire.clear();
     // プレイヤーから離れているときは、体を描き直すのは 2 回に 1 回（動きは毎回進める）。近くでは毎回
-    const near = !this.world.drawRadius || !this.pts || this.pts.some((q) => Math.abs(q.c[0] - around[0]) + Math.abs(q.c[2] - around[2]) < 120);
+    const F = this.drawFocus;
+    const near = !this.world.drawRadius || !this.pts || this.pts.some((q) => Math.abs(q.c[0] - F[0]) + Math.abs(q.c[2] - F[2]) < this.world.drawRadius + 20);
     this.skipped = !near && !this.skipped;
     if (!this.skipped) this.draw();
     // 火を吹く: 口から相手へ向けて、少し首を振りながら
