@@ -13,7 +13,7 @@ import { forestDensity, regionSpec, REGION } from './trees.js';
 import { giantSpec, giantBoxes, GIANT_CELL } from './giant.js';
 
 const LEVELS = [
-  { cell: 4, tile: 64, reach: 5 }, // 4 ボクセル四方の柱を、まわり 5 タイル（≈ 350 ボクセル ≈ 50m）
+  { cell: 4, tile: 64, reach: 7 }, // 4 ボクセル四方の柱を、まわり 7 タイル（≈ 480 ボクセル ≈ 70m）
   { cell: 16, tile: 256, reach: 5 }, // ≈ 1400 ボクセル ≈ 210m
   { cell: 64, tile: 1024, reach: 2 }, // ≈ 2500 ボクセル ≈ 380m
 ];

@@ -52,3 +52,48 @@ export class ChunkGenerator {
     return n;
   }
 }
+
+// 少し遠くのチャンクの粗いブロックを作るスレッド（細かいチャンク作りを待たせないように、別のスレッドにする）
+export class LodGenerator {
+  constructor(world, maxPending = 6) {
+    this.pending = new Set();
+    this.ready = [];
+    this.failed = false;
+    this.maxPending = maxPending;
+    try {
+      this.worker = new Worker(new URL('./genworker.js', import.meta.url), { type: 'module' });
+      this.worker.onmessage = (ev) => this.ready.push(ev.data);
+      this.worker.onerror = () => {
+        this.failed = true;
+      };
+      this.worker.postMessage({ type: 'init', seed: world.seed });
+    } catch {
+      this.worker = null;
+    }
+  }
+
+  get ok() {
+    return Boolean(this.worker) && !this.failed;
+  }
+
+  get busy() {
+    return this.pending.size >= this.maxPending;
+  }
+
+  request(cx, cz) {
+    const key = chunkKey(cx, cz);
+    if (this.pending.has(key)) return true;
+    if (this.busy) return false;
+    this.pending.add(key);
+    this.worker.postMessage({ type: 'lod', cx, cz });
+    return true;
+  }
+
+  // できあがったものを 1 つ取り出す（なければ null）
+  take() {
+    const m = this.ready.shift();
+    if (!m) return null;
+    this.pending.delete(chunkKey(m.cx, m.cz));
+    return m;
+  }
+}

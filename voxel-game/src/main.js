@@ -6,7 +6,8 @@ import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { spawnMonster } from './monster.js';
 import { EYE } from './shotgun.js';
-import { ChunkGenerator } from './genclient.js';
+import { ChunkGenerator, LodGenerator } from './genclient.js';
+import { LodRings } from './lodview.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -19,6 +20,7 @@ const KEEP_RADIUS = 24; // これより遠いチャンクは片付ける
 const LOAD_BUDGET_MS = 7; // 1フレームでチャンク作りに使ってよい時間（チャンクを作るスレッドが使えないとき）
 const INSTALL_BUDGET_MS = 5; // 1フレームで、別のスレッドで作ったチャンクを世界に入れるのに使ってよい時間
 const FAR_BUDGET_MS = 3; // 1フレームで遠景作りに使ってよい時間
+const LOD_BUDGET_MS = 3; // 1フレームで、少し遠くの粗いブロック作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
 const world = new World({ seed: 20261004 });
@@ -189,6 +191,9 @@ const fallMaterial = voxelMaterial({ transparent: true, depthWrite: false }, tru
 const WATER_ALPHA = 0.72; // 不透明度を持たない水の色の既定値
 
 const views = new Map(); // チャンク key → 描画の状態
+// 細かく描く範囲のまわりは、ボクセルをまとめた粗いブロックで描く（別のスレッドで作る）
+const lod = new LodRings(scene, world, solidMaterial, new LodGenerator(world), VOXEL_SIZE);
+lod.hasView = (key) => views.has(key);
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
 // 1つのメッシュ（不透明 / 水）。セル番号 → インスタンス番号の対応を持つ
@@ -309,6 +314,7 @@ function buildView(chunk) {
     water: makeLayer(chunk, cap(water, 64), waterTop, waterMaterial),
     fall: makeLayer(chunk, cap(fall, 64), fallBox, fallMaterial),
   };
+  if (!views.has(chunk.key)) lod.changed = true;
   views.set(chunk.key, v);
   for (let i = 0; i < limit; i++) if (chunk.color[i]) writeCell(v, chunk, i);
   upload(v.solid, true);
@@ -378,6 +384,7 @@ function syncChunks() {
   for (const key of world.dirty) {
     const chunk = world.chunks.get(key);
     if (!chunk) continue;
+    lod.markDirty(key);
     if (!near(chunk)) {
       chunk.changed.length = 0;
       continue;
@@ -387,11 +394,13 @@ function syncChunks() {
   world.dirty.clear();
   for (const [key, v] of views) {
     const chunk = world.chunks.get(key);
-    if (!chunk || !near(chunk)) {
+    // 細かい範囲から出たチャンクは、粗いブロックができるまで細かいまま描いておく（穴が開かないように）
+    if (!chunk || (!near(chunk) && lod.covers(chunk.cx - pcx, chunk.cz - pcz, key))) {
       v.solid.dispose();
       v.water.dispose();
       v.fall.dispose();
       views.delete(key);
+      lod.changed = true;
     }
   }
   let all = true;
@@ -402,8 +411,10 @@ function syncChunks() {
       else if (!views.has(chunk.key)) buildView(chunk);
     }
   }
-  // チャンクがそろったら、その範囲の遠景を隠す
-  if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (viewRadius + 0.5) * CHUNK };
+  // そのまわりの粗いブロック
+  lod.update(pcx, pcz, LOD_BUDGET_MS);
+  // チャンク（と粗いブロック）がそろったら、その範囲の遠景を隠す
+  if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (Math.max(viewRadius, lod.ready) + 0.5) * CHUNK };
 }
 let shown = null; // チャンクで描いている正方形
 
@@ -850,7 +861,13 @@ function follow(dt) {
 const fpsLabel = document.getElementById('fps');
 let frameAvg = 16;
 let slowFor = 0, fastFor = 0, fpsShown = 0;
-const QUALITY = [{ view: 3, far: 1 }, { view: 4, far: 2 }, { view: 5, far: 3 }, { view: 6, far: 3 }];
+// view: 細かく描く半径、lod1 / lod2: 2×2×2 / 4×4×4 のブロックで描く半径（チャンク）、far: 遠景の段の数
+const QUALITY = [
+  { view: 3, lod1: 6, lod2: 9, far: 1 },
+  { view: 4, lod1: 8, lod2: 12, far: 2 },
+  { view: 5, lod1: 10, lod2: 16, far: 3 },
+  { view: 6, lod1: 12, lod2: 20, far: 3 },
+];
 let quality = QUALITY.length - 1;
 function adjustQuality(dt) {
   frameAvg += (dt - frameAvg) * 0.05;
@@ -868,6 +885,7 @@ function setQuality(q) {
   quality = q;
   slowFor = fastFor = 0;
   viewRadius = QUALITY[q].view;
+  lod.setRadii(viewRadius, QUALITY[q].lod1, QUALITY[q].lod2);
   far.setLevels(QUALITY[q].far);
   shown = null;
 }
