@@ -26,7 +26,7 @@ function stampOf(chunk) {
 
 // prev: 前回のセル [チャンクの番号, セル番号, ...]
 // shape(emit): emit(x, y, z, color) を形の各セルについて呼ぶ（同じセルが何度来てもよい。最後の色になる）
-// away(m): 位置 m にいる物を押しのける向き [dx, dz]（長さは問わない）
+// away(m, e): 位置 m にいる物 e を押しのける向き [dx, dz]（長さは問わない）。null なら押しのけない（そのセルには入らない）
 // 戻り値: { cells: 今回のセル, pushed: [押しのけた物] }
 //
 // 前回のセルを全部消してから書き直すのではなく、新しい形を書いてから、今回使わなかった前回のセルだけを消す。
@@ -137,8 +137,9 @@ function shove(world, e, list, away) {
   let moved = false;
   for (let step = 0; step < 24 && overlapping(); step++) {
     const m = [e.pos[0] + e._mid[0], e.pos[1] + e._mid[1], e.pos[2] + e._mid[2]];
-    const [dx, dz] = away(m);
-    const a = Math.atan2(dz, dx);
+    const dir = away(m, e);
+    if (!dir) break;
+    const a = Math.atan2(dir[1], dir[0]);
     // 押しのける向き（8方向）。だめなら少しずつ横へずらす。段差は 2 段まで押し上げる
     let ok = false;
     for (const turn of [0, 0.785, -0.785, 1.571, -1.571]) {

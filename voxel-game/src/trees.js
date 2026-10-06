@@ -579,3 +579,16 @@ export function burnTreeCell(tree, x, y, z) {
   tree.color[i] = final;
   return final;
 }
+
+// 木のセル (x, y, z) を消す（紫の光線に焼かれて消える）。戻り値はこの木のセルだったか
+export function eraseTreeCell(tree, x, y, z) {
+  if (!tree.index) {
+    tree.index = new Map();
+    for (let i = 0; i < tree.xs.length; i++) tree.index.set(cellKey(tree.xs[i], tree.ys[i], tree.zs[i]), i);
+  }
+  const i = tree.index.get(cellKey(x, y, z));
+  if (i === undefined) return false;
+  tree.gone[i] = 1;
+  tree.burnt = true; // 片付けても、消えた所の記録を残す
+  return true;
+}

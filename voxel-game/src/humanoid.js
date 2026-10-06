@@ -70,7 +70,7 @@ export function createPose() {
     crouch: 0, // 段差を登った直後・着地したときに膝を曲げる 0..1
     air: 0, // 落ちている 0..1
     swing: 0, // 道具を使う動きの進み具合 0..1（0 = 使っていない）
-    tool: 'axe', // 右手に持っている道具（'axe' | 'shovel'）
+    tool: 'axe', // 右手に持っている道具（'axe' | 'shovel' | 'sword' | 'gun'）
     action: 'chop', // 使い方（'chop' 斧を振る | 'dig' 掘る | 'place' 土を盛る）
     carry: 0, // シャベルにのせている土（0 = なし）
   };
@@ -141,6 +141,8 @@ const SLASH_H = [ // 横薙ぎ: 右へ引いて、前を右から左へ大きく
 ];
 export const SLASH_IMPACT = 0.5;
 export const SWORD_LENGTH = 10; // 刃の長さ（ボクセル ≈ 1.5m）
+export const SHOOT_IMPACT = 0.02; // 引き金を引いてすぐ弾が出る
+export const GUN_LENGTH = 9; // 銃身の長さ（ボクセル）
 
 function chopKey(t, keys = CHOP_KEYS) {
   let k = 0;
@@ -222,6 +224,7 @@ function buildParts(p, pal) {
     let lateral = side * (0.06 + 0.45 * p.air); // 落ちるときは腕が開く
     const shovel = pal.axe && p.tool === 'shovel';
     const sword = pal.axe && p.tool === 'sword';
+    const gun = pal.axe && p.tool === 'gun';
     let cock = shovel ? 0.4 : -1.2; // 手首の返し（道具の柄と前腕の角度）
     const axeArm = pal.axe && side === 1; // 右手に道具
     let blade = null; // 太刀の向き [上下, 左右]
@@ -232,6 +235,13 @@ function buildParts(p, pal) {
       elbowBend = k[2];
       lateral = (side === 1 ? -0.35 : 0.35) + k[3];
       blade = [k[4], k[5]];
+    } else if (gun) {
+      // ショットガン: 右手で銃床の根元を握って脇に抱え、左手は前の先台を支える。撃った直後は反動で跳ね上がる
+      const kick = p.action === 'shoot' && p.swing > 0 ? Math.max(0, 1 - p.swing / 0.35) ** 2 : 0;
+      swingA = (side === 1 ? 0.75 : 1.2) + kick * 0.35;
+      elbowBend = side === 1 ? 0.95 : 0.3;
+      lateral = side === 1 ? -0.15 : 0.6;
+      blade = [Math.PI / 2 + kick * 0.45, side === 1 ? 0 : 0];
     } else if (pal.axe && p.swing > 0 && (axeArm || shovel)) {
       const keys = !shovel ? CHOP_KEYS : p.action === 'place' ? PLACE_KEYS : DIG_KEYS;
       const [, a, e, lat, k] = chopKey(p.swing, keys);
@@ -256,7 +266,19 @@ function buildParts(p, pal) {
       h = h.map((v) => v / hl);
       const edge = [0, -h[2], h[1]];
       const at = (k, e2 = 0) => [hand[0] + h[0] * k + edge[0] * e2, hand[1] + h[1] * k + edge[1] * e2, hand[2] + h[2] * k + edge[2] * e2];
-      if (sword) {
+      if (gun) {
+        // 銃床（木）・機関部・銃身（2 本）・先台。撃った瞬間は銃口が光る
+        const g = pal.gun;
+        const dir = [0, -Math.cos(blade[0]), Math.sin(blade[0])];
+        const upV = [0, Math.sin(blade[0]), Math.cos(blade[0])];
+        const at2 = (k, u2 = 0, x2 = 0) => [hand[0] + x2, hand[1] + dir[1] * k + upV[1] * u2, hand[2] + dir[2] * k + upV[2] * u2];
+        // 細すぎると点線のように途切れるので、どの部品も太さ 1 ボクセル以上にする
+        capsule(at2(-3.6, -0.6), at2(-0.4, 0.2), 0.85, 0.7, g.stock, 0.45, true);
+        capsule(at2(-0.4, 0.3), at2(1.6, 0.3), 0.72, 0.72, g.metal, 0.5, true);
+        capsule(at2(1.6, 0.6), at2(GUN_LENGTH, 0.6), 0.62, 0.62, g.barrel, 0.5, true);
+        capsule(at2(3.0, -0.3), at2(5.6, -0.3), 0.68, 0.68, g.pump, 0.5, true);
+        if (p.action === 'shoot' && p.swing > 0 && p.swing < 0.12) capsule(at2(GUN_LENGTH + 0.6, 0.5), at2(GUN_LENGTH + 1.6, 0.5), 0.8, 0.5, g.flash, 0.6, true);
+      } else if (sword) {
         // 柄・鍔・刃。刃は切っ先へ細くなり、刃先（斬る側）は明るい
         const sw = pal.sword;
         const [pitch, yaw] = blade;
@@ -432,6 +454,7 @@ export const PALETTES = {
     id: 'player', axe: { handle: 0x8a5a32, blade: 0x9aa4ae, edge: 0xe6edf2 },
     shovel: { handle: 0x9a6a3e, grip: 0x3b2b22, blade: 0x6f7a84, edge: 0xb8c2ca, soil: 0x6b4f35 },
     sword: { grip: 0x2b2833, guard: 0x8a7440, blade: 0xb9c3cb, edge: 0xf3f6f8 },
+    gun: { stock: 0x7a4a26, metal: 0x4b4f57, barrel: 0x2f3238, pump: 0x8a5a32, flash: 0xfff1a8 },
     skin: 0xf1c7a0, hair: 0x3a2618, eyes: 0x4a3229, shirt: 0xf2a541, pants: 0x2f4a7a, belt: 0x3b2b22, shoes: 0x3b2b22,
   },
   npc: [

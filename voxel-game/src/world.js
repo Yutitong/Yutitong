@@ -16,6 +16,7 @@ import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
 import { chop, dropFalling } from './axe.js';
 import { dig, place } from './shovel.js';
 import { slash } from './sword.js';
+import { shoot, updateShots } from './shotgun.js';
 import { WaterSim } from './water.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
@@ -25,6 +26,8 @@ export const WATER_FLAG = 0x1000000; // 色にこの印がついたセルは半�
 export const VOXEL_METERS = 0.15;
 export const WIND_RADIUS = 140; // プレイヤーからこの距離（ボクセル）以内の木だけ風で揺らす
 export const TICK_SECONDS = 0.04; // 1秒に25回更新
+export const PLAYER_HP = 100; // プレイヤーの体力
+const REGEN = 5; // 体力の回復（1秒あたり。最後に傷を受けてから 4 秒たつと回復し始める）
 
 // 数値が大きいほど強い。動く側の優先度 > 相手の優先度 のときだけ押し出せる。
 // 水は一番弱く、入ってきた物にいつでも場所をゆずる（出ていけば元に戻る）。
@@ -439,10 +442,15 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     action === 'dig' ? dig(world, e)
       : action === 'place' ? place(world, e)
         : action === 'slashV' || action === 'slashH' ? slash(world, e, action === 'slashH')
-          : chop(world, e),
+          : action === 'shoot' ? shoot(world, e)
+            : chop(world, e),
   );
   const p = world.player;
-  if (p) updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report, onChop);
+  if (p) {
+    updateCharacter(world, p, playerInput ?? { dir: null, run: false }, dt, rng, report, onChop);
+    if (p.hp < PLAYER_HP && world.time - (p.hurtAt ?? -Infinity) > 4) p.hp = Math.min(PLAYER_HP, p.hp + REGEN * dt);
+  }
+  updateShots(world, dt);
   // 倒れていく木と、落ちていく物（切り落とされた龍の尾）
   for (const f of world.felling) {
     f.update(dt);
@@ -452,7 +460,7 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   for (const e of [...world.entities.values()]) if (e.falling) dropFalling(world, e, dt);
 
   for (const e of [...world.entities.values()]) {
-    if (e.kind !== 'npc') continue;
+    if (e.kind !== 'npc' || e.held) continue; // 黄色い球体に包まれている NPC は動けない
     if (p && Math.max(Math.abs(e.pos[0] - p.pos[0]), Math.abs(e.pos[2] - p.pos[2])) > SIM_RADIUS) continue;
     const before = events.length;
     updateCharacter(world, e, npcInput(e, rng, dt), dt, rng, report);
@@ -467,6 +475,12 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   if (p && world.dragon && world.tickCount % 2 === 1) {
     world.dragon.update(dt * 2, p.pos);
     events.push(...world.dragon.events);
+  }
+  // 黄色い球体は、水と同じティックに動かす（1秒に12.5回）
+  if (p && world.monster && world.tickCount % 2 === 0) {
+    const m = world.monster;
+    m.update(dt * 2, p);
+    events.push(...m.events);
   }
   return events;
 }
@@ -653,25 +667,59 @@ function generateChunk(world, c) {
   }
 }
 
-// 出発地点の近くの、水でない空いている場所にプレイヤーを置く
-export function spawnPlayer(world) {
+// 出発地点の近くの、水でない場所を近い順に試す。place(pos) が値を返したらそれを返す
+function nearStart(world, place) {
   const x0 = Math.floor((CHUNK - HUMAN_SIZE[0]) / 2);
   const z0 = Math.floor((CHUNK - HUMAN_SIZE[2]) / 2);
-  for (let r = 0; r < 60 && !world.player; r++) {
-    for (let dz = -r; dz <= r && !world.player; dz++) {
-      for (let dx = -r; dx <= r && !world.player; dx++) {
+  for (let r = 0; r < 60; r++) {
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
         const x = x0 + dx * 4, z = z0 + dz * 4;
         const f = world.footprint(x, z, HUMAN_SIZE[0], HUMAN_SIZE[2]);
         if (f.wet) continue;
-        world.player = world.spawnHuman({
-          kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER,
-          pos: [x, f.hi, z], palette: PALETTES.player, yaw: 0,
-        });
+        const got = place([x, f.hi, z]);
+        if (got) return got;
       }
     }
   }
+  return null;
+}
+
+// 出発地点の近くの、水でない空いている場所にプレイヤーを置く
+export function spawnPlayer(world) {
+  world.player = nearStart(world, (pos) => world.spawnHuman({
+    kind: 'player', name: 'プレイヤー', priority: PRIORITY.PLAYER, pos, palette: PALETTES.player, yaw: 0,
+  }));
+  if (world.player) world.player.hp = PLAYER_HP;
   return world.player;
+}
+
+// プレイヤーの体力を減らす。0 になったら出発地点に戻る（戻ったら { type: 'respawn' } を返す）
+export function hurtPlayer(world, amount) {
+  const p = world.player;
+  if (!p) return null;
+  p.hp = Math.max(0, (p.hp ?? PLAYER_HP) - amount);
+  p.hurtAt = world.time;
+  if (p.hp > 0) return null;
+  respawnPlayer(world);
+  return { type: 'respawn', actor: p };
+}
+
+// プレイヤーを出発地点の近くの空いている所へ戻し、体力を元に戻す
+export function respawnPlayer(world) {
+  const p = world.player;
+  world.paint(p, false);
+  const pos = nearStart(world, (pos) => {
+    for (let o = 0; o < p.offsets.length; o += 3) {
+      if (world.ownerAt(pos[0] + p.offsets[o], pos[1] + p.offsets[o + 1], pos[2] + p.offsets[o + 2]) !== EMPTY) return null;
+    }
+    return pos;
+  });
+  if (pos) p.pos = pos;
+  world.paint(p, true);
+  Object.assign(p, { hp: PLAYER_HP, vy: 0, fall: 0, fallen: 0, speed: 0, travel: 0, swingT: 0, hurtAt: -Infinity });
+  return p;
 }
 
 // プレイヤーの周り radius チャンク分を用意する

@@ -79,6 +79,25 @@
     pointer-events: none;
   }
   .readout b { color: var(--fg); font-weight: 500; }
+  .hp {
+    position: absolute;
+    left: 12px;
+    bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font: 12px var(--font-mono);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    pointer-events: none;
+  }
+  .hp .track { display: block; width: 140px; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .hp .fill { display: block; height: 100%; width: 100%; background: #6fd27a; transition: width 0.15s; }
+  .hp .fill[data-low="true"] { background: #ff5a5a; }
+  .hp b { color: var(--fg); font-weight: 500; min-width: 3ch; }
 
   .dpad {
     position: absolute;
@@ -218,7 +237,9 @@
       <span>龍 <b id="dragonState">飛んでいる</b></span>
       <span>道具 <b id="tool">斧</b></span>
       <span>土 <b id="soil">0/40</b></span>
+      <span>球体 <b id="monsterState">ただよっている</b></span>
     </div>
+    <div class="hp" aria-label="体力">体力 <span class="track"><span class="fill" id="hpBar"></span></span><b id="hpText">100</b></div>
     <div class="dpad" aria-label="移動">
       <button type="button" data-dir="f" aria-label="前へ">▲</button>
       <button type="button" data-dir="l" aria-label="左へ">◀</button>
@@ -226,7 +247,7 @@
       <button type="button" data-dir="b" aria-label="後ろへ">▼</button>
       <button type="button" data-run aria-pressed="false" aria-label="走る（切り替え）">走</button>
       <button type="button" data-chop aria-label="道具を使う">斧</button>
-      <button type="button" data-tool aria-label="斧とシャベルを持ち替える">持替</button>
+      <button type="button" data-tool aria-label="道具を持ち替える（斧・シャベル・太刀・ショットガン）">持替</button>
       <button type="button" data-place aria-label="土を盛る">盛る</button>
     </div>
   </div>
@@ -242,10 +263,12 @@
       <ul class="ranks">
         <li><span class="sw" style="background:linear-gradient(90deg,#67a34c 33%,#3f8a3a 33% 66%,#8a8f98 66%)"></span>地面・木・岩<span class="p">∞</span></li>
         <li><span class="sw" style="background:linear-gradient(90deg,#2e8b6e 60%,#e9cf7f 60% 80%,#d2452c 80%)"></span>龍<span class="p">9</span></li>
+        <li><span class="sw" style="background:radial-gradient(circle,#e01c1c 20%,#ff8f14 50%,#ffd52a 70%)"></span>黄色い球体<span class="p">7</span></li>
         <li><span class="sw" style="background:#f2a541"></span>プレイヤー<span class="p">3</span></li>
         <li><span class="sw" style="background:linear-gradient(90deg,#3cc4b0 25%,#9b7bff 25% 50%,#ff6f6f 50% 75%,#f0f0f0 75%)"></span>NPC<span class="p">2</span></li>
         <li><span class="sw" style="background:#5aaec4"></span>水・滝<span class="p">0</span></li>
         <li><span class="sw" style="background:linear-gradient(90deg,#fff2b8 25%,#ffbd38 25% 50%,#ff7418 50% 75%,#5e5550 75%)"></span>炎（いつでも場所をゆずる）<span class="p">0</span></li>
+        <li><span class="sw" style="background:linear-gradient(90deg,#ffe2ff 33%,#b847ff 33% 66%,#8a2be2 66%)"></span>紫の光線・散弾の筋（いつでも場所をゆずる）<span class="p">0</span></li>
       </ul>
       <p class="rule-text">動く側の優先度が<strong>相手より高い</strong>ときだけ押し出せる。同じか低ければ止まる。押し出しは<strong>1段まで</strong>（押す相手の後ろに物があると押せない）。</p>
       <p class="rule-text">地形は丘と平地に、尾根の鋭い高さ 40〜60m の山。山頂の近くから川が谷を下り、平地の池や川へ流れ込む。上流〜中流は大きな丸い花崗岩が転がる渓流で、岩の間から水が落ちて澄んだ淵になる。岩には苔、岸にはシダ、川の上には木々が枝を張り出す。下流は川幅が広がり、丸い小石の川底をゆったり流れる。遠くの山は粗いブロックで描く。</p>
@@ -256,6 +279,8 @@
       <p class="rule-text">プレイヤーは右手に斧を持っている。木の幹に何度か斧を入れると、反対側へ倒れて倒木と切り株が残る。龍を切りつけると、刃の通った所の鱗が V 字に削れて肉が見える。同じ所を切り続けると、そこから尾の側が切り落とされて地面へ落ちる（首は切り落とせない）。</p>
       <p class="rule-text">シャベルに持ち替えると、前の地面をお椀の形に大きくえぐれる（1 回で 40 ボクセルほど）。掘れるのは土・砂・砂利だけで、深く掘ると岩に当たって弾かれる。掘った土は 200 ボクセルまで持ち運べ、好きな所に小山の形で盛れる（水の中にも盛れるので、川をせき止められる）。水より低い穴には水が流れ込む。</p>
       <p class="rule-text">太刀に持ち替えると、刃が 2.5m 先まで届く長い刀で龍を斬れる。振り下ろしと横薙ぎを交互に繰り出し、一太刀で胴の半分まで深く裂けて肉と骨が見える。同じ所を 2 回斬ると切り落とせる。斬れるのは龍だけで、木や岩には弾かれる。</p>
+      <p class="rule-text">直径 3m の黄色い球体のモンスターが浮かんでいる。液体金属のように柔らかく、表面は空を映してゆっくり波打ち、中は惑星のように中心ほど赤い。プレイヤーに気づくとマゼンタの縞が下から上へ流れ、少し離れた所からついてくる。NPC を見つけると上から覆いかぶさって包み込み、波打ちながら吸収して少し大きくなる。</p>
+      <p class="rule-text">ときどきクルクル回る正八面体に変わり、頂点から紫の光線を放つ（そのたびに少し縮む）。光線の上の物は地面も岩も木も NPC も消え、プレイヤーに当たると体力が大きく減る（0 になると出発地点に戻る）。ショットガン（散弾・25m まで届く・近いほど大きくえぐれる）で撃つと球は大きくえぐれるが、波打ちながら元に戻る。正八面体のときだけ撃った所が欠けたまま戻らず、削り切ると砕け散る。</p>
       <p class="rule-text">木は高さ 8〜13m。幹から枝分かれした先に葉の塊がつき、突風が通ると葉の塊が風下へ1ボクセルずれる。カメラとの間にある樹冠は消してプレイヤーを見せる。</p>
       <p class="rule-text">キャラは身長15ボクセル（1ボクセル ≈ 15cm）。膝・肘・腰・首の角度から体の形を作り、毎ティック15cmの粒に描き直す。当たり判定は常に 9×15×9 の箱で、アニメーションしても変わらない。歩きは 2m/s、走りは 5m/s、走り続けると全力疾走（8m/s）。速いときは1ティックに数ボクセル進むが、1ボクセルごとに当たり判定をする。</p>
     </section>
@@ -268,7 +293,7 @@
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
         <label class="check"><input type="checkbox" id="watchDragon">カメラで龍を追う</label>
       </div>
-      <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準、2つ同時で斜め）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀に持ち替え、<kbd>F</kbd> で道具を使う（斧を振る・シャベルで掘る・太刀で斬る。押し続けると続ける）、<kbd>G</kbd> で土を盛る、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
+      <p class="keys" style="margin-top:10px"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（カメラの向き基準、2つ同時で斜め）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> で道具を使う（斧を振る・シャベルで掘る・太刀で斬る・撃つ。押し続けると続ける）、<kbd>G</kbd> で土を盛る、ドラッグで視点回転、ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
 
     <section>

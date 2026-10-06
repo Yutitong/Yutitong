@@ -1073,3 +1073,249 @@ test('龍: いろいろな角度から切りつけても、切り落とされる
     if (sTarget < 60) assert.equal(d.length, 400, '首は切り落とせない');
   }
 });
+
+// ---- 黄色い球体とショットガン -----------------------------------------------
+
+// 高さ 10 の平らな地面と、出発地点のプレイヤー
+function monsterWorld() {
+  const w = new World({ generate: false, heightAt: () => 10 });
+  const p = spawnPlayer(w);
+  return { w, p };
+}
+
+// 球体のセル: [[x, y, z, color], ...]
+function monsterCells(w, m) {
+  const out = [];
+  for (const c of w.chunks.values()) {
+    c.owner.forEach((o, i) => {
+      if (o === m.id) out.push([c.cx * CHUNK + (i % CHUNK), c.yOf(i), c.cz * CHUNK + (Math.floor(i / CHUNK) % CHUNK), c.color[i]]);
+    });
+  }
+  return out;
+}
+const rgb = (c) => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
+
+test('黄色い球体: 直径 3m の中まで詰まった球で、表面は黄色・中は中心ほど赤い', async () => {
+  const { Monster, MONSTER_RADIUS } = await import('../src/monster.js');
+  const { w } = monsterWorld();
+  const m = new Monster(w, [100.5, 40.5, 100.5]);
+  m.draw();
+  const cells = monsterCells(w, m);
+  const ideal = (4 / 3) * Math.PI * MONSTER_RADIUS ** 3;
+  assert.ok(Math.abs(cells.length - ideal) < ideal * 0.1, `セルの数 ${cells.length}`);
+  const xs = cells.map((c) => c[0]);
+  const width = Math.max(...xs) - Math.min(...xs) + 1;
+  assert.ok(width >= 19 && width <= 23, `幅 ${width} ボクセル`);
+  // 中心は占有しているが消灯（中まで詰まっている）。てっぺんは明るい黄色
+  assert.equal(w.ownerAt(100, 40, 100), m.id);
+  assert.equal(w.colorAt(100, 40, 100), 0);
+  const top = cells.filter((c) => c[0] === 100 && c[2] === 100).sort((a, b) => b[1] - a[1])[0];
+  const [r, g, b] = rgb(top[3]);
+  assert.ok(r > 200 && g > 150 && b < 140, `てっぺんの色 ${top[3].toString(16)}`);
+  // 深くえぐると、中心の近くの赤い所が見える
+  for (let k = 0; k < 6; k++) m.hit([100.5, 40.5, 100.5 - 10], 1);
+  m.draw();
+  const deep = monsterCells(w, m).filter(([x, y, z, c]) => c && Math.hypot(x + 0.5 - 100.5, y + 0.5 - 40.5, z + 0.5 - 100.5) < 4);
+  assert.ok(deep.length > 0, 'えぐれた底が中心の近くまで届く');
+  for (const [, , , c] of deep) {
+    const [cr, cg] = rgb(c);
+    assert.ok(cr > cg * 1.8, `中心の近くは赤い ${c.toString(16)}`);
+  }
+});
+
+test('黄色い球体: プレイヤーに気づくと、マゼンタの縞が下から上へ流れる', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  const m = new Monster(w, [p.pos[0] + 300, 40, p.pos[2]]);
+  m.octaIn = 1e9;
+  const magentaRows = () => {
+    const rows = new Map();
+    for (const [x, y, z, c] of monsterCells(w, m)) {
+      if (!c) continue;
+      const [r, g, b] = rgb(c);
+      if (r > 200 && b > 150 && g < 120) rows.set(y, (rows.get(y) ?? 0) + 1);
+    }
+    return [...rows.keys()].sort((a, b) => a - b);
+  };
+  m.update(0.08, p);
+  assert.equal(m.spotted, false);
+  assert.equal(magentaRows().length, 0, '気づく前は縞がない');
+  m.c = [p.pos[0] + 60, 30, p.pos[2]];
+  m.update(0.08, p);
+  assert.equal(m.events[0]?.type, 'spot');
+  for (let k = 0; k < 12; k++) m.update(0.08, p);
+  const before = magentaRows();
+  assert.ok(before.length > 3, `縞のある段 ${before.length}`);
+  // 縞の下の端が上へずれていく（中心からの高さで比べる）
+  const lowest = (rows) => {
+    const cy = Math.floor(m.c[1]);
+    return rows.filter((y) => y >= cy - 4).map((y) => y - cy)[0];
+  };
+  const y0 = lowest(before);
+  m.update(0.08, p);
+  m.update(0.08, p);
+  const y1 = lowest(magentaRows());
+  assert.ok(y1 > y0 || y1 < y0 - 2, `縞が上へ流れる ${y0} → ${y1}`); // 上へずれるか、下から次の縞が上がってくる
+});
+
+test('ショットガン: 4 で持ち替え、F で撃つと散弾で球体が大きくえぐれ、波打ちながら元の球に戻る', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const { PELLETS } = await import('../src/shotgun.js');
+  const { w, p } = monsterWorld();
+  const m = new Monster(w, [p.pos[0] + 4.5, p.pos[1] + 12, p.pos[2] + 4.5 + 32]);
+  w.monster = m;
+  m.octaIn = 1e9;
+  m.draw();
+  const base = m.size;
+  const ev = step(w, { dir: null, run: false, chop: true, tool: 'gun' });
+  assert.equal(p.tool, 'gun');
+  assert.ok(rasterizeTool(p.palette, p.pose).length > 10, '銃身が体からはみ出して見える');
+  const shot = ev.find((e) => e.type === 'shoot');
+  assert.equal(shot.result, 'dent');
+  assert.ok(shot.hits >= PELLETS / 2, `当たった粒 ${shot.hits}`);
+  m.draw();
+  assert.ok(m.size < base * 0.93, `えぐれた ${base} → ${m.size}`);
+  assert.equal(m.mass, (4 / 3) * Math.PI * 1000, '球のときは欠けない');
+  // しばらくすると元に戻る（途中で盛り上がる時がある）
+  let bulge = false;
+  for (let k = 0; k < 50; k++) {
+    m.update(0.08, p);
+    if (m.size > base * 1.02) bulge = true;
+  }
+  assert.ok(bulge, '波打つ（えぐれた所がいったん盛り上がる）');
+  assert.equal(m.dents.length, 0);
+  assert.ok(Math.abs(m.size - base) < base * 0.06, `元の大きさ ${base} → ${m.size}`);
+  // 押し続けると 0.6 秒ごとに撃つ
+  let shots = 0;
+  for (let k = 0; k < 30; k++) shots += step(w, { dir: null, run: false, chop: true }).filter((e) => e.type === 'shoot').length;
+  assert.equal(shots, 2);
+  assertConsistent(w);
+});
+
+test('黄色い球体: 正八面体のときだけ撃った所が欠けたまま戻らず、削り切ると砕け散る', async () => {
+  const { Monster, MIN_MASS, OCT } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  const m = new Monster(w, [p.pos[0] + 200, 40, p.pos[2]]);
+  w.monster = m;
+  m.startOcta();
+  for (let t = 0; t < OCT.morph + 0.1; t += 0.08) m.update(0.08, p);
+  assert.equal(m.m, 1);
+  assert.ok(m.vulnerable);
+  // 正八面体: 中心から頂点まで ≈ 1.46 R
+  const cells = monsterCells(w, m);
+  const far = Math.max(...cells.map(([x, y, z]) => Math.hypot(x + 0.5 - m.c[0], y + 0.5 - m.c[1], z + 0.5 - m.c[2])));
+  assert.ok(far > 13, `頂点まで ${far.toFixed(1)}`);
+  const base = m.size;
+  const mass0 = m.mass;
+  assert.equal(m.hit([m.c[0], m.c[1] + 8, m.c[2]], 1), 'chip');
+  assert.ok(m.mass < mass0);
+  m.update(0.08, p);
+  const chipped = m.size;
+  assert.ok(chipped < base - 40, `欠けた ${base} → ${chipped}`);
+  m.update(0.08, p);
+  m.update(0.08, p);
+  assert.ok(m.size < base - 40, '欠けたまま戻らない');
+  // 削り切る
+  let result = null;
+  for (let k = 0; k < 300 && result !== 'killed'; k++) {
+    const a = k * 2.4, b = Math.sin(k * 1.7);
+    result = m.hit([m.c[0] + Math.cos(a) * 6, m.c[1] + b * 6, m.c[2] + Math.sin(a) * 6], 1);
+  }
+  assert.equal(result, 'killed');
+  assert.ok(m.mass < MIN_MASS);
+  assert.equal(w.monster, null);
+  assert.ok(m.pieces.length >= 3, `かけら ${m.pieces.length}`);
+  assertConsistent(w);
+  // かけらは地面へ落ちる
+  for (let k = 0; k < 80; k++) step(w, idle);
+  for (const e of m.pieces) assert.equal(e.falling, false);
+  assertConsistent(w);
+});
+
+test('黄色い球体: 正八面体の頂点から紫の光線。線上の地面も NPC も消え、プレイヤーは体力が減って少し縮む', async () => {
+  const { Monster, OCT, BEAM_DAMAGE } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  ensureAround(w, -100, 7, 4);
+  const npc = w.spawnHuman({ kind: 'npc', name: 'NPC-1', priority: PRIORITY.NPC, pos: [p.pos[0] - 27, 10, p.pos[2]], palette: PALETTES.npc[0] });
+  const m = new Monster(w, [p.pos[0] + 64.5, 0, p.pos[2] + 4.5]);
+  m.c[1] = 10 + 3 + m.R;
+  w.monster = m;
+  m.update(0.08, p);
+  assert.ok(m.spotted);
+  const ground = () => {
+    let n = 0;
+    for (let x = -160; x < -60; x++) for (let z = -4; z < 14; z++) for (let y = 3; y < 10; y++) if (w.ownerAt(x, y, z) === GROUND_ID) n++;
+    return n;
+  };
+  const g0 = ground();
+  const mass0 = m.mass;
+  m.startOcta();
+  const types = [];
+  for (let t = 0; t < OCT.end + 0.5; t += 0.08) {
+    m.update(0.08, p);
+    types.push(...m.events.map((e) => e.type));
+    if (m.beam) {
+      // 光線は頂点から出る
+      const v = m.vertex();
+      assert.ok(Math.hypot(v[0] - m.beam.o[0], v[1] - m.beam.o[1], v[2] - m.beam.o[2]) < 1.5);
+    }
+  }
+  assert.ok(types.includes('beam'));
+  assert.ok(types.includes('beamHit'));
+  assert.equal(p.hp, 100 - BEAM_DAMAGE);
+  assert.ok(types.includes('vanish'), '後ろの NPC も消えた');
+  assert.equal(w.entities.has(npc.id), false);
+  assert.ok(ground() < g0 - 50, `地面に穴があいた ${g0} → ${ground()}`);
+  assert.ok(m.mass < mass0, '光線を放つと縮む');
+  assert.equal(m.state === 'octa', false, '球に戻った');
+  // 光線は消えている
+  for (const c of w.chunks.values()) assert.equal(c.owner.includes(m.beamId), false);
+  assertConsistent(w);
+});
+
+test('黄色い球体: NPC を見つけると上から包み込んで吸収し、少し大きくなる', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  const npc = w.spawnHuman({ kind: 'npc', name: 'NPC-1', priority: PRIORITY.NPC, pos: [-180, 10, 0], palette: PALETTES.npc[1] });
+  const m = new Monster(w, [-160, 30, 30]);
+  w.monster = m;
+  m.octaIn = 1e9;
+  const R0 = m.R;
+  let wrapped = false;
+  for (let k = 0; k < 500 && !(m.absorbed && m.state !== 'absorb'); k++) {
+    m.update(0.08, p);
+    if (m.state === 'wrap' && m.drape.k > 0.85) {
+      // NPC の胸の高さの横にも、球体の膜がある（上から覆いかぶさっている）
+      const y = npc.pos[1] + 7;
+      const side = monsterCells(w, m).filter(([x, yy, z]) => yy === y && Math.hypot(x + 0.5 - m.drape.ax, z + 0.5 - m.drape.az) < 7.5);
+      assert.ok(side.length > 20, `横の膜 ${side.length}`);
+      assert.equal(npc.held, true);
+      wrapped = true;
+    }
+    if (m.state !== 'absorb' && m.state !== 'wrap') assertConsistent(w);
+  }
+  assert.ok(wrapped);
+  assert.equal(m.absorbed, 1);
+  assert.equal(w.entities.has(npc.id), false);
+  for (let k = 0; k < 20; k++) m.update(0.08, p);
+  assert.ok(m.R > R0 * 1.04 && m.R < R0 * 1.1, `大きさ ${R0} → ${m.R.toFixed(2)}`);
+  assertConsistent(w);
+});
+
+test('プレイヤーの体力が 0 になると出発地点に戻り、体力も元に戻る', async () => {
+  const { hurtPlayer, PLAYER_HP } = await import('../src/world.js');
+  const { w, p } = monsterWorld();
+  const start = [...p.pos];
+  for (let k = 0; k < 30; k++) step(w, walkInput(1, 0, true));
+  assert.ok(p.pos[0] > start[0] + 15);
+  assert.equal(hurtPlayer(w, 60), null);
+  assert.equal(p.hp, PLAYER_HP - 60);
+  // 少しずつ回復する
+  for (let k = 0; k < 150; k++) step(w, idle);
+  assert.ok(p.hp > 40 && p.hp < PLAYER_HP);
+  const r = hurtPlayer(w, 200);
+  assert.equal(r.type, 'respawn');
+  assert.equal(p.hp, PLAYER_HP);
+  assert.ok(Math.hypot(p.pos[0] - start[0], p.pos[2] - start[2]) < 10);
+  assertConsistent(w);
+});

@@ -37,7 +37,7 @@ function terrainAt(world, x, z, memo) {
 const passable = (o) => o === EMPTY || o === WATER_ID || o === FALL_ID || o === PLANT_ID;
 
 // セルを取り除き、あいた穴のまわりの、いままで地中に隠れていた面に色をつける
-function removeCell(world, x, y, z, memo) {
+export function removeCell(world, x, y, z, memo) {
   if (world.ownerAt(x, y + 1, z) === PLANT_ID) world.setCell(x, y + 1, z, EMPTY, 0); // 上の草も一緒に
   world.setCell(x, y, z, EMPTY, 0);
   world.recomputeHeight(x, z);

@@ -1,9 +1,10 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv } from './world.js';
+import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv, PLAYER_HP } from './world.js';
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
+import { spawnMonster } from './monster.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -22,6 +23,7 @@ world.bodyMakesChunks = false; // 龍の体が、まだ作っていない遠く�
 const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
+spawnMonster(world, player.pos); // 黄色い球体（14m ほど先に浮かんでいる）
 
 // ---- three.js のセットアップ ----------------------------------------------
 
@@ -315,6 +317,7 @@ function syncFar() {
   if (++frames % 120 === 0) {
     const centers = [[player.pos[0], player.pos[2]], [controls.target.x, controls.target.z]];
     if (dragon) centers.push([dragon.head[0], dragon.head[2]]);
+    if (world.monster) centers.push([world.monster.c[0], world.monster.c[2]]);
     forgetFar(world, centers, KEEP_RADIUS);
   }
 }
@@ -387,6 +390,8 @@ let chopPending = false; // 次のティックで1回振る
 let placeHeld = false; // G を押している間は土を盛り続ける
 let placePending = false;
 let toolWanted = null; // 次のティックで持ち替える道具
+const TOOL_KEYS = { Digit1: 'axe', Digit2: 'shovel', Digit3: 'sword', Digit4: 'gun' };
+const TOOL_NAMES = { axe: '斧', shovel: 'シャベル', sword: '太刀', gun: 'ショットガン' };
 
 function worldDir(rel) {
   const fx = controls.target.x - camera.position.x;
@@ -428,8 +433,8 @@ window.addEventListener('keydown', (e) => {
   if (KEYMAP[e.code]) {
     e.preventDefault();
     if (!e.repeat) press(KEYMAP[e.code]);
-  } else if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3') {
-    toolWanted = { Digit1: 'axe', Digit2: 'shovel', Digit3: 'sword' }[e.code];
+  } else if (TOOL_KEYS[e.code]) {
+    toolWanted = TOOL_KEYS[e.code];
   } else if (e.code === 'KeyG') {
     e.preventDefault();
     placeHeld = true;
@@ -460,7 +465,7 @@ window.addEventListener('blur', () => {
 
 document.querySelector('[data-tool]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
-  toolWanted = { axe: 'shovel', shovel: 'sword', sword: 'axe' }[player.tool]; // 斧 → シャベル → 太刀
+  toolWanted = { axe: 'shovel', shovel: 'sword', sword: 'gun', gun: 'axe' }[player.tool]; // 斧 → シャベル → 太刀 → ショットガン
 });
 document.querySelector('[data-place]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
@@ -500,11 +505,32 @@ const speedLabel = document.getElementById('speed');
 const dragonLabel = document.getElementById('dragonState');
 const toolLabel = document.getElementById('tool');
 const soilLabel = document.getElementById('soil');
+const monsterLabel = document.getElementById('monsterState');
+const hpBar = document.getElementById('hpBar');
+const hpText = document.getElementById('hpText');
 const chopBtn = document.querySelector('[data-chop]');
 const fmtP = (p) => (p === Infinity ? '∞' : p);
 
 function describe(ev) {
   const a = ev.actor;
+  if (ev.type === 'shoot') {
+    const n = `${ev.hits} 粒`;
+    switch (ev.result) {
+      case 'dent': return { cls: 'push', text: '散弾で黄色い球体が大きくえぐれた（波打って戻っていく）', rule: n };
+      case 'chip': return { cls: 'push', text: '散弾で正八面体が欠けた！', rule: n };
+      case 'killed': return { cls: 'push', text: '黄色い球体が砕け散った！', rule: '撃破' };
+      case 'blocked': return { cls: 'block', text: '散弾が木や地面に当たった', rule: '' };
+      default: return { cls: 'block', text: `${a.name} はショットガンを撃った（外れ）`, rule: '' };
+    }
+  }
+  if (ev.type === 'spot') return { cls: 'push', text: `${a.name} が ${ev.target.name} に気づいた（マゼンタの縞）`, rule: '' };
+  if (ev.type === 'octa') return { cls: 'push', text: `${a.name} が正八面体に変わった！（今なら撃って削れる）`, rule: '' };
+  if (ev.type === 'beam') return { cls: 'push', text: `${a.name} が紫の光線を放った`, rule: '光線の上は消える' };
+  if (ev.type === 'beamHit') return { cls: 'push', text: `紫の光線が ${ev.target.name} に当たった`, rule: `体力 ${Math.round(ev.hp)}` };
+  if (ev.type === 'respawn') return { cls: 'block', text: `${a.name} は力尽きて出発地点に戻った`, rule: '体力 0' };
+  if (ev.type === 'absorb') return { cls: 'push', text: `${a.name} が ${ev.target.name} を包み込んで吸収した`, rule: '少し大きくなる' };
+  if (ev.type === 'vanish') return { cls: 'push', text: `紫の光線で ${ev.target.name} が消えた`, rule: '' };
+  if (ev.type === 'beamDragon') return { cls: 'push', text: ev.severed ? '紫の光線が龍の尾を焼き切った' : '紫の光線が龍の体を焼いた', rule: '' };
   if (ev.type === 'dig') {
     const soil = `土 ${ev.soil}/${SOIL_MAX}`;
     switch (ev.result) {
@@ -560,7 +586,7 @@ function describe(ev) {
 
 // NPC が木にぶつかるたびに書くと流れてしまうので、プレイヤーが関わる出来事だけ記録する
 function shouldLog(ev) {
-  return ev.actor.kind === 'player' || ev.target?.kind === 'player';
+  return ev.actor.kind === 'player' || ev.target?.kind === 'player' || (ev.actor.kind === 'monster' && ev.type !== 'push');
 }
 
 function log(ev) {
@@ -646,9 +672,14 @@ function tick() {
   speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
   dragonLabel.textContent = DRAGON_MODES[dragon.mode];
-  toolLabel.textContent = { axe: '斧', shovel: 'シャベル', sword: '太刀' }[player.tool];
+  toolLabel.textContent = TOOL_NAMES[player.tool];
   soilLabel.textContent = `${player.soil}/${SOIL_MAX}`;
-  chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る' }[player.tool];
+  chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る', gun: '撃つ' }[player.tool];
+  monsterLabel.textContent = world.monster ? world.monster.label : '砕け散った';
+  const hp = Math.round(player.hp);
+  hpBar.style.width = `${(player.hp / PLAYER_HP) * 100}%`;
+  hpBar.dataset.low = String(hp <= 30);
+  hpText.textContent = hp;
 }
 
 // カメラはプレイヤー（または龍）をなめらかに追いかける（ボクセルの表示自体はコマ送りのまま）
