@@ -8,7 +8,8 @@ import { spawnMonster } from './monster.js';
 import { EYE } from './shotgun.js';
 import { ChunkGenerator, LodGenerator } from './genclient.js';
 import { LodRings } from './lodview.js';
-import { FarDragon } from './fardragon.js';
+import { FarBody } from './farbody.js';
+import { spawnFish } from './fish.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -32,6 +33,7 @@ const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
 spawnMonster(world, player.pos); // 黄色い球体（14m ほど先に浮かんでいる）
+spawnFish(world, player.pos); // 空を泳ぐ古代魚（出発地点のまわりを回遊する）
 // チャンクは別のスレッドで作る（画面が止まらないように）。使えなければ、その場で少しずつ作る
 const generator = new ChunkGenerator(world);
 
@@ -196,7 +198,8 @@ const views = new Map(); // チャンク key → 描画の状態
 // 細かく描く範囲のまわりは、ボクセルをまとめた粗いブロックで描く（別のスレッドで作る）
 const lod = new LodRings(scene, world, solidMaterial, new LodGenerator(world), VOXEL_SIZE);
 lod.hasView = (key) => views.has(key);
-const farDragon = new FarDragon(scene, solidMaterial, VOXEL_SIZE);
+const farDragon = new FarBody(scene, solidMaterial, VOXEL_SIZE);
+const farFish = new FarBody(scene, solidMaterial, VOXEL_SIZE);
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
 // 1つのメッシュ（不透明 / 水）。セル番号 → インスタンス番号の対応を持つ
@@ -421,6 +424,7 @@ function syncChunks() {
   lod.update(pcx, pcz, LOD_BUDGET_MS);
   // 正方形の外の龍
   farDragon.update(dragon, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
+  farFish.update(world.fish, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
   // チャンク（と粗いブロック）がそろったら、その範囲の遠景を隠す
   if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (Math.max(viewRadius, lod.ready) + 0.5) * CHUNK };
 }
@@ -435,6 +439,7 @@ function syncFar() {
     const centers = [[player.pos[0], player.pos[2]], [controls.target.x, controls.target.z]];
     if (dragon) centers.push([dragon.head[0], dragon.head[2]]);
     if (world.monster) centers.push([world.monster.c[0], world.monster.c[2]]);
+    if (world.fish) centers.push([world.fish.head[0], world.fish.head[2]]);
     forgetFar(world, centers, KEEP_RADIUS);
   }
 }
@@ -646,6 +651,7 @@ const dragonLabel = document.getElementById('dragonState');
 const toolLabel = document.getElementById('tool');
 const soilLabel = document.getElementById('soil');
 const monsterLabel = document.getElementById('monsterState');
+const fishLabel = document.getElementById('fishState');
 const hpBar = document.getElementById('hpBar');
 const hpText = document.getElementById('hpText');
 const chopBtn = document.querySelector('[data-chop]');
@@ -661,11 +667,20 @@ function describe(ev) {
       case 'killed': return { cls: 'push', text: '黄色い球体が砕け散った！', rule: '撃破' };
       case 'severed': return { cls: 'push', text: '散弾で龍の尾がちぎれ落ちた！ 龍は怒っている', rule: '切断' };
       case 'wound': return { cls: 'push', text: '散弾で龍の鱗に穴があいた。龍が怒って向かってくる', rule: n };
+      case 'burst': return { cls: 'push', text: '散弾で古代魚が一気に小魚の群れにほどけた', rule: `${ev.fish} 粒` };
+      case 'fishKill': return { cls: 'push', text: '散弾がばらけた小魚に当たり、小魚が落ちた', rule: `${ev.fish} 匹` };
       case 'graze': return { cls: 'push', text: '散弾が龍の頭や足に当たった。龍が怒って向かってくる', rule: n };
       case 'blocked': return { cls: 'block', text: '散弾が木や地面に当たった', rule: '' };
       default: return { cls: 'block', text: `${a.name} はショットガンを撃った（外れ）`, rule: '' };
     }
   }
+  if (ev.type === 'fishSplit') return { cls: 'push', text: '古代魚が 2 匹に分かれて、木の両側を回り込んだ', rule: '' };
+  if (ev.type === 'fishMerge') return { cls: 'push', text: '2 匹の古代魚が、また 1 匹に融け合った', rule: '' };
+  if (ev.type === 'fishBurst') return { cls: 'push', text: '撃たれた古代魚が、一気に小魚の群れにほどけた', rule: `小魚 ${ev.left} 匹` };
+  if (ev.type === 'fishRegroup') return { cls: 'push', text: '小魚が集まって、また古代魚に融け合っていく', rule: '' };
+  if (ev.type === 'fishMorph') return { cls: 'push', text: ev.tuna ? '古代魚が速く泳ぎ出し、マグロのような形に変わった' : '古代魚がゆっくりになり、ナマズの形に戻った', rule: '' };
+  if (ev.type === 'fishGone') return { cls: 'block', text: '小魚がほとんどいなくなり、残りは逃げ去った', rule: '' };
+  if (ev.type === 'fishBack') return { cls: 'push', text: '別の古代魚の群れがやって来た', rule: '' };
   if (ev.type === 'spot') return { cls: 'push', text: `${a.name} が ${ev.target.name} に気づいた（マゼンタの縞）`, rule: '' };
   if (ev.type === 'octa') return { cls: 'push', text: `${a.name} が正八面体に変わった！（今なら撃って削れる）`, rule: '' };
   if (ev.type === 'beam') return { cls: 'push', text: `${a.name} が紫の光線を放った`, rule: '光線の上は消える' };
@@ -828,6 +843,7 @@ function tick() {
   soilLabel.textContent = `${player.soil}/${SOIL_MAX}`;
   chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る', gun: '撃つ' }[player.tool];
   monsterLabel.textContent = world.monster ? world.monster.label : '砕け散った';
+  if (world.fish) fishLabel.textContent = world.fish.label;
   const hp = Math.round(player.hp);
   hpBar.style.width = `${(player.hp / PLAYER_HP) * 100}%`;
   hpBar.dataset.low = String(hp <= 30);

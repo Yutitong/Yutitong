@@ -1103,6 +1103,11 @@ export class Dragon {
     }
   }
 
+  // 遠くの粗いブロック用: 体全部（skip で細かく描く範囲にすっぽり入る部分を飛ばす）
+  shapeAll(emit, skip) {
+    this.shape(emit, 0, this.length, true, skip);
+  }
+
   // 1回分動いて、体と炎を描き直す
   update(dt, around) {
     this.events = [];

@@ -1711,6 +1711,184 @@ test('球体の表情: 光線の前に光線の向きへつぶれて縮み、震
   assert.ok(released.x - charged.x > 2, `反動 ${charged.x} → ${released.x}`);
 });
 
+// ---- 空を泳ぐ古代魚 -----------------------------------------------------------
+
+function fishWorld() {
+  const w = new World({ generate: false, heightAt: () => 10 });
+  const p = spawnPlayer(w);
+  return { w, p };
+}
+
+const fishCells = (w, f) => {
+  let n = 0;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o === f.id) n++;
+  return n;
+};
+
+test('古代魚: 小魚がすっかり融け合った 1 匹の大きな魚（全長 10m）。ナマズのような髭と大きな胸びれ', async () => {
+  const { spawnFish, FISH_COUNT, FISH_LENGTH } = await import('../src/fish.js');
+  const { w, p } = fishWorld();
+  ensureAround(w, p.pos[0] - 70, p.pos[2] + 40, 6);
+  const f = spawnFish(w, p.pos);
+  for (let i = 0; i < 20; i++) f.update(0.08, p);
+  assert.equal(f.alive.length, FISH_COUNT);
+  assert.ok(f.alive.every((x) => x.locked), '1 匹のときは、小魚はみな体に融け込んでいる');
+  assert.equal(f.forms.length, 1);
+  // 体の長さ
+  const cells = [];
+  f.shape((x, y, z, c) => cells.push([x, y, z, c]));
+  const T = f.forms[0].pts[0].T;
+  const along = cells.map(([x, y, z]) => x * T[0] + y * T[1] + z * T[2]);
+  const len = Math.max(...along) - Math.min(...along);
+  assert.ok(len > FISH_LENGTH * 0.85, `全長 ${len}`);
+  // 髭の色・胸びれの色がある。小魚の色（1 匹ずつ描く小魚）はない
+  const colors = new Set(cells.map((c) => c[3]));
+  assert.ok(colors.has(0x2b2a22), '髭');
+  assert.ok(colors.has(0x4a4a36) || colors.has(0x37372a), '胸びれ');
+  // 胸びれは大きい: 体の横幅（両側の胸びれの先まで）が 30 ボクセル以上
+  const B = f.forms[0].pts[10].B;
+  const side = cells.map(([x, y, z]) => x * B[0] + z * B[2]);
+  assert.ok(Math.max(...side) - Math.min(...side) > 30, `横幅 ${Math.max(...side) - Math.min(...side)}`);
+  assert.ok(fishCells(w, f) > 2000, `セル ${fishCells(w, f)}`);
+  assertConsistent(w);
+});
+
+test('古代魚: 行く手に木があると 2 匹に分かれて両側を回り込み、通り過ぎるとまた 1 匹に融け合う', async () => {
+  const { AncientFish } = await import('../src/fish.js');
+  const { w, p } = fishWorld();
+  // 魚の前方に、高い柱（木の幹のかわり）
+  const f = new AncientFish(w, [0, 62, -60]);
+  f.yaw = 0;
+  f.reset([0, 62, -60]);
+  f.yaw = 0;
+  f.trail = [];
+  for (let s = 0; s <= 80; s += 2) f.trail.push({ p: [0, 62, -60 - s], d: -s });
+  f.home = [0, 400];
+  f.waypoint = [0, 0, 400];
+  f.dashIn = 1e9;
+  ensureAround(w, 0, 0, 7);
+  for (let y = 10; y < 110; y++) for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) if (x * x + z * z <= 10) w.setCell(x, y, z, GROUND_ID, 0x6b4e37);
+  const types = [];
+  const far = [0, 0]; // 柱の横を通るときの、2 匹それぞれの横の位置（いちばん外側）
+  let inPillar = 0, cells = 0;
+  for (let i = 0; i < 300 && !types.includes('fishMerge'); i++) {
+    f.update(0.08, p);
+    f.waypoint = [0, 0, 400];
+    types.push(...f.events.map((e) => e.type));
+    if (f.forms.length === 2) {
+      f.forms.forEach((form, k) => {
+        const q = form.pts.find((pt) => Math.abs(pt.c[2]) < 1);
+        if (q && Math.abs(q.c[0]) > Math.abs(far[k])) far[k] = q.c[0];
+      });
+    }
+    // 魚の形が柱と重なる所（重なった所は描けない）
+    f.shape((x, y, z) => {
+      cells++;
+      if (x * x + z * z <= 10 && y >= 10 && y < 110) inPillar++;
+    });
+  }
+  assert.ok(types.includes('fishSplit'), types.join());
+  assert.ok(types.includes('fishMerge'), '通り過ぎるとまた 1 匹に');
+  assert.ok(Math.min(...far) < -9 && Math.max(...far) > 9, `柱の両側 ${far}`);
+  assert.ok(inPillar < cells * 0.002, `柱と重なる ${inPillar} / ${cells}`);
+  // 融け合ったあとは 1 匹
+  for (let i = 0; i < 30; i++) f.update(0.08, p);
+  assert.equal(f.forms.length, 1);
+  assert.ok(f.alive.every((x) => x.locked));
+  // 柱は削れていない
+  assert.equal(w.ownerAt(0, 62, 0), GROUND_ID);
+  assertConsistent(w);
+});
+
+test('古代魚: 撃たれると一気に小魚の群れにほどけて散り、数秒後に集まり直してまた 1 匹に融け合う。落とした分だけ小さくなる', async () => {
+  const { spawnFish, FISH_COUNT } = await import('../src/fish.js');
+  const { w, p } = fishWorld();
+  const f = spawnFish(w, p.pos, [0, 45]);
+  f.update = ((orig) => function (dt, pl) {
+    return orig.call(this, dt, pl);
+  })(f.update);
+  for (let i = 0; i < 4; i++) f.update(0.08, p);
+  // 目から魚の胴のなかほどを狙って撃つ
+  const q = f.pointOn(f.forms[0], 0.4, 0);
+  const eye = [p.pos[0] + 4.5, p.pos[1] + 13.5, p.pos[2] + 4.5];
+  const face = Math.atan2(q[0] - eye[0], q[2] - eye[2]);
+  const pitch = Math.atan2(q[1] - eye[1], Math.hypot(q[0] - eye[0], q[2] - eye[2]));
+  const ev = step(w, { dir: null, run: false, chop: true, tool: 'gun', face, pitch }).find((e) => e.type === 'shoot');
+  assert.equal(ev.result, 'burst', JSON.stringify(ev.result));
+  assert.equal(f.state, 'scatter');
+  assert.ok(f.alive.length < FISH_COUNT && f.alive.length > FISH_COUNT - 12, `落ちた小魚 ${FISH_COUNT - f.alive.length}`);
+  const before = f.scale;
+  // 少しあと: 小魚が散らばっている
+  for (let i = 0; i < 10; i++) f.update(0.08, p);
+  assert.equal(f.forms.length, 0);
+  assert.ok(f.alive.every((x) => !x.locked));
+  const spread = Math.max(...f.alive.map((x) => Math.hypot(x.p[0] - f.head[0], x.p[2] - f.head[2])));
+  assert.ok(spread > 25, `散らばる ${spread}`);
+  // 集まり直して融け合う → 逃げる（速いのでマグロの形）
+  const types = [];
+  for (let i = 0; i < 200 && f.state !== 'swim'; i++) {
+    f.update(0.08, p);
+    types.push(...f.events.map((e) => e.type), f.state);
+  }
+  assert.ok(types.includes('fishRegroup'));
+  assert.ok(types.includes('flee'));
+  assert.ok(types.includes('fishMorph'), 'マグロの形に変わって逃げる');
+  assert.ok(f.alive.every((x) => x.locked));
+  assert.ok(f.scale <= before);
+});
+
+test('古代魚: 速く泳ぐとマグロのような形に変わり、ゆっくりになるとナマズの形に戻る', async () => {
+  const { spawnFish } = await import('../src/fish.js');
+  const { w, p } = fishWorld();
+  const f = spawnFish(w, p.pos);
+  for (let i = 0; i < 4; i++) f.update(0.08, p);
+  const cellsOf = () => {
+    const out = [];
+    f.shape((x, y, z, c) => out.push(c));
+    return new Set(out);
+  };
+  assert.equal(f.u, 0);
+  assert.ok(!cellsOf().has(0xf0c22c));
+  f.dashIn = 0;
+  const types = [];
+  for (let i = 0; i < 60; i++) {
+    f.update(0.08, p);
+    types.push(...f.events.map((e) => e.type + (e.tuna ?? '')));
+  }
+  assert.equal(f.state, 'dash');
+  assert.ok(f.u > 0.95, `マグロ ${f.u}`);
+  assert.ok(types.includes('fishMorphtrue'));
+  const tuna = cellsOf();
+  assert.ok(tuna.has(0xf0c22c), '黄色い小離鰭');
+  assert.ok(!tuna.has(0x2b2a22), '髭は消える');
+  for (let i = 0; i < 150; i++) f.update(0.08, p);
+  assert.equal(f.state, 'swim');
+  assert.ok(f.u < 0.05, `ナマズに戻る ${f.u}`);
+});
+
+test('古代魚: 小魚をほとんど落とすと残りは逃げ去り、しばらくすると別の群れが集まってくる', async () => {
+  const { spawnFish, FISH_COUNT } = await import('../src/fish.js');
+  const { w, p } = fishWorld();
+  const f = spawnFish(w, p.pos);
+  f.update(0.08, p);
+  f.burst(f.head, p.pos);
+  while (f.alive.length > 11) f.kill(0);
+  assert.equal(f.state, 'gone');
+  for (let i = 0; i < 50; i++) f.update(0.08, p);
+  assert.equal(f.alive.length, 0, '見えなくなる');
+  assert.equal(fishCells(w, f), 0);
+  const types = [];
+  for (let i = 0; i < 600 && !types.includes('fishBack'); i++) {
+    f.update(0.08, p);
+    types.push(...f.events.map((e) => e.type));
+  }
+  assert.ok(types.includes('fishBack'));
+  assert.equal(f.alive.length, FISH_COUNT);
+  for (let i = 0; i < 150 && f.state === 'regroup'; i++) f.update(0.08, p);
+  assert.notEqual(f.state, 'regroup');
+  assert.ok(f.alive.every((x) => x.locked), '集まって融け合う');
+});
+
 // ---- ジャンプと野原 ---------------------------------------------------------
 
 test('ジャンプ: 1m ほど跳び上がって着地する。立っていないときは跳べない', () => {

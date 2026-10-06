@@ -6,6 +6,7 @@
 // - 近いほど大きくえぐれる。正八面体のときだけ、当たった所が欠けたまま戻らない（monster.js の hit）
 // - 龍にも当たる。胴に当たると丸い弾痕があき、撃ち続けて胴の断面がなくなると尾の側がちぎれる（dragon.js の shot）。
 //   撃たれた龍は怒って、プレイヤーの近くへ降りてきて火を吹く。チャンクに描いていない遠くの龍にも、形で当てる
+// - 古代魚に当たると、一気に小魚の群れにほどける。ばらけた小魚に当たると、その小魚が落ちる（fish.js の hit）
 // - 散弾は木や地面に当たると止まる（何も壊さない）
 // - 弾の通り道は一瞬だけ光の筋として見える（いつでも場所をゆずる）
 
@@ -45,9 +46,9 @@ export function eyeOf(e) {
 export const EYE = 13.5; // 足元から目までの高さ（ボクセル）
 
 // 撃つ。戻り値は出来事 { type: 'shoot', actor, target, result, hits, dragon }
-// result: 'dent' | 'chip' | 'killed'（球体）/ 'severed' | 'wound' | 'graze'（龍）/ 'blocked' | 'miss'
+// result: 'dent' | 'chip' | 'killed'（球体）/ 'severed' | 'wound' | 'graze'（龍）/ 'burst' | 'fishKill'（古代魚）/ 'blocked' | 'miss'
 export function shoot(world, e) {
-  const ev = { type: 'shoot', actor: e, target: null, result: 'miss', hits: 0, dragon: 0 };
+  const ev = { type: 'shoot', actor: e, target: null, result: 'miss', hits: 0, dragon: 0, fish: 0 };
   const rng = mulberry32(world.tickCount * 7919 + 13);
   const muzzle = muzzleOf(e);
   let yaw = e.pose.yaw, pitch = 0;
@@ -55,6 +56,7 @@ export function shoot(world, e) {
   let from = muzzle;
   const mon = world.monster;
   const dragon = world.dragon;
+  const school = world.fish;
   if (e.aimPitch !== null && e.aimPitch !== undefined) {
     pitch = e.aimPitch;
     from = eyeOf(e);
@@ -74,10 +76,12 @@ export function shoot(world, e) {
     };
     if (mon && !mon.dead) consider(mon.c, mon.R);
     if (dragon?.pts) for (let k = 0; k < dragon.pts.length; k += 6) if (dragon.pts[k].s <= dragon.length) consider(dragon.pts[k].c, 4);
+    if (school && school.state !== 'gone') consider(school.head, 6);
   }
   const trails = [];
   const results = new Set();
   const dragonResults = new Set();
+  const fishResults = new Set();
   let blocked = false;
   for (let k = 0; k < PELLETS; k++) {
     const da = ((k / (PELLETS - 1)) - 0.5) * 2 * SPREAD + (rng() - 0.5) * 0.05;
@@ -87,15 +91,33 @@ export function shoot(world, e) {
     let end = SHOT_RANGE;
     // 龍の形に当たる距離（チャンクに描いていない所にも当たる）
     const tDragon = dragon ? dragon.rayHit(from, dir, SHOT_RANGE) : Infinity;
+    // 古代魚の形（体と、ばらけた小魚）に当たる距離
+    const fishHit = school ? school.rayHit(from, dir, SHOT_RANGE) : null;
+    const tFish = fishHit ? fishHit.t : Infinity;
     for (let s = 0; s <= SHOT_RANGE; s += 0.5) {
       const p = [from[0] + dir[0] * s, from[1] + dir[1] * s, from[2] + dir[2] * s];
-      const o = s >= tDragon ? dragon.id : ownerLoaded(world, Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
+      const o = s >= Math.min(tDragon, tFish)
+        ? (tDragon <= tFish ? dragon.id : school.id)
+        : ownerLoaded(world, Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
       if (o === -1) break; // 空の上・地の底
       if (o === 0 || o === e.id || o === e.toolId || o === WATER_ID || o === FALL_ID) continue;
       if (o > 0 && world.entities.get(o)?.yields) continue;
       end = s;
       const m = world.monster;
-      if (dragon && o === dragon.id) {
+      if (school && o === school.id) {
+        const byShape = s >= tFish;
+        if (byShape) {
+          end = tFish;
+          for (let i = 0; i < 3; i++) p[i] = from[i] + dir[i] * tFish;
+        }
+        const r = school.hit(p, byShape ? fishHit : undefined, from);
+        if (r) {
+          fishResults.add(r);
+          ev.hits++;
+          ev.fish++;
+          if (!ev.target) ev.target = school.entity;
+        }
+      } else if (dragon && o === dragon.id) {
         if (s >= tDragon) {
           end = tDragon;
           p[0] = from[0] + dir[0] * tDragon;
@@ -130,10 +152,12 @@ export function shoot(world, e) {
   if (ev.dragon) dragon.provoke();
   if (results.has('killed')) ev.result = 'killed';
   else if (dragonResults.has('severed')) ev.result = 'severed';
+  else if (fishResults.has('burst')) ev.result = 'burst';
   else if (results.has('chip')) ev.result = 'chip';
   else if (results.has('dent')) ev.result = 'dent';
   else if (dragonResults.has('wound')) ev.result = 'wound';
   else if (dragonResults.has('graze')) ev.result = 'graze';
+  else if (fishResults.has('kill')) ev.result = 'fishKill';
   else if (blocked) ev.result = 'blocked';
   drawTrails(world, trails);
   return ev;

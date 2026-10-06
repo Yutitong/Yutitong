@@ -499,6 +499,11 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     world.dragon.update(dt * 2, p.pos);
     events.push(...world.dragon.events);
   }
+  // 空を泳ぐ古代魚（龍と同じティック。1秒に12.5回）
+  if (p && world.fish && world.tickCount % 2 === 1) {
+    world.fish.update(dt * 2, p);
+    events.push(...world.fish.events);
+  }
   // 黄色い球体は、水と同じティックに動かす（1秒に12.5回）
   if (p && world.monster && world.tickCount % 2 === 0) {
     const m = world.monster;
