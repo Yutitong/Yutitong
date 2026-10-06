@@ -58,6 +58,19 @@ const GOLD_DARK = 0x7a4c05, GOLD_MID = 0xc98f10, GOLD = 0xffcf1c, GLINT = 0xfff3
 const PURPLE = [0xffe2ff, 0xe58cff, 0xb847ff, 0x8a2be2];
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// ばね: st[key] を target へ近づける（freq: 1 秒に揺れる回数、zeta: 減衰。小さいほど行き過ぎて揺れる）
+function spring(st, key, target, freq, zeta, dt) {
+  const w = freq * Math.PI * 2;
+  const n = Math.max(1, Math.ceil(dt * w * 2));
+  const h = dt / n;
+  let x = st[key], v = st[key + 'V'] ?? 0;
+  for (let i = 0; i < n; i++) {
+    v += (-w * w * (x - target) - 2 * zeta * w * v) * h;
+    x += v * h;
+  }
+  st[key] = x;
+  st[key + 'V'] = v;
+}
 const approach = (v, target, step) => (v < target ? Math.min(target, v + step) : Math.max(target, v - step));
 const smooth = (t) => {
   t = clamp(t, 0, 1);
@@ -130,6 +143,101 @@ export class Monster {
     this.dead = false;
     this.absorbed = 0;
     this.lastDragonHit = -1;
+    // 見た目の変形（つぶれと伸び・ため）。体積はそのまま
+    // e: 軸の向きに伸びる量（- ならつぶれる）、k: 全体の大きさ、axis: 伸び縮みの向き（世界の座標）、wob: 震え
+    this.squash = { e: 0, k: 1 };
+    this.sAxis = [0, 1, 0];
+    this.wob = [0, 0, 0];
+    this.kick = [0, 0, 0]; // 光線の反動で押し戻される速さ
+    this.prevC = [...start];
+  }
+
+  // 変形しているか（していなければ計算を省く）
+  get deformed() {
+    return Math.abs(this.squash.e) > 0.01 || Math.abs(this.squash.k - 1) > 0.01 || this.wob[0] || this.wob[1] || this.wob[2];
+  }
+
+  // 見た目の位置（中心から、世界の向き）→ 変形する前の位置
+  undeform(px, py, pz, out) {
+    const { e, k } = this.squash;
+    px -= this.wob[0];
+    py -= this.wob[1];
+    pz -= this.wob[2];
+    const a = this.sAxis;
+    const sa = 1 + e, sp = 1 / Math.sqrt(sa);
+    const f = (1 / sa - 1 / sp) * (px * a[0] + py * a[1] + pz * a[2]);
+    out[0] = (px / sp + f * a[0]) / k;
+    out[1] = (py / sp + f * a[1]) / k;
+    out[2] = (pz / sp + f * a[2]) / k;
+    return out;
+  }
+
+  // 変形する前の位置 → 見た目の位置
+  deform(v) {
+    const { e, k } = this.squash;
+    const a = this.sAxis;
+    const sa = 1 + e, sp = 1 / Math.sqrt(sa);
+    const f = (sa - sp) * (v[0] * a[0] + v[1] * a[1] + v[2] * a[2]);
+    return [0, 1, 2].map((i) => (v[i] * sp + f * a[i]) * k + this.wob[i]);
+  }
+
+  // 動きの表情を 1 回分進める:
+  // - 動き出すと進む向きに伸び、止まると行き過ぎてつぶれてから戻る
+  // - 光線の前: 光線の向きにぐっとつぶれて縮み、震えながら力をためる → 放つ瞬間に伸びて、反動で後ろへ押される
+  animateBody(dt) {
+    const c = this.c;
+    const v = [(c[0] - this.prevC[0]) / dt, (c[1] - this.prevC[1]) / dt, (c[2] - this.prevC[2]) / dt];
+    this.prevC = [...c];
+    const speed = Math.hypot(...v);
+    let eT = 0, kT = 1, shake = 0;
+    let axis = null;
+    const T = this.stateTime;
+    if (this.state === 'octa' && this.aim && T >= OCT.spin && T < OCT.fire) {
+      axis = this.aim.dir;
+      if (T < OCT.aim) {
+        // ため
+        const u = clamp((T - OCT.spin) / (OCT.aim - OCT.spin), 0, 1);
+        eT = -0.38 * u;
+        kT = 1 - 0.2 * u;
+        shake = 0.9 * u * u;
+      } else {
+        // 放っている間は光線の向きに伸びたまま、細かく震える
+        if (!this.released) {
+          this.released = true;
+          this.squash.eV = (this.squash.eV ?? 0) + 12;
+          this.squash.kV = (this.squash.kV ?? 0) + 2.5;
+          this.kick = axis.map((d) => -d * 40);
+        }
+        eT = 0.38;
+        shake = 0.35;
+      }
+    } else {
+      this.released = false;
+      if (this.state !== 'wrap' && this.state !== 'absorb') {
+        eT = clamp((speed / HUNT_SPEED) * 0.45, 0, 0.5);
+        if (speed > 1.5) axis = v.map((d) => d / speed);
+      }
+    }
+    if (axis) {
+      // 伸びる向きを、なめらかに新しい向きへ回す（向きが逆でも同じ伸び方なので、近い方へ）
+      const a = this.sAxis;
+      const sgn = a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2] < 0 ? -1 : 1;
+      const m = Math.min(1, dt * 10);
+      const n = a.map((x, i) => x + (sgn * axis[i] - x) * m);
+      const l = Math.hypot(...n) || 1;
+      this.sAxis = n.map((x) => x / l);
+    }
+    spring(this.squash, 'e', eT, 2.2, 0.28, dt);
+    spring(this.squash, 'k', kT, 2.5, 0.35, dt);
+    this.squash.e = clamp(this.squash.e, -0.5, 0.8);
+    this.wob = shake ? [0, 1, 2].map((i) => Math.sin(this.time * (47 + i * 13) + i * 1.7) * shake) : [0, 0, 0];
+    // 反動で押し戻される
+    const decay = Math.exp(-5 * dt);
+    for (let i = 0; i < 3; i++) {
+      c[i] += this.kick[i] * dt;
+      this.kick[i] *= decay;
+    }
+    this.prevC = [...c];
   }
 
   get vulnerable() {
@@ -171,8 +279,8 @@ export class Monster {
   // 光線を放つ頂点（体の座標の +x か -x）の世界での位置
   vertex() {
     const A = this.R * OCTA * this.m;
-    const d = this.toWorld([this.axis, 0, 0]);
-    return [this.c[0] + d[0] * A, this.c[1] + d[1] * A, this.c[2] + d[2] * A];
+    const d = this.deform(this.toWorld([this.axis * A, 0, 0]));
+    return [this.c[0] + d[0], this.c[1] + d[1], this.c[2] + d[2]];
   }
 
   // ---- 形 --------------------------------------------------------------------
@@ -332,9 +440,13 @@ export class Monster {
     this.inner = this.Rs - Math.min(this.Rs, inn * 1.5) - 1;
     const B = Math.max(this.Rs + out, this.m > 0 ? this.A * (this.m > 0.99 ? 1 : 1.05) : 0) + 1.5;
     if (this.m < 1) this.buildDisp();
-    let x0 = Math.floor(c[0] - B), x1 = Math.floor(c[0] + B);
-    let y0 = Math.floor(c[1] - B), y1 = Math.floor(c[1] + B);
-    let z0 = Math.floor(c[2] - B), z1 = Math.floor(c[2] + B);
+    // つぶれ・伸びているときは、調べる範囲を広げる
+    const def = this.deformed;
+    const sa = 1 + this.squash.e;
+    const BW = def ? B * Math.max(sa, 1 / Math.sqrt(sa)) * this.squash.k + Math.hypot(...this.wob) + 1 : B;
+    let x0 = Math.floor(c[0] - BW), x1 = Math.floor(c[0] + BW);
+    let y0 = Math.floor(c[1] - BW), y1 = Math.floor(c[1] + BW);
+    let z0 = Math.floor(c[2] - BW), z1 = Math.floor(c[2] + BW);
     const D = this.drape;
     if (D) {
       x0 = Math.min(x0, Math.floor(D.ax - 9));
@@ -349,13 +461,18 @@ export class Monster {
     const nx = x1 - x0 + 1, ny = y1 - y0 + 1, nz = z1 - z0 + 1;
     const inside = new Uint8Array(nx * ny * nz); // 1 = 球の部分、2 = 膜の部分
     const q = [0, 0, 0];
+    const u = [0, 0, 0];
     const B2 = B * B;
     for (let y = y0; y <= y1; y++) {
-      const py = y + 0.5 - c[1];
+      const py0 = y + 0.5 - c[1];
       for (let z = z0; z <= z1; z++) {
-        const pz = z + 0.5 - c[2];
+        const pz0 = z + 0.5 - c[2];
         for (let x = x0; x <= x1; x++) {
-          const px = x + 0.5 - c[0];
+          let px = x + 0.5 - c[0], py = py0, pz = pz0;
+          if (def) {
+            this.undeform(px, py, pz, u);
+            [px, py, pz] = u;
+          }
           const i = (x - x0) + nx * ((z - z0) + nz * (y - y0));
           if (px * px + py * py + pz * pz <= B2 && this.field(px, py, pz, q) <= 0) inside[i] = 1;
           else if (D && this.drapeField(x + 0.5, y + 0.5, z + 0.5) <= 0) inside[i] = 2;
@@ -381,7 +498,8 @@ export class Monster {
   // セルの色: 表面は空を映す液体金属の黄色（縞模様・頂点の光）、えぐれた奥は中心ほど赤い
   colorAt(x, y, z, membrane, vx, q) {
     const c = this.c;
-    const px = x + 0.5 - c[0], py = y + 0.5 - c[1], pz = z + 0.5 - c[2];
+    let px = x + 0.5 - c[0], py = y + 0.5 - c[1], pz = z + 0.5 - c[2];
+    if (!membrane && this.deformed) [px, py, pz] = this.undeform(px, py, pz, [0, 0, 0]);
     const r = Math.hypot(px, py, pz) || 1e-6;
     const u = membrane ? 1 : r / this.Rs;
     const h = hash3(x, y, z);
@@ -523,6 +641,7 @@ export class Monster {
     // 見た目の大きさは、体積の変化に少し遅れてついていく（正八面体の間は変えない。欠けた所が見えるので）
     if (this.state !== 'octa' || this.stateTime > OCT.unspin) this.R = approach(this.R, Math.min(MAX_RADIUS, radiusOf(this.mass)), dt * 2.5);
     if (this.state !== 'octa') this.spin += this.spinRate * dt;
+    this.animateBody(dt);
     this.draw();
     this.entity.pos = this.c.map(Math.round);
   }

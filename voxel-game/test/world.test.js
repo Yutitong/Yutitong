@@ -1032,7 +1032,7 @@ test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷
     for (let n = 0; n < (k === 330 ? 12 : 3); n++) d.wound([c[0] + B[0] * 6, c[1] + B[1] * 6, c[2] + B[2] * 6]);
   }
   // 散弾の弾痕（深いものも浅いものも）
-  for (const [k, ang, n] of [[100, 0.4, 1], [110, 2.0, 4], [210, -1.2, 2], [290, 3.0, 6]]) {
+  for (const [k, ang, n] of [[100, 0.4, 1], [110, 2.0, 4], [210, -1.2, 2], [290, 3.0, 3]]) {
     const { c, N, B } = d.pts[k];
     const dir = [0, 1, 2].map((i) => N[i] * Math.cos(ang) + B[i] * Math.sin(ang));
     for (let m = 0; m < n; m++) d.shot([c[0] + dir[0] * 6, c[1] + dir[1] * 6, c[2] + dir[2] * 6], 0.9);
@@ -1297,16 +1297,24 @@ test('黄色い球体: 正八面体の頂点から紫の光線。線上の地面
   const mass0 = m.mass;
   m.startOcta();
   const types = [];
+  const along = [];
   for (let t = 0; t < OCT.end + 0.5; t += 0.08) {
     m.update(0.08, p);
     types.push(...m.events.map((e) => e.type));
     if (m.beam) {
-      // 光線は頂点から出る
-      const v = m.vertex();
-      assert.ok(Math.hypot(v[0] - m.beam.o[0], v[1] - m.beam.o[1], v[2] - m.beam.o[2]) < 1.5);
+      // 光線は頂点から出る（放つ瞬間に光線の向きへ伸び、反動で下がるので、頂点は光線の線の上を前後する。
+      // 光線の始まりと頂点の間にすき間はあかない）
+      const v = m.vertex(), o = m.beam.o, dir = m.beam.dir;
+      const d = [v[0] - o[0], v[1] - o[1], v[2] - o[2]];
+      const t = d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2];
+      const perp = Math.hypot(d[0] - dir[0] * t, d[1] - dir[1] * t, d[2] - dir[2] * t);
+      assert.ok(perp < 2.5, `線から ${perp}`); // 震えと、反動のあと浮く高さへ戻る分
+      assert.ok(t > -1.5 && t < 18, `線に沿って ${t}`);
+      along.push(t);
     }
   }
   assert.ok(types.includes('beam'));
+  assert.ok(Math.max(...along) > 3, `放つ瞬間に伸びる ${along.map((t) => t.toFixed(1))}`);
   assert.ok(types.includes('beamHit'));
   assert.equal(p.hp, 100 - BEAM_DAMAGE);
   assert.ok(types.includes('vanish'), '後ろの NPC も消えた');
@@ -1534,6 +1542,173 @@ test('一人称: シャベルは視線の先の地面を掘る', () => {
   const cx = p.pos[0] + 4.5 + Math.sin(yaw) * dist, cz = p.pos[2] + 4.5 + Math.cos(yaw) * dist;
   assert.ok(w2.groundAt(Math.floor(cx), Math.floor(cz)) < 10, '見ていた所に穴があいた');
   assertConsistent(w2);
+});
+
+// ---- 動きの表情（予備動作・余韻） ----------------------------------------------
+
+test('龍の表情: 火を吹く前に首を引いて胸に息を吸い込み、頭を突き出して吐く。吐き終わると頭が反動で揺れる', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  d.land(0, 200, 0);
+  d.walkTime = 1e9;
+  d.nextBreath = 1e9;
+  for (let i = 0; i < 10; i++) d.update(0.08, [0, 0, -300]);
+  d.fireTarget = [d.head[0], 10, d.head[2] + 60];
+  d.setMode('breathe');
+  const fireCells = () => w.chunks.size && [...w.chunks.values()].reduce((n, c) => n + c.owner.filter((o) => o === d.fireId).length, 0);
+  const log = [];
+  for (let t = 0; t < 6.5; t += 0.08) {
+    d.update(0.08, [0, 0, -300]);
+    log.push({ t, pull: d.anim.pull, inhale: d.anim.inhale, swell: d.swell(75), fire: fireCells(), mode: d.mode });
+  }
+  const before = log.filter((l) => l.t < 1.0);
+  assert.ok(before.every((l) => l.fire === 0), 'ためている間は火を吹かない');
+  assert.ok(Math.max(...before.map((l) => l.pull)) > 6, '首を引く');
+  assert.ok(Math.max(...before.map((l) => l.swell)) > 1.2, '胸がふくらむ');
+  const blowing = log.filter((l) => l.t > 1.4 && l.t < 3);
+  assert.ok(blowing.some((l) => l.fire > 0), '火を吹く');
+  assert.ok(Math.min(...blowing.map((l) => l.pull)) < -4, '頭を突き出す');
+  // 吹き終わると、頭は反動で後ろへ揺り戻され、0 を行き過ぎて揺れながら戻る
+  const after = log.filter((l) => l.t > 4.8);
+  assert.ok(after.length > 5);
+  const signs = new Set(after.map((l) => Math.sign(Math.round(l.pull * 4))));
+  assert.ok(signs.has(1) && signs.has(-1), `揺れ ${after.map((l) => l.pull.toFixed(1))}`);
+});
+
+test('龍の表情: 飛び立つ前に身をかがめ、伸び上がって飛ぶ。降りると体が沈み込んでから戻る', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  d.land(0, 200, 0);
+  for (let i = 0; i < 20; i++) d.update(0.08, [0, 0, 0]);
+  const y0 = d.spine()[0].c[1];
+  d.setMode('takeoff');
+  let low = Infinity, headY = [];
+  for (let t = 0; t < 2.5; t += 0.08) {
+    d.update(0.08, [0, 0, 0]);
+    headY.push(d.pts[0].c[1]);
+    if (t < 0.9) low = Math.min(low, d.pts[0].c[1]);
+  }
+  assert.ok(low < y0 - 4, `頭が下がる ${y0} → ${low}`);
+  assert.ok(Math.max(...headY) > y0 + 8, '跳び上がる');
+  // 着地の衝撃
+  d.land(0, 200, 0);
+  d.anim.squat = 0;
+  d.animKick('squatV', 16);
+  let sink = 0, rebound = 0;
+  for (let i = 0; i < 25; i++) {
+    d.update(0.08, [0, 0, 0]);
+    sink = Math.max(sink, d.anim.squat);
+    rebound = Math.min(rebound, d.anim.squat);
+  }
+  assert.ok(sink > 1 && rebound < -0.2, `沈み込んで戻る ${sink} ${rebound}`);
+});
+
+test('龍の表情: 曲がると髭と尾の房が遅れてなびき、まっすぐに戻っても揺れが残る。ときどきまばたきする', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 90, 0]);
+  w.dragon = d;
+  const turn = (rate, n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      d.yaw += rate * 0.08;
+      d.animate(0.08);
+      d.time += 0.08;
+      out.push({ b: d.anim.lagB, tail: d.anim.tail });
+    }
+    return out;
+  };
+  const turning = turn(0.6, 15);
+  assert.ok(turning.at(-1).b < -0.5, `右へ曲がると髭は左へ ${turning.at(-1).b}`);
+  const settle = turn(0, 30);
+  assert.ok(settle.some((l) => l.b > 0.1), '行き過ぎて反対へ揺れる');
+  // 尾の房は髭より遅れて動く
+  const peakB = turning.findIndex((l) => l.b < turning.at(-1).b * 0.5);
+  const peakT = turning.findIndex((l) => l.tail < turning.at(-1).tail * 0.5);
+  assert.ok(peakT > peakB, `尾は遅れる ${peakB} ${peakT}`);
+  // まばたき: 6 秒のうちに目が閉じる時がある
+  let blinked = false;
+  for (let i = 0; i < 80; i++) {
+    d.animate(0.08);
+    d.time += 0.08;
+    if (d.blinking) blinked = true;
+  }
+  assert.ok(blinked);
+});
+
+test('龍の表情: 撃たれると当たった所がびくっと押されて曲がり、揺れながら戻る', async () => {
+  const { Dragon } = await import('../src/dragon.js');
+  const w = new World({ generate: false });
+  const d = new Dragon(w, [0, 60, 0]);
+  w.dragon = d;
+  d.land(0, 200, 0);
+  d.advance = () => {};
+  d.update(0.08, [0, 0, 0]);
+  const k = Math.round(150 / 0.8);
+  const before = [...d.pts[k].c];
+  const { c, B } = d.pts[k];
+  d.shot([c[0] + B[0] * 7, c[1] + B[1] * 7, c[2] + B[2] * 7], 1);
+  d.update(0.08, [0, 0, 0]);
+  const moved = [0, 1, 2].map((i) => d.pts[k].c[i] - before[i]);
+  assert.ok(moved[0] * -B[0] + moved[1] * -B[1] + moved[2] * -B[2] > 1.5, `撃たれた向きへ押される ${moved}`);
+  for (let i = 0; i < 25; i++) d.update(0.08, [0, 0, 0]);
+  assert.ok(Math.hypot(...[0, 1, 2].map((i) => d.pts[k].c[i] - before[i])) < 0.3, '戻る');
+});
+
+test('球体の表情: 動くと進む向きに伸び、止まると行き過ぎてつぶれてから丸に戻る', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  const m = new Monster(w, [p.pos[0] + 200, 30, p.pos[2]]);
+  w.monster = m;
+  m.update = function (dt) { this.time += dt; this.animateBody(dt); };
+  // 横へ速く動かす
+  for (let i = 0; i < 15; i++) {
+    m.c[0] += 18 * 0.08;
+    m.update(0.08);
+  }
+  assert.ok(m.squash.e > 0.25, `伸びる ${m.squash.e}`);
+  assert.ok(Math.abs(m.sAxis[0]) > 0.95, '進む向きに');
+  // 伸びた形: 進む向きの方が長い
+  m.frame();
+  const cells = [];
+  m.shape((x, y, z) => cells.push([x, y, z]));
+  const ext = (a) => Math.max(...cells.map((q) => q[a])) - Math.min(...cells.map((q) => q[a]));
+  assert.ok(ext(0) > ext(2) * 1.3, `x ${ext(0)} z ${ext(2)}`);
+  // 止まる
+  let min = Infinity;
+  for (let i = 0; i < 25; i++) {
+    m.update(0.08);
+    min = Math.min(min, m.squash.e);
+  }
+  assert.ok(min < -0.08, `止まるとつぶれる ${min}`);
+  for (let i = 0; i < 40; i++) m.update(0.08);
+  assert.ok(Math.abs(m.squash.e) < 0.03, '丸に戻る');
+});
+
+test('球体の表情: 光線の前に光線の向きへつぶれて縮み、震えて力をためる。放つ瞬間に伸びて、反動で後ろへ下がる', async () => {
+  const { Monster, OCT } = await import('../src/monster.js');
+  const { w, p } = monsterWorld();
+  const m = new Monster(w, [p.pos[0] + 60, 0, p.pos[2]]);
+  m.c[1] = 10 + 3 + m.R;
+  w.monster = m;
+  m.update(0.08, p);
+  m.startOcta();
+  let charged = null, released = null, x0 = null;
+  for (let t = 0; t < OCT.end; t += 0.08) {
+    m.update(0.08, p);
+    const T = m.stateTime;
+    if (T > OCT.aim - 0.1 && T < OCT.aim && !charged) charged = { e: m.squash.e, k: m.squash.k, wob: Math.hypot(...m.wob), x: m.c[0] };
+    if (T > OCT.aim + 0.25 && !released) released = { e: m.squash.e, x: m.c[0], dir: m.beam.dir };
+  }
+  assert.ok(charged.e < -0.2 && charged.k < 0.9 && charged.wob > 0.2, `ため ${JSON.stringify(charged)}`);
+  assert.ok(released.e > 0.25, `伸びる ${released.e}`);
+  // 光線はプレイヤー（-x の向き）へ。反動で +x へ下がる
+  assert.ok(released.dir[0] < -0.9);
+  assert.ok(released.x - charged.x > 2, `反動 ${charged.x} → ${released.x}`);
 });
 
 // ---- ジャンプと野原 ---------------------------------------------------------

@@ -32,6 +32,22 @@ const FAT = 0xe9b9a0;
 const BONE = 0xeee3c8;
 const GROUNDED = new Set(['walk', 'aim', 'breathe']);
 const NO_HOLES = [];
+const WINDUP = 1.2; // 火を吹く前のため（首を引いて胸に息を吸い込む）秒
+const CROUCH = 0.9; // 飛び立つ前に身をかがめる秒
+// 動きのばね（ゆれ・余韻）。x を target へ近づける。freq: 1 秒に揺れる回数、zeta: 減衰（小さいほど長く揺れる）
+function spring(st, key, target, freq, zeta, dt) {
+  const w = freq * Math.PI * 2;
+  const n = Math.max(1, Math.ceil(dt * w * 2));
+  const h = dt / n;
+  let x = st[key], v = st[key + 'V'] ?? 0;
+  for (let i = 0; i < n; i++) {
+    v += (-w * w * (x - target) - 2 * zeta * w * v) * h;
+    x += v * h;
+  }
+  st[key] = x;
+  st[key + 'V'] = v;
+}
+const ease = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
 const ANGER_TIME = 25; // 撃たれてから怒っている時間（秒）
 const MAX_POCKS = 160;
 
@@ -263,6 +279,18 @@ export class Dragon {
     this.wounds = []; // 切り傷: { s: 頭からの距離, th: 胴のまわりの向き, f: 深さ（直径に対する割合） }
     this.pocks = []; // 弾痕: { s, th, a: 穴の太さ（半径）, d: 皮からの深さ }（ボクセル）
     this.anger = 0; // 撃たれて怒っている残りの時間（秒）。怒っている間はプレイヤーに向かってきて火を吹く
+    // 動きの表情（アニメーション）: どれもばねで動き、勢いの余韻が残る
+    this.anim = {
+      pull: 0, // 頭を引く量（+ で後ろへ、- で前へ突き出す。ボクセル）
+      lift: 0, // 頭を持ち上げる量
+      squat: 0, // 身をかがめる量（+ でかがむ、- で伸び上がる）
+      inhale: 0, // 胸に吸い込んだ息 0..1
+      lagB: 0, lagN: 0, lagF: 0, // 髭・鬣が遅れてなびく量（横・上下・前後）
+      tail: 0, // 尾の房が遅れて振れる量
+    };
+    this.flinches = []; // ひるみ: { s, d: 押される向き, a: 大きさ, t: 経過 }
+    this.blinkAt = 2 + rng() * 3; // 次にまばたきする時刻
+    this.launched = false;
     this.head = [...start];
     this.yaw = 0;
     this.pitch = 0;
@@ -414,7 +442,12 @@ export class Dragon {
       case 'descend': {
         const L = this.landing;
         const dist = Math.hypot(L.x - this.head[0], L.z - this.head[2]);
-        if (dist < 30 && this.head[1] < L.y + HEAD_FLOOR + 12) this.startWalking();
+        if (dist < 30 && this.head[1] < L.y + HEAD_FLOOR + 12) {
+          this.startWalking();
+          // 着地: 勢いで体が沈み込み、頭は前へつんのめってから戻る
+          this.animKick('squatV', 16);
+          this.animKick('pullV', -40);
+        }
         else if (this.modeTime > 35) {
           this.setMode('fly');
           this.nextLanding = 10;
@@ -429,14 +462,29 @@ export class Dragon {
         this.groundStep(dt, around);
         break;
       case 'takeoff':
+        // 飛び立つ前に身を低くかがめてから、勢いよく跳び上がる
+        if (this.modeTime < CROUCH) {
+          this.speed = approach(this.speed, 0, 30 * dt);
+          this.head[0] += Math.sin(this.yaw) * this.speed * dt;
+          this.head[2] += Math.cos(this.yaw) * this.speed * dt;
+          this.launched = false;
+          break;
+        }
+        if (!this.launched) {
+          this.launched = true;
+          this.speed = SPEED * 1.5;
+          this.pitch = MAX_PITCH * 1.7;
+          this.animKick('squatV', -14); // 伸び上がる
+        }
         this.flyStep(dt, around);
-        if (this.modeTime > 3.5) {
+        if (this.modeTime > 3.5 + CROUCH) {
           this.setMode('fly');
           this.nextLanding = 26 + rng() * 14;
         }
         break;
     }
-    this.groundW = approach(this.groundW, GROUNDED.has(this.mode) ? 1 : 0, dt / 1.4);
+    const grounded = GROUNDED.has(this.mode) || (this.mode === 'takeoff' && this.modeTime < CROUCH);
+    this.groundW = approach(this.groundW, grounded ? 1 : 0, dt / 1.4);
     this.rear = approach(this.rear, this.mode === 'breathe' ? 1 : 0, dt / 0.9);
     // 降りたあと、空に残っている胴と尾も数秒かけて地面へ下ろす（頭から順に）
     if (GROUNDED.has(this.mode)) {
@@ -499,7 +547,7 @@ export class Dragon {
     if (this.mode === 'aim') {
       const facing = Math.abs(wrap(wantYaw - this.yaw)) < 0.3;
       if ((facing && Math.hypot(to[0], to[2]) < 85) || this.modeTime > 5) this.setMode('breathe');
-    } else if (this.mode === 'breathe' && this.modeTime > BREATH_TIME + 0.6) {
+    } else if (this.mode === 'breathe' && this.modeTime > WINDUP + BREATH_TIME + 0.6) {
       this.mode = 'walk';
       this.modeTime = 0;
       this.nextBreath = this.walkClock + (angry ? 2.5 + rng() * 2 : 9 + rng() * 6);
@@ -581,6 +629,98 @@ export class Dragon {
     this.head[1] = Math.min(HEIGHT - 16, this.head[1]);
   }
 
+  get blowing() {
+    return this.mode === 'breathe' && this.modeTime >= WINDUP && this.modeTime < WINDUP + BREATH_TIME;
+  }
+
+  animKick(key, v) {
+    this.anim[key] = (this.anim[key] ?? 0) + v;
+  }
+
+  // 動きの表情を 1 回分進める（予備動作・余韻・ゆれ）
+  animate(dt) {
+    const A = this.anim;
+    // 火を吹く: ため（首を引き、胸いっぱいに息を吸う）→ 一気に頭を突き出して吐く → 吐き終わると頭が反動で揺れて戻る
+    let pull = 0, lift = 0, inhale = 0;
+    if (this.mode === 'breathe') {
+      const T = this.modeTime;
+      if (T < WINDUP) {
+        const u = ease(T / WINDUP);
+        pull = 9 * u;
+        lift = 5 * u;
+        inhale = u;
+      } else if (T < WINDUP + BREATH_TIME) {
+        const u = (T - WINDUP) / BREATH_TIME;
+        pull = -6 + 3 * u;
+        inhale = 1 - u;
+        this.recoiled = false;
+      } else if (!this.recoiled) {
+        // 吐き終わり: 反動で頭が後ろへ揺り戻される
+        this.recoiled = true;
+        this.animKick('pullV', 30);
+      }
+    }
+    // 降りる直前: 頭を起こして勢いを殺す
+    if (this.mode === 'descend' && this.landing) {
+      const d = Math.hypot(this.landing.x - this.head[0], this.landing.z - this.head[2]);
+      if (d < 60) {
+        const u = 1 - d / 60;
+        lift = 7 * u;
+        pull = 4 * u;
+      }
+    }
+    const takeoffCrouch = this.mode === 'takeoff' && this.modeTime < CROUCH;
+    const snapping = this.blowing; // 吐く瞬間は鋭く、そのあとはゆったり揺れる
+    spring(A, 'pull', pull, snapping ? 3 : 1.3, snapping ? 0.3 : 0.2, dt);
+    spring(A, 'lift', lift, 1.2, 0.35, dt);
+    spring(A, 'squat', takeoffCrouch ? ease(this.modeTime / (CROUCH * 0.7)) : 0, 1.4, 0.3, dt);
+    A.inhale = this.mode === 'breathe' ? inhale : approach(A.inhale, 0, dt * 2);
+    // 髭・鬣・尾の房: 頭の向きの変わり方や速さの変化に遅れてなびき、止まっても揺れが残る
+    const yawRate = wrap(this.yaw - (this.prevYaw ?? this.yaw)) / dt;
+    const pitchRate = (this.pitch - (this.prevPitch ?? this.pitch)) / dt;
+    const acc = (this.speed - (this.prevSpeed ?? this.speed)) / dt;
+    this.prevYaw = this.yaw;
+    this.prevPitch = this.pitch;
+    this.prevSpeed = this.speed;
+    const clampV = (v, m) => Math.max(-m, Math.min(m, v));
+    spring(A, 'lagB', clampV(-yawRate * 1.8, 1.3), 1.1, 0.22, dt);
+    spring(A, 'lagN', clampV(-pitchRate * 1.5 - A.liftV * 0.04, 1), 1.0, 0.22, dt);
+    spring(A, 'lagF', clampV(-acc / 35, 0.7), 0.9, 0.25, dt);
+    spring(A, 'tail', clampV(-yawRate * 2.2, 1.5), 0.6, 0.2, dt);
+    // ひるみ
+    for (const f of this.flinches) f.t += dt;
+    this.flinches = this.flinches.filter((f) => f.t < 1.4);
+    // まばたき（ときどき 2 回続けて）
+    if (this.time > this.blinkAt + 0.2) this.blinkAt = this.time + (this.rng() < 0.2 ? 0.25 : 2.5 + this.rng() * 4);
+  }
+
+  get blinking() {
+    return this.time >= this.blinkAt && this.time < this.blinkAt + 0.2;
+  }
+
+  // 撃たれた・切られた所で、体がびくっとよじれ、頭が跳ね上がる
+  flinch(p, strength = 1) {
+    const q = this.nearestSpine(p);
+    if (!q) return;
+    const d = norm(sub(q.c, p));
+    const old = this.flinches.find((f) => f.t < 0.12 && Math.abs(f.s - q.s) < 20);
+    if (old) old.a = Math.min(5, old.a + strength * 0.6);
+    else this.flinches.push({ s: q.s, d, a: Math.min(5, 2.5 * strength), t: 0 });
+    if (this.flinches.length > 6) this.flinches.shift();
+    if ((this.flinchHead ?? -1) < this.time - 0.15) {
+      this.flinchHead = this.time;
+      this.animKick('liftV', 22 * strength);
+      this.animKick('pullV', 14 * strength);
+      this.blinkAt = this.time; // 思わず目をつぶる
+    }
+  }
+
+  // 胸のふくらみ（息を吸う・ふだんの呼吸）。胴の太さに掛ける
+  swell(s) {
+    const bell = Math.exp(-(((s - 75) / 45) ** 2));
+    return 1 + bell * (this.anim.inhale * 0.3 + 0.06 * Math.sin(this.time * 1.5));
+  }
+
   // 軌跡に沿って、頭から距離 s の位置・向き・傾きを求める
   spine() {
     const pts = [];
@@ -615,8 +755,27 @@ export class Dragon {
         const r = radiusAt(s);
         const off = s < 40 ? HEAD_FLOOR + (r + BELLY - HEAD_FLOOR) * (s / 40) : r + BELLY;
         const lift = this.rear * 18 * Math.max(0, 1 - s / 90) ** 1.6;
-        const want = this.floorAt(center[0], center[2]) + off + lift;
+        // かがむと体が沈み、頭は大きく下がる（伸び上がるときは逆）
+        const squat = this.anim.squat * (s < 50 ? 2 + 6 * (1 - s / 50) : 2);
+        const want = this.floorAt(center[0], center[2]) + off + lift - squat;
         center[1] += (want - center[1]) * w;
+      }
+      // 頭を引く・突き出す・持ち上げる（首の付け根に向かって弱まる）
+      if (s < 80) {
+        const k = (1 - s / 80) ** 2;
+        const pl = this.anim.pull * k, lf = this.anim.lift * k;
+        center[0] -= T[0] * pl;
+        center[1] -= T[1] * pl - lf;
+        center[2] -= T[2] * pl;
+      }
+      // ひるみ: 当たった所が押されるように曲がり、揺れながら戻る
+      for (const f of this.flinches) {
+        const g = Math.exp(-(((s - f.s) / 22) ** 2));
+        if (g < 0.02) continue;
+        const a = f.a * g * Math.exp(-4 * f.t) * Math.cos(11 * f.t);
+        center[0] += f.d[0] * a;
+        center[1] += f.d[1] * a;
+        center[2] += f.d[2] * a;
       }
       pts.push({ s, c: center, T, N, B, w });
     }
@@ -681,7 +840,7 @@ export class Dragon {
     for (let k = 0; k < rings.length; k++) {
       const { s, c, T, N, B } = rings[k];
       if (s < 3 || !keep(s) || far(c, 20)) continue;
-      const r = radiusAt(s);
+      const r = radiusAt(s) * this.swell(s);
       const band = Math.floor(s / 2.2);
       // 急に曲がる所では、曲がりの外側がとなりの点の受け持ちから外れないよう、受け持つ厚みを広げる
       let bend = 0;
@@ -792,7 +951,7 @@ export class Dragon {
         const k = (s - (DRAGON_LENGTH - 30)) / 30;
         const len = 2 + 9 * Math.sin(k * Math.PI) ** 0.7;
         for (const [dn, db] of [[1, 0], [-1, 0], [0.7, 0.7], [0.7, -0.7], [-0.6, 0.8], [-0.6, -0.8]]) {
-          const flick = Math.sin(t * 6 + s * 0.5 + dn * 3) * 1.2;
+          const flick = Math.sin(t * 6 + s * 0.5 + dn * 3) * 1.2 + this.anim.tail * 4;
           for (let h = 0; h <= len; h += 0.5) {
             const a = dn * (r + h), b = db * (r + h) + flick * (h / len);
             putXYZ(c[0] + N[0] * a + B[0] * b, c[1] + N[1] * a + B[1] * b, c[2] + N[2] * a + B[2] * b, h > len * 0.6 ? C.finTip : C.fin);
@@ -890,8 +1049,10 @@ export class Dragon {
         }
       }
     }
-    // 牙・目・角（細かいので点で置く）
-    for (const [f, u, l, color] of this.headModel.points) {
+    // 牙・目・角（細かいので点で置く）。まばたきの間は、目をまぶた（鱗の色）でふさぐ
+    const blink = this.blinking;
+    for (const [f, u, l, color0] of this.headModel.points) {
+      const color = blink && (color0 === C.eye || color0 === C.pupil) ? C.ridge : color0;
       const y = Math.floor(hc[1] + hT[1] * f + hN[1] * u + hB[1] * l);
       if (y < 1 || y >= HEIGHT) continue;
       const x = Math.floor(hc[0] + hT[0] * f + hN[0] * u + hB[0] * l);
@@ -905,9 +1066,13 @@ export class Dragon {
       let px = h0.c[0] + T0[0] * 26 - N0[0] + B0[0] * side * 5;
       let py = h0.c[1] + T0[1] * 26 - N0[1] + B0[1] * side * 5;
       let pz = h0.c[2] + T0[2] * 26 - N0[2] + B0[2] * side * 5;
+      const A = this.anim;
       for (let i = 0; i < 90; i++) {
-        const b = side * (0.35 + Math.sin(t * 3 + i * 0.12) * 0.35), n = -0.25 + Math.cos(t * 2 + i * 0.1) * 0.2;
-        const dx = -T0[0] + B0[0] * b + N0[0] * n, dy = -T0[1] + B0[1] * b + N0[1] * n, dz = -T0[2] + B0[2] * b + N0[2] * n;
+        // 先へいくほど、頭の動きに遅れてなびく
+        const k = i / 90;
+        const b = side * (0.35 + Math.sin(t * 3 + i * 0.12) * 0.35) + A.lagB * k * 1.4, n = -0.25 + Math.cos(t * 2 + i * 0.1) * 0.2 + A.lagN * k * 1.2;
+        const f = 1 - A.lagF * k * 1.6;
+        const dx = -T0[0] * f + B0[0] * b + N0[0] * n, dy = -T0[1] * f + B0[1] * b + N0[1] * n, dz = -T0[2] * f + B0[2] * b + N0[2] * n;
         const l = 0.5 / (Math.hypot(dx, dy, dz) || 1);
         px += dx * l;
         py += dy * l;
@@ -925,8 +1090,9 @@ export class Dragon {
         let pz = c[2] + N[2] * r * 0.8 + B[2] * side * r * 0.6;
         const len = 9 * (1 - s / 90);
         for (let h = 0; h < len; h += 0.5) {
-          const b = side * 0.6 + Math.sin(t * 4 + s * 0.3 + h * 0.4) * 0.5;
-          const dx = N[0] * 0.8 - T[0] + B[0] * b, dy = N[1] * 0.8 - T[1] + B[1] * b, dz = N[2] * 0.8 - T[2] + B[2] * b;
+          const b = side * 0.6 + Math.sin(t * 4 + s * 0.3 + h * 0.4) * 0.5 + this.anim.lagB * (h / len) * 1.2;
+          const up = 0.8 + this.anim.lagN * (h / len) * 0.8;
+          const dx = N[0] * up - T[0] + B[0] * b, dy = N[1] * up - T[1] + B[1] * b, dz = N[2] * up - T[2] + B[2] * b;
           const l = 0.5 / (Math.hypot(dx, dy, dz) || 1);
           px += dx * l;
           py += dy * l;
@@ -941,6 +1107,7 @@ export class Dragon {
   update(dt, around) {
     this.events = [];
     this.advance(dt, around);
+    this.animate(dt);
     // 細かく描く範囲の中心（画面の側が決める。なければプレイヤーのまわり）
     this.drawFocus = this.world.drawCenter ?? around;
     this.version = (this.version ?? 0) + 1;
@@ -952,7 +1119,7 @@ export class Dragon {
     this.skipped = !near && !this.skipped;
     if (!this.skipped) this.draw();
     // 火を吹く: 口から相手へ向けて、少し首を振りながら
-    if (this.mode === 'breathe' && this.rear > 0.55 && this.modeTime < BREATH_TIME) {
+    if (this.blowing) {
       const { mouth, dir } = this.mouth();
       this.fire.breathe(mouth, dir, 16);
     }
@@ -987,6 +1154,7 @@ export class Dragon {
   // 戻り値: null（胴に当たっていない）/ { s, f, severed }
   wound(p, depth = 2.2, frac = null) {
     if (!this.pts) return null;
+    this.flinch(p, 1.2);
     let best = null;
     let bd = Infinity;
     for (const q of this.pts) {
@@ -1088,6 +1256,7 @@ export class Dragon {
   shot(p, power) {
     const q = this.nearestSpine(p);
     if (!q) return null;
+    this.flinch(p, 0.5 + power);
     const r = radiusAt(q.s);
     const v = sub(p, q.c);
     if (Math.hypot(...v) > r + 2.5) return null;
@@ -1195,7 +1364,7 @@ export class Dragon {
     const target = this.fireTarget ?? add(mouth, mul(T, 40));
     let aim = norm(sub(target, mouth));
     aim = norm(add(mul(T, 0.3), mul(aim, 0.7))); // 首の向きから大きくは外れない
-    const sweep = Math.sin(this.modeTime * 2.4) * 0.14;
+    const sweep = Math.sin((this.modeTime - WINDUP) * 2.4) * 0.14;
     const dir = [aim[0] * Math.cos(sweep) + aim[2] * Math.sin(sweep), aim[1], -aim[0] * Math.sin(sweep) + aim[2] * Math.cos(sweep)];
     return { mouth, dir };
   }
