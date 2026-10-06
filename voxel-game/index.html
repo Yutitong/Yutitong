@@ -157,6 +157,7 @@
   .dpad [data-chop] { grid-area: 3 / 3; font-size: 14px; }
   .dpad [data-tool] { grid-area: 1 / 1; font-size: 12px; }
   .dpad [data-place] { grid-area: 3 / 1; font-size: 12px; }
+  .dpad [data-jump] { grid-area: 1 / 3; font-size: 14px; }
   .dpad [data-run][aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 
   .panel {
@@ -281,6 +282,7 @@
       <button type="button" data-chop aria-label="道具を使う">斧</button>
       <button type="button" data-tool aria-label="道具を持ち替える（斧・シャベル・太刀・ショットガン）">持替</button>
       <button type="button" data-place aria-label="土を盛る">盛る</button>
+      <button type="button" data-jump aria-label="ジャンプ">跳</button>
     </div>
   </div>
 
@@ -305,7 +307,7 @@
       <p class="rule-text">動く側の優先度が<strong>相手より高い</strong>ときだけ押し出せる。同じか低ければ止まる。押し出しは<strong>1段まで</strong>（押す相手の後ろに物があると押せない）。</p>
       <p class="rule-text">地形は丘と平地に、尾根の鋭い高さ 40〜60m の山。山頂の近くから川が谷を下り、平地の池や川へ流れ込む。上流〜中流は大きな丸い花崗岩が転がる渓流で、岩の間から水が落ちて澄んだ淵になる。岩には苔、岸にはシダ、川の上には木々が枝を張り出す。下流は川幅が広がり、丸い小石の川底をゆったり流れる。遠くの山は粗いブロックで描く。</p>
       <p class="rule-text">プレイヤーのまわりの水は本当に流れる。高い水面から低い水面へ水が移り、淵の縁や岩の間からあふれて下の淵へ落ちる。水面の泡は流れに乗って下流へ動く。倒木などで流れをせき止めると、上流の水位が上がり、あふれた所から別の所へ流れる。</p>
-      <p class="rule-text">2段（30cm）までの段差は歩いて（岩の上も）登り降りでき、それより高い所からは落ちる。水は一番弱く、人が入ると場所をゆずる（胸より深い所には入らない）。</p>
+      <p class="rule-text">2段（30cm）までの段差は歩いて（岩の上も）登り降りでき、それより高い所からは落ちる。ジャンプすると 1m ほどの段差や川の岩に飛び乗れる。水は一番弱く、人が入ると場所をゆずる（胸より深い所には入らない）。</p>
       <p class="rule-text">空には全長およそ 60m の龍がいる。頭が進んだ道すじを胴がなぞり、うねりながら森の上を回る。ときどき開けた所や水面へ舞い降りて地面を這うように歩き、立ち止まっては近くの木へ火を吹く。しばらくするとまた飛び立つ。</p>
       <p class="rule-text">歩く龍は行く手の人・NPC を押しのける（地形・木・岩は避ける）。炎は空いた所だけを飛び、当たった木の葉は燃え落ち、幹や地面の草は黒く焦げる。人は焼けない。</p>
       <p class="rule-text">プレイヤーは右手に斧を持っている。木の幹に何度か斧を入れると、反対側へ倒れて倒木と切り株が残る。龍を切りつけると、刃の通った所の鱗が V 字に削れて肉が見える。同じ所を切り続けると、そこから尾の側が切り落とされて地面へ落ちる（首は切り落とせない）。</p>
@@ -325,7 +327,7 @@
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
         <label class="check"><input type="checkbox" id="watchDragon">カメラで龍を追う</label>
       </div>
-      <p class="keys" style="margin-top:10px">一人称視点で始まる。画面をクリックするとマウスで上下左右どこでも見回せる（<kbd>Esc</kbd> で解除。スマホは画面をドラッグ）。<kbd>V</kbd> で三人称視点と切り替え。<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（視線の向き基準。どの角度へも歩ける。<kbd>A</kbd><kbd>D</kbd> で横歩き）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> / 左クリックで道具を使う（視線の先へ。斧を振る・シャベルで掘る・太刀で斬る・照準へ撃つ。押し続けると続ける）、<kbd>G</kbd> / 右クリックで土を盛る、三人称ではドラッグで視点回転・ホイールでズーム、<kbd>Space</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
+      <p class="keys" style="margin-top:10px">一人称視点で始まる。画面をクリックするとマウスで上下左右どこでも見回せる（<kbd>Esc</kbd> で解除。スマホは画面をドラッグ）。<kbd>V</kbd> で三人称視点と切り替え。<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（視線の向き基準。どの角度へも歩ける。<kbd>A</kbd><kbd>D</kbd> で横歩き）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>Space</kbd> でジャンプ（高さ 1m ほど）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> / 左クリックで道具を使う（視線の先へ。斧を振る・シャベルで掘る・太刀で斬る・照準へ撃つ。押し続けると続ける）、<kbd>G</kbd> / 右クリックで土を盛る、三人称ではドラッグで視点回転・ホイールでズーム、<kbd>P</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
 
     <section>

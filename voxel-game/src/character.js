@@ -22,7 +22,9 @@ const SLASH_TIME = 0.5; // 太刀でひと太刀の時間（秒）
 const SHOOT_TIME = 0.6; // ショットガンを 1 発撃って、次を撃てるようになるまで（秒）
 export const MAX_STEP = 2; // 歩いて登り降りできる段差（ボクセル ≈ 30cm）
 const GRAVITY = 65; // ボクセル/秒²（≈ 9.8 m/s²）
+export const JUMP_SPEED = 30; // 跳び上がる速さ（ボクセル/秒）。高さ v²/2g ≈ 7 ボクセル（≈ 1m）
 const DOWN = [0, -1, 0];
+const UP = [0, 1, 0];
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -65,7 +67,22 @@ export function initCharacter(e, rng = Math.random) {
 }
 
 // 足元が空いていれば重力で落ちる。着地したら落ちた高さに応じて膝を曲げる。
+// 跳び上がっている間（vy < 0）は、だんだん遅くなりながら上がる。頭が何かにぶつかったら落ち始める
 function applyGravity(world, e, dt) {
+  if (e.vy < 0) {
+    e.vy += GRAVITY * dt;
+    e.fall += Math.min(0, e.vy) * dt;
+    while (e.fall <= -1) {
+      if (!world.tryMove(e.id, UP, { push: false }).ok) {
+        e.vy = 0;
+        e.fall = 0;
+        break;
+      }
+      e.fall += 1;
+    }
+    if (e.vy >= 0) e.fall = Math.max(0, e.fall);
+    return true;
+  }
   if (world.canMove(e.id, DOWN)) {
     e.vy = Math.min(e.vy + GRAVITY * dt, 40);
     e.fall += e.vy * dt;
@@ -109,7 +126,8 @@ function stepOnce(world, e, d3) {
 
 // 1ティック分キャラを動かす。
 // input: { dir: [dx, dz]（どの向きでもよい。長さは問わない）または null, run: boolean,
-//   face: 体を向ける向き（一人称の視線。なければ進む向きへ回る）, pitch: 視線の上下（道具を視線の先へ向ける。なければ null） }
+//   face: 体を向ける向き（一人称の視線。なければ進む向きへ回る）, pitch: 視線の上下（道具を視線の先へ向ける。なければ null）,
+//   jump: 跳ぶ（立っているときだけ。高さ ≈ 1m） }
 // report(e, result) は移動の結果（押し出し・止められた）を出来事として記録する。
 // input.tool で道具を持ち替える（'axe' | 'shovel' | 'sword' | 'gun'）。input.chop が true なら持っている道具を使う
 // （斧なら振る、シャベルなら掘る、太刀なら振り下ろしと横薙ぎを交互に、ショットガンなら撃つ）。input.place が true ならシャベルで土を盛る。
@@ -152,6 +170,13 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   pose.tool = tool;
   pose.action = e.action ?? 'chop';
   pose.carry = e.soil > 0 ? 1 : 0;
+  // ジャンプ: 地面（や物の上）に立っているときだけ跳べる
+  if (input.jump && e.vy === 0 && !world.canMove(e.id, DOWN)) {
+    e.vy = -JUMP_SPEED;
+    e.fall = 0;
+    e.fallen = 0;
+    e.jumps = (e.jumps ?? 0) + 1;
+  }
   const airborne = applyGravity(world, e, dt);
   let dir = null;
   if (input.dir && (input.dir[0] || input.dir[1])) {
@@ -259,7 +284,7 @@ export function updateCharacter(world, e, input, dt, rng, report, onChop) {
   pose.phase = (pose.phase + (Math.max(e.speed, strain ? 2.5 : 0) * dt) / stride) % 1;
   pose.push = approach(pose.push, e.pushing > 0 ? 1 : 0, dt * 6);
   pose.crouch = approach(pose.crouch, 0, dt * 3);
-  pose.air = approach(pose.air, airborne && e.vy > 12 ? 1 : 0, dt * 6);
+  pose.air = approach(pose.air, airborne && (e.vy > 12 || e.vy < 0) ? 1 : 0, dt * 6); // 跳んでいる間・速く落ちる間は宙の姿勢
 
   // 立ち止まっているとき: 呼吸・まばたき・周りを見る・重心移動
   const still = 1 - pose.walk;

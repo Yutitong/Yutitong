@@ -10,7 +10,7 @@
 import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, humanColors } from './humanoid.js';
 import { initCharacter, updateCharacter } from './character.js';
 import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
-import { hash3, mulberry32, shade } from './rng.js';
+import { hash3, mulberry32 } from './rng.js';
 import { Terrain, groundColor, waterColor, fallColor, rockInside, boulderColor, fernAt, fernCells, WATER_LEVEL } from './terrain.js';
 import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
 import { chop, dropFalling } from './axe.js';
@@ -609,23 +609,7 @@ function paintPlantsInto(world, c, cols) {
   }
 }
 
-function rockVoxels(rng) {
-  const v = [];
-  const rx = 2.6 + rng() * 1.2;
-  const rz = 2.6 + rng() * 1.2;
-  const ry = 2.5 + rng() * 2;
-  for (let y = 0; y < 7; y++) {
-    for (let z = 0; z < 8; z++) {
-      for (let x = 0; x < 8; x++) {
-        const d = ((x - 3.5) / rx) ** 2 + ((y - 1) / ry) ** 2 + ((z - 3.5) / rz) ** 2;
-        if (d <= 1) v.push([x, y, z, shade(0x8a8f98, 0.85 + rng() * 0.3)]);
-      }
-    }
-  }
-  return v;
-}
-
-// チャンクの中に物を置く。物はそのチャンクの内側に収まるように、地面の上に置く。
+// チャンクの中に NPC を置く。そのチャンクの内側に収まるように、地面の上に置く。
 function generateChunk(world, c) {
   if (c.cx === 0 && c.cz === 0) return; // 出発地点は空けておく
   const rng = mulberry32(hash3(c.cx, c.cz, world.seed));
@@ -637,16 +621,8 @@ function generateChunk(world, c) {
   const tries = rng() < 0.5 ? 0 : 1 + Math.floor(rng() * 1.6);
   for (let t = 0; t < tries; t++) {
     const r = rng();
-    if (r < 0.35) {
-      // 岩は地面に半分埋まる（地面と重なるセルは削る）
-      const [x, z] = pick(8);
-      const f = world.footprint(x, z, 8, 8);
-      const voxels = rockVoxels(rng);
-      if (f.wet) continue;
-      const pos = [x, f.lo - 1, z];
-      const free = voxels.filter(([vx, vy, vz]) => world.ownerAt(x + vx, pos[1] + vy, z + vz) === EMPTY);
-      if (free.length) world.spawn({ kind: 'terrain', name: '岩', priority: PRIORITY.TERRAIN, pos, voxels: free });
-    } else if (r < 0.55) {
+    // 野原の小さな岩は置かない（歩くときに邪魔なので。川の岩は terrain.js が置く）
+    if (r >= 0.35 && r < 0.55) {
       const palette = PALETTES.npc[Math.floor(rng() * PALETTES.npc.length)];
       const yaw = Math.floor(rng() * 8) * (Math.PI / 4);
       // 森の中は木の枝で場所がふさがりやすいので、何か所か試す

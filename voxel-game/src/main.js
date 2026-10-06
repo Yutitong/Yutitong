@@ -476,6 +476,8 @@ let chopPending = false; // 次のティックで1回振る
 let placeHeld = false; // G を押している間は土を盛り続ける
 let placePending = false;
 let toolWanted = null; // 次のティックで持ち替える道具
+let jumpHeld = false; // Space を押している間は、着地するたびに跳ぶ
+let jumpPending = false;
 const TOOL_KEYS = { Digit1: 'axe', Digit2: 'shovel', Digit3: 'sword', Digit4: 'gun' };
 const TOOL_NAMES = { axe: '斧', shovel: 'シャベル', sword: '太刀', gun: 'ショットガン' };
 
@@ -501,12 +503,13 @@ function playerInput() {
   const chop = chopHeld || chopPending;
   const place = placeHeld || placePending;
   const tool = toolWanted;
-  chopPending = placePending = false;
+  const jump = jumpHeld || jumpPending;
+  chopPending = placePending = jumpPending = false;
   toolWanted = null;
   const moving = Boolean(fwd || side);
   const fp = firstPerson && !watchDragon;
   return {
-    dir: moving ? [dx, dz] : null, run: running || runButton, chop, place, tool,
+    dir: moving ? [dx, dz] : null, run: running || runButton, chop, place, tool, jump,
     // 一人称: 体はいつも視線の向きを向き、道具は視線の先（上下も）へ使う。
     // 三人称: 立ち止まって道具を使うときは、カメラの向いている方を向く
     face: fp ? lookYaw : !moving && (chop || place) ? yaw : null,
@@ -541,6 +544,10 @@ window.addEventListener('keydown', (e) => {
     chopPending = true;
   } else if (e.code === 'Space') {
     e.preventDefault();
+    jumpHeld = true;
+    jumpPending = true;
+  } else if (e.code === 'KeyP') {
+    e.preventDefault();
     setPaused(!paused);
   } else if (e.code === 'Period' && paused) {
     tick();
@@ -551,17 +558,23 @@ window.addEventListener('keyup', (e) => {
   if (KEYMAP[e.code]) release(KEYMAP[e.code]);
   if (e.code === 'KeyF') chopHeld = false;
   if (e.code === 'KeyG') placeHeld = false;
+  if (e.code === 'Space') jumpHeld = false;
 });
 window.addEventListener('blur', () => {
   held.length = 0;
   running = false;
   chopHeld = false;
   placeHeld = false;
+  jumpHeld = false;
 });
 
 document.querySelector('[data-tool]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();
   toolWanted = { axe: 'shovel', shovel: 'sword', sword: 'gun', gun: 'axe' }[player.tool]; // 斧 → シャベル → 太刀 → ショットガン
+});
+document.querySelector('[data-jump]').addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  jumpPending = true;
 });
 document.querySelector('[data-place]').addEventListener('pointerdown', (e) => {
   e.stopPropagation();

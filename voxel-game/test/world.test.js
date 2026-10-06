@@ -1374,3 +1374,42 @@ test('一人称: シャベルは視線の先の地面を掘る', () => {
   assert.ok(w2.groundAt(Math.floor(cx), Math.floor(cz)) < 10, '見ていた所に穴があいた');
   assertConsistent(w2);
 });
+
+// ---- ジャンプと野原 ---------------------------------------------------------
+
+test('ジャンプ: 1m ほど跳び上がって着地する。立っていないときは跳べない', () => {
+  const w = flat();
+  const p = spawnPlayer(w);
+  const y0 = p.pos[1];
+  let top = y0;
+  step(w, { dir: null, run: false, jump: true });
+  assert.ok(p.vy < 0, '跳び上がる');
+  // 宙にいる間はもう一度は跳べない
+  for (let i = 0; i < 40; i++) {
+    step(w, { dir: null, run: false, jump: true });
+    top = Math.max(top, p.pos[1]);
+    if (p.pos[1] === y0 && p.vy === 0) break;
+  }
+  assert.ok(top - y0 >= 6 && top - y0 <= 8, `高さ ${top - y0} ボクセル`);
+  assert.equal(p.jumps, 1);
+  for (let i = 0; i < 30; i++) step(w, idle);
+  assert.equal(p.pos[1], y0, '着地した');
+  assertConsistent(w);
+});
+
+test('ジャンプ: 歩いては登れない 5 段の段差に、跳んで飛び乗れる', () => {
+  const w = new World({ generate: false, heightAt: (x) => (x >= 30 ? 6 : 1) });
+  const p = spawnPlayer(w);
+  for (let i = 0; i < 60; i++) step(w, walkInput(1, 0));
+  assert.ok(p.pos[0] + 9 <= 30 && p.pos[1] === 1, '歩いては登れない');
+  for (let i = 0; i < 40; i++) step(w, { dir: [1, 0], run: false, jump: i === 0 });
+  assert.ok(p.pos[1] === 6 && p.pos[0] >= 30, `飛び乗った ${p.pos}`);
+  assertConsistent(w);
+});
+
+test('野原には小さな岩を置かない（川の岩はある）', () => {
+  const w = new World({ seed: 20261004 });
+  ensureAround(w, 0, 0, 4);
+  const rocks = [...w.entities.values()].filter((e) => e.name === '岩' && e.offsets.length);
+  assert.equal(rocks.length, 0);
+});
