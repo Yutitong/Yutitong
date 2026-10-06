@@ -1537,3 +1537,51 @@ test('巨大樹: 斧で切り倒すと切り株が残り、100m の倒木が横�
   assert.equal(w.ownerAt(x + 1, y, s.z), g.id);
   assert.ok(w.colorAt(x + 1, y, s.z) !== 0);
 });
+
+// ---- チャンクを別のスレッドで作る -----------------------------------------------
+
+test('別のスレッドで作ったチャンクは、その場で作ったチャンクと同じ。切った木や巨大樹の切り株も反映される', async () => {
+  const { packChunk, installChunk } = await import('../src/world.js');
+  const { G, specs } = await groveWorld();
+  const seed = 20261004;
+  const ref = new World({ seed });
+  const main = new World({ seed });
+  const wk = new World({ seed });
+  wk.noEntities = true;
+  const sent = new Set();
+  const ident = (w, o) => {
+    if (o <= SOIL_ID) return o;
+    const e = w.entities.get(o);
+    return e?.tree ? `tree:${e.tree.spec.key}` : e?.giant ? `giant:${e.giant.spec.key}` : e?.kind;
+  };
+  const compare = (cx, cz) => {
+    const c = wk.chunkAt(cx, cz);
+    const msg = structuredClone(packChunk(wk, c, sent));
+    wk.chunks.delete(c.key);
+    const mc = installChunk(main, msg);
+    const rc = ref.chunkAt(cx, cz);
+    assert.equal(mc.base, rc.base);
+    assert.equal(mc.owner.length, rc.owner.length);
+    let diff = 0;
+    for (let i = 0; i < rc.owner.length; i++) if (ident(main, mc.owner[i]) !== ident(ref, rc.owner[i]) || mc.color[i] !== rc.color[i]) diff++;
+    assert.equal(diff, 0, `チャンク ${cx},${cz}`);
+  };
+  for (const [cx, cz] of [[0, 0], [1, 0], [3, -2], [Math.floor(G[0] / CHUNK), Math.floor(G[1] / CHUNK)]]) compare(cx, cz);
+  // 両方の世界で同じ巨大樹に穴をあけてから、そのチャンクを作る（変更は受け取った側で塗り直される）
+  const { eraseGiantCell, giantSpec, getGiant } = await import('../src/giant.js');
+  const s = specs[0];
+  const cx = Math.floor(s.x / CHUNK), cz = Math.floor(s.z / CHUNK);
+  for (const w of [ref, main]) {
+    w.chunkAt(cx - 3, cz); // 先にとなりのチャンクを作っておく（穴をあけるチャンクは、まだ作らない）
+  }
+  const y = s.y + 40;
+  for (const w of [ref, main]) {
+    const g = getGiant(w, giantSpec(w, s.gx, s.gz));
+    const c = w.chunkAt(cx, cz);
+    let x = s.x - 60;
+    while (w.ownerAt(x, y, s.z) !== g.id) x++;
+    eraseGiantCell(w, g, x, y, s.z);
+    w.chunks.delete(c.key); // 片付けて、もう一度作る
+  }
+  compare(cx, cz);
+});

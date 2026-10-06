@@ -552,6 +552,26 @@ export function paintGiantsInto(world, c) {
   }
 }
 
+// 別のスレッドで作ったチャンクには、巨大樹は「何も手を加えていない形」で塗られている。
+// この世界で切ったり穴をあけたりした巨大樹は塗り直し、倒木も塗る
+export function refreshGiantsIn(world, c, giants) {
+  for (const g of giants) {
+    if (!(g.cut || g.edits.size || g.fallen || g.falling)) continue;
+    for (let i = 0; i < c.owner.length; i++) {
+      if (c.owner[i] !== g.id) continue;
+      c.owner[i] = EMPTY;
+      c.color[i] = 0;
+    }
+    paintUpright(c, g, false);
+    if (g.edits.size) applyEdits(c, g, false);
+  }
+  for (const g of world.giants?.values() ?? []) {
+    if (!g.fallen) continue;
+    paintFallen(c, g, false);
+    if (g.edits.size) applyEdits(c, g, false);
+  }
+}
+
 // ---- 切る・焼く・消す ---------------------------------------------------------------
 
 // セル (x, y, z) の、木が立っていたときの相対位置（倒木なら回して戻す）

@@ -394,7 +394,11 @@ function getTree(world, spec) {
   if (spec.species === 'conifer') buildConifer(shape, spec.scale);
   else if (spec.species === 'birch') buildBirch(shape, spec.scale);
   else buildBroadleaf(shape, spec.scale, spec.species === 'broad', spec.lean);
-  tree = finalize(shape, spec);
+  return registerTree(world, finalize(shape, spec));
+}
+
+function registerTree(world, tree) {
+  const spec = tree.spec;
   const e = {
     id: world.nextId++, kind: 'terrain', name: NAMES[spec.species], priority: Infinity,
     pos: [spec.x, 1, spec.z], tree, offsets: new Int16Array(0), colors: new Uint32Array(0),
@@ -403,6 +407,58 @@ function getTree(world, spec) {
   world.entities.set(e.id, e);
   world.trees.set(spec.key, tree);
   return tree;
+}
+
+// ---- チャンクを別のスレッドで作るとき ----------------------------------------------------
+
+// 木の形を、ほかのスレッドへ送れる形にする（葉の塊の Map は配列に直す）
+export function packTree(tree) {
+  return {
+    spec: tree.spec, xs: tree.xs, ys: tree.ys, zs: tree.zs, color: tree.color, clumpOf: tree.clumpOf, gone: tree.gone,
+    height: tree.height, lift: tree.lift, buckets: [...tree.buckets],
+    clumps: tree.clumps.map((cl) => ({
+      cells: cl.cells, keys: Int32Array.from(cl.base.keys()), vals: Uint32Array.from(cl.base.values()), wx: cl.wx, wz: cl.wz, amp: cl.amp,
+    })),
+  };
+}
+
+// 送られてきた木の形を、この世界の木として登録する（もうあればそれを使う）
+export function adoptTree(world, data) {
+  const had = world.trees.get(data.spec.key);
+  if (had) return had;
+  const clumps = data.clumps.map((cl) => {
+    const base = new Map();
+    for (let k = 0; k < cl.keys.length; k++) base.set(cl.keys[k], cl.vals[k]);
+    return { cells: cl.cells, base, ox: 0, oz: 0, level: 0, wx: cl.wx, wz: cl.wz, amp: cl.amp };
+  });
+  return registerTree(world, {
+    spec: data.spec, clumps, xs: data.xs, ys: data.ys, zs: data.zs, color: data.color, clumpOf: data.clumpOf, gone: data.gone,
+    buckets: new Map(data.buckets), height: data.height, lift: data.lift,
+  });
+}
+
+// 区画の番号（key）の木を、この世界で作る（送られてこなかったとき）
+export function treeByKey(world, key) {
+  const spec = regionSpec(world, Math.floor(key / 65536) - 32768, (key % 65536) - 32768);
+  return spec ? getTree(world, spec) : null;
+}
+
+// 別のスレッドで作ったチャンクには、木は「何も手を加えていない形」で塗られている。
+// この世界で切ったり焼いたり、風で葉がずれていたりする木は、その木のセルを塗り直す
+export function refreshTreesIn(chunk, trees) {
+  for (const tree of trees) {
+    if (!(tree.cut || tree.felled || tree.burnt || tree.clumps.some((cl) => cl.ox || cl.oz))) continue;
+    const list = tree.buckets.get(chunk.key);
+    if (!list) continue;
+    for (const i of list) {
+      const y = tree.ys[i];
+      if (y < chunk.base || (y - chunk.base + 1) * CHUNK * CHUNK > chunk.owner.length) continue;
+      const ci = chunk.index(tree.xs[i] - chunk.cx * CHUNK, y, tree.zs[i] - chunk.cz * CHUNK);
+      if (chunk.owner[ci] !== tree.id) continue;
+      if (tree.gone[i]) chunk.owner[ci] = 0;
+      chunk.color[ci] = tree.gone[i] ? 0 : tree.color[i];
+    }
+  }
 }
 
 // 形をセルの配列にまとめる。葉の塊ごとに「風でずれうる範囲」まで占有する。
@@ -490,8 +546,10 @@ export function paintTreesInto(world, chunk) {
   }
 }
 
-// 片付けたチャンクにしかかかっていない木を忘れる（切ったり焼けたりした木は、記録として残す）
+// 片付けたチャンクにしかかかっていない木を忘れる（切ったり焼けたりした木は、記録として残す）。
+// 忘れた木の区画の番号を world.onForgetTrees に知らせる（チャンクを作るスレッドに、もう持っていないと伝えるため）
 export function forgetTrees(world) {
+  const forgotten = [];
   for (const [key, tree] of world.trees) {
     if (tree.cut || tree.felled || tree.burnt) continue;
     let loaded = false;
@@ -504,7 +562,9 @@ export function forgetTrees(world) {
     if (loaded) continue;
     world.trees.delete(key);
     world.entities.delete(tree.id);
+    forgotten.push(key);
   }
+  if (forgotten.length) world.onForgetTrees?.(forgotten);
 }
 
 // ---- 風 ----------------------------------------------------------------------

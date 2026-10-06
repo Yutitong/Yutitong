@@ -12,13 +12,13 @@ import { initCharacter, updateCharacter } from './character.js';
 import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
 import { hash3, mulberry32 } from './rng.js';
 import { Terrain, groundColor, waterColor, fallColor, rockInside, boulderColor, fernAt, fernCells, WATER_LEVEL } from './terrain.js';
-import { paintTreesInto, updateWind, forgetTrees } from './trees.js';
+import { paintTreesInto, updateWind, forgetTrees, packTree, adoptTree, treeByKey, refreshTreesIn } from './trees.js';
 import { chop, dropFalling } from './axe.js';
 import { dig, place } from './shovel.js';
 import { slash } from './sword.js';
 import { shoot, updateShots } from './shotgun.js';
 import { WaterSim } from './water.js';
-import { paintGiantsInto, forgetGiants, giantZone } from './giant.js';
+import { paintGiantsInto, forgetGiants, giantZone, giantSpec, getGiant, refreshGiantsIn } from './giant.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
@@ -170,7 +170,7 @@ export class World {
           paintRocksInto(this, c);
           paintPlantsInto(this, c, cols);
         }
-        generateChunk(this, c);
+        if (!this.noEntities) generateChunk(this, c); // チャンクを作るスレッドでは NPC は置かない（受け取った側で置く）
       }
       this.dirty.add(key);
     }
@@ -705,6 +705,84 @@ export function respawnPlayer(world) {
   world.paint(p, true);
   Object.assign(p, { hp: PLAYER_HP, vy: 0, fall: 0, fallen: 0, speed: 0, sub: [0, 0], swingT: 0, hurtAt: -Infinity });
   return p;
+}
+
+// ---- チャンクを別のスレッドで作る ------------------------------------------------------
+//
+// チャンクを作るスレッド（genworker.js）は、同じシードの世界でチャンクを作り、配列をそのまま送ってくる。
+// 木や巨大樹の持ち主の番号はスレッドごとに違うので、どの木（巨大樹）のセルかの表を一緒に送り、受け取った側で番号を付け替える
+
+// チャンク c を送れる形にする。sent: 形を送ったことのある木（もう一度は送らない）
+export function packChunk(world, c, sent) {
+  const table = [];
+  const seen = new Set();
+  for (let i = 0; i < c.owner.length; i++) {
+    const o = c.owner[i];
+    if (o <= SOIL_ID || seen.has(o)) continue;
+    seen.add(o);
+    const e = world.entities.get(o);
+    if (e?.tree) {
+      const key = e.tree.spec.key;
+      table.push({ id: o, t: 'tree', key, data: sent.has(key) ? null : packTree(e.tree) });
+      sent.add(key);
+    } else if (e?.giant) {
+      table.push({ id: o, t: 'giant', gx: e.giant.spec.gx, gz: e.giant.spec.gz });
+    } else {
+      table.push({ id: o, t: 'other' });
+    }
+  }
+  return {
+    cx: c.cx, cz: c.cz, base: c.base, top: c.top, table,
+    owner: c.owner, color: c.color, height: c.height, water: c.water, fixed: c.fixed,
+  };
+}
+
+// 送られてきたチャンクを世界に入れる。もう作ってあれば何もしない（null を返す）
+export function installChunk(world, m) {
+  const key = chunkKey(m.cx, m.cz);
+  if (world.chunks.has(key)) return null;
+  const c = new Chunk(m.cx, m.cz, m.base);
+  c.owner = m.owner;
+  c.color = m.color;
+  c.height = m.height;
+  c.water = m.water;
+  c.fixed = m.fixed;
+  c.top = m.top;
+  const ids = new Map();
+  const trees = [], giants = [];
+  for (const t of m.table) {
+    let id = 0;
+    if (t.t === 'tree') {
+      const tree = world.trees.get(t.key) ?? (t.data ? adoptTree(world, t.data) : treeByKey(world, t.key));
+      if (tree) {
+        id = tree.id;
+        trees.push(tree);
+      }
+    } else if (t.t === 'giant') {
+      const spec = giantSpec(world, t.gx, t.gz);
+      const g = spec && getGiant(world, spec);
+      if (g) {
+        id = g.id;
+        giants.push(g);
+      }
+    }
+    ids.set(t.id, id);
+  }
+  const owner = c.owner, color = c.color;
+  for (let i = 0; i < owner.length; i++) {
+    const o = owner[i];
+    if (o <= SOIL_ID) continue;
+    const n = ids.get(o) ?? 0;
+    owner[i] = n;
+    if (!n) color[i] = 0;
+  }
+  world.chunks.set(key, c);
+  // この世界で手を加えた木・巨大樹は塗り直す
+  refreshTreesIn(c, trees);
+  if (world.terrain) refreshGiantsIn(world, c, giants);
+  if (world.generate) generateChunk(world, c);
+  world.dirty.add(key);
+  return c;
 }
 
 // プレイヤーの周り radius チャンク分を用意する

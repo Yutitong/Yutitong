@@ -6,6 +6,7 @@ import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { spawnMonster } from './monster.js';
 import { EYE } from './shotgun.js';
+import { ChunkGenerator } from './genclient.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -15,7 +16,8 @@ const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を�
 const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
 let viewRadius = 6; // 描画するチャンクの半径（重いときは自動で狭める）
 const KEEP_RADIUS = 24; // これより遠いチャンクは片付ける
-const LOAD_BUDGET_MS = 7; // 1フレームでチャンク作りに使ってよい時間
+const LOAD_BUDGET_MS = 7; // 1フレームでチャンク作りに使ってよい時間（チャンクを作るスレッドが使えないとき）
+const INSTALL_BUDGET_MS = 5; // 1フレームで、別のスレッドで作ったチャンクを世界に入れるのに使ってよい時間
 const FAR_BUDGET_MS = 3; // 1フレームで遠景作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
@@ -26,6 +28,8 @@ const player = spawnPlayer(world);
 ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作り、残りは少しずつ
 const dragon = spawnDragon(world, player.pos);
 spawnMonster(world, player.pos); // 黄色い球体（14m ほど先に浮かんでいる）
+// チャンクは別のスレッドで作る（画面が止まらないように）。使えなければ、その場で少しずつ作る
+const generator = new ChunkGenerator(world);
 
 // ---- three.js のセットアップ ----------------------------------------------
 
@@ -354,11 +358,18 @@ function syncChunks() {
   const pcz = floorDiv(Math.floor(controls.target.z), CHUNK);
   const near = (c) => Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz)) <= viewRadius;
   const start = performance.now();
+  const threaded = generator.ok;
+  if (threaded) generator.install(INSTALL_BUDGET_MS);
   outer: for (let r = 0; r <= viewRadius; r++) {
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
         if (world.chunks.has(chunkKey(pcx + dx, pcz + dz))) continue;
+        // 近い順に、チャンクを作るスレッドに頼む（頼みすぎたら、できあがるのを待つ）
+        if (threaded) {
+          if (!generator.request(pcx + dx, pcz + dz)) break outer;
+          continue;
+        }
         if (performance.now() - start > LOAD_BUDGET_MS) break outer;
         world.chunkAt(pcx + dx, pcz + dz);
       }
