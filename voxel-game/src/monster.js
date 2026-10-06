@@ -35,6 +35,7 @@ const HUNT_TIME = 12; // これだけ追っても包み込めなければ、あ�
 const KEEP = 38; // プレイヤーとの間合い
 const HOVER = 3; // 下の物と体のすき間
 const ROAM_SPEED = 8, CHASE_SPEED = 15, HUNT_SPEED = 18; // ボクセル/秒
+const DISP = 24; // 表面の上下の表の細かさ（立方体の 1 面あたり。半径 10 の球なら 1 ボクセルより細かい）
 const HOLD = 0.25; // 撃たれたえぐれが、戻り始めるまで（秒）
 const WRAP_TIME = 1.3, ABSORB_TIME = 1.8; // 包み込む・吸収する時間（秒）
 const ABSORB_GROW = 0.2; // NPC 1 人を吸収して増える体積（はじめの体積に対する割合）
@@ -110,6 +111,7 @@ export class Monster {
     this.agitate = 0; // 波打つ強さ（吸収・撃たれたとき）
     this.dents = []; // 球のときのえぐれ: { n: 体の座標の向き, D: 深さ, w: 広さ（ラジアン）, t: 経過 }
     this.bites = []; // 正八面体のときの欠け: { c: 体の座標の位置, r: 半径 }
+    this.biteGrid = null;
     this.biteLoss = 0; // 今回の正八面体で欠けた体積
     this.m = 0; // 球 0 → 正八面体 1
     this.spin = 0; // 縦の軸まわりの回転
@@ -182,6 +184,7 @@ export class Monster {
     let d = amp * (Math.sin(nx * 3.1 + t * 2.1) * Math.sin(nz * 2.7 - t * 1.6) * 0.8 + Math.sin(ny * 4.3 + t * 2.6) * 0.55);
     for (const w of this.dents) {
       const cos = clamp(nx * w.n[0] + ny * w.n[1] + nz * w.n[2], -1, 1);
+      if (cos < w.cosReach) continue; // このえぐれからは遠い
       const th = Math.acos(cos);
       // くぼみ: 波打ちながら（いったん盛り上がって）浅くなる
       const u = th / w.w;
@@ -196,6 +199,54 @@ export class Monster {
     return d;
   }
 
+  // 表面の上下を、立方体の 6 つの面に張った表（1 面 DISP × DISP）に先に計算しておく。
+  // 球の中のボクセルごとに波やえぐれを計算すると重いので、ボクセルからは向きで表を引くだけにする
+  buildDisp() {
+    const n = DISP;
+    const disp = (this.disp ??= new Float32Array(6 * n * n));
+    for (let f = 0; f < 6; f++) {
+      for (let j = 0; j < n; j++) {
+        const v = ((j + 0.5) / n) * 2 - 1;
+        for (let i = 0; i < n; i++) {
+          const u = ((i + 0.5) / n) * 2 - 1;
+          const s = f & 1 ? -1 : 1;
+          let x, y, z;
+          if (f < 2) [x, y, z] = [s, u, v];
+          else if (f < 4) [x, y, z] = [u, s, v];
+          else [x, y, z] = [u, v, s];
+          const l = Math.hypot(x, y, z);
+          disp[(f * n + j) * n + i] = this.surface(x / l, y / l, z / l);
+        }
+      }
+    }
+  }
+
+  // 向き (x, y, z)（長さは問わない）の表面の上下
+  dispAt(x, y, z) {
+    const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+    let f, u, v, m;
+    if (ax >= ay && ax >= az) {
+      f = x > 0 ? 0 : 1;
+      u = y;
+      v = z;
+      m = ax;
+    } else if (ay >= az) {
+      f = y > 0 ? 2 : 3;
+      u = x;
+      v = z;
+      m = ay;
+    } else {
+      f = z > 0 ? 4 : 5;
+      u = x;
+      v = y;
+      m = az;
+    }
+    const n = DISP;
+    const i = Math.min(n - 1, Math.floor(((u / m + 1) / 2) * n));
+    const j = Math.min(n - 1, Math.floor(((v / m + 1) / 2) * n));
+    return this.disp[(f * n + j) * n + i];
+  }
+
   // 位置 p（中心からの世界の座標）の符号付き距離（負なら体の中）
   field(px, py, pz, q) {
     this.toBody(px, py, pz, q);
@@ -204,17 +255,40 @@ export class Monster {
     let d = 0;
     if (m < 1) {
       if (r < this.inner) d = r - this.Rs; // 深い所（えぐれも届かない）
-      else d = r - (this.Rs + this.surface(q[0] / r, q[1] / r, q[2] / r));
+      else d = r - (this.Rs + this.dispAt(q[0], q[1], q[2]));
     }
     if (m > 0) {
       const dO = (Math.abs(q[0]) + Math.abs(q[1]) + Math.abs(q[2]) - this.A) * 0.57735;
       d = m >= 1 ? dO : d + (dO - d) * m;
     }
-    for (const b of this.bites) {
-      const e = b.r * this.biteW - Math.hypot(q[0] - b.c[0], q[1] - b.c[1], q[2] - b.c[2]);
-      if (e > d) d = e;
+    // 欠け: 体の座標の格子で、近くの欠けだけ調べる。欠けの中なら体の外（中かどうかだけ分かればよいので、距離の 2 乗で比べる）
+    if (d <= 0 && this.bites.length && this.biteW > 0) {
+      const list = this.biteCell(q);
+      if (list) {
+        for (const b of list) {
+          const r = b.r * this.biteW;
+          const dx = q[0] - b.c[0], dy = q[1] - b.c[1], dz = q[2] - b.c[2];
+          if (dx * dx + dy * dy + dz * dz < r * r) return 1;
+        }
+      }
     }
     return d;
+  }
+
+  // 体の座標の位置 q の近くにある欠けの一覧（4 ボクセルごとの格子。欠けが増えたら作り直す）
+  biteCell(q) {
+    const S = 4, H = 24, N = (2 * H) / S;
+    if (!this.biteGrid) {
+      this.biteGrid = new Array(N * N * N);
+      for (const b of this.bites) {
+        const r = b.r + 0.5;
+        const lo = b.c.map((v) => Math.max(0, Math.floor((v - r + H) / S))), hi = b.c.map((v) => Math.min(N - 1, Math.floor((v + r + H) / S)));
+        for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) (this.biteGrid[i + N * (j + N * k)] ??= []).push(b);
+      }
+    }
+    const i = Math.floor((q[0] + H) / S), j = Math.floor((q[1] + H) / S), k = Math.floor((q[2] + H) / S);
+    if (i < 0 || j < 0 || k < 0 || i >= N || j >= N || k >= N) return null;
+    return this.biteGrid[i + N * (j + N * k)];
   }
 
   // 包み込んでいる NPC のまわりの膜（世界の座標）
@@ -242,10 +316,22 @@ export class Monster {
     this.Rs = this.R * (1 - (this.state === 'wrap' ? 0.14 * smooth(this.drape.k) : this.state === 'absorb' ? 0.14 * (1 - smooth(this.drape.k)) : 0));
     this.A = this.R * OCTA;
     this.biteW = this.state === 'octa' ? Math.min(1, this.m * 1.5) : 0;
-    let deep = 0.4 + 1.2 * this.agitate;
-    for (const w of this.dents) deep += w.D * Math.abs(w.env) + w.D * 0.32;
-    this.inner = this.Rs - deep - 1;
-    const B = Math.max(this.Rs + deep, this.m > 0 ? this.A * (this.m > 0.99 ? 1 : 1.05) : 0) + 1.5;
+    // 表面が外へ出うる高さ（いちばん大きな盛り上がり）と、内へ入りうる深さ（いちばん深いえぐれ）。
+    // 近くに当たった弾は 1 つのえぐれにまとめるので、えぐれが大きく重なることはない（少し余裕を見る）。
+    // 足し合わせると、調べる範囲がむやみに広がって重くなる
+    const amp = 0.4 + 1.2 * this.agitate;
+    let out = amp, inn = amp;
+    for (const w of this.dents) {
+      out = Math.max(out, amp + w.D * (Math.max(0, -w.env) + 0.3));
+      inn = Math.max(inn, amp + w.D * Math.max(0, w.env));
+      // このえぐれ（と広がる波の輪）が届く角度。これより離れた所では、えぐれの計算を飛ばす
+      const reach = Math.max(w.w, (w.w * this.R + 12 * Math.max(0, w.t - HOLD) + 8) / this.R);
+      w.cosReach = reach >= Math.PI ? -2 : Math.cos(reach);
+    }
+    out = Math.min(out * 1.3, this.R * 0.8);
+    this.inner = this.Rs - Math.min(this.Rs, inn * 1.5) - 1;
+    const B = Math.max(this.Rs + out, this.m > 0 ? this.A * (this.m > 0.99 ? 1 : 1.05) : 0) + 1.5;
+    if (this.m < 1) this.buildDisp();
     let x0 = Math.floor(c[0] - B), x1 = Math.floor(c[0] + B);
     let y0 = Math.floor(c[1] - B), y1 = Math.floor(c[1] + B);
     let z0 = Math.floor(c[2] - B), z1 = Math.floor(c[2] + B);
@@ -549,6 +635,7 @@ export class Monster {
     this.setState('octa');
     this.events.push({ type: 'octa', actor: this.entity });
     this.bites = [];
+    this.biteGrid = null;
     this.biteLoss = 0;
     this.beamHitPlayer = false;
   }
@@ -593,6 +680,7 @@ export class Monster {
       this.m = 0;
       this.tilt = 0;
       this.bites = [];
+      this.biteGrid = null;
       this.biteLoss = 0;
       this.aim = null;
       this.octaIn = 14 + this.rng() * 9;
@@ -751,6 +839,7 @@ export class Monster {
       const br = 1.8 + 2.6 * power;
       this.bites.push({ c: q, r: br });
       if (this.bites.length > 80) this.bites.shift();
+      this.biteGrid = null; // 格子を作り直す
       const loss = vol(br) * 0.45;
       this.mass -= loss;
       this.biteLoss += loss;
