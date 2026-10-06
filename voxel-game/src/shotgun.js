@@ -4,6 +4,8 @@
 // - 一人称のときは、目から視線の先（画面の真ん中の照準）へ向けて撃つ
 // - 三人称のときは、黄色い球体が前の方（左右 26° 以内）にいれば、そちらへ向けて撃つ（上下も合わせる）
 // - 近いほど大きくえぐれる。正八面体のときだけ、当たった所が欠けたまま戻らない（monster.js の hit）
+// - 龍にも当たる。胴に当たると丸い弾痕があき、撃ち続けて胴の断面がなくなると尾の側がちぎれる（dragon.js の shot）。
+//   撃たれた龍は怒って、プレイヤーの近くへ降りてきて火を吹く。チャンクに描いていない遠くの龍にも、形で当てる
 // - 散弾は木や地面に当たると止まる（何も壊さない）
 // - 弾の通り道は一瞬だけ光の筋として見える（いつでも場所をゆずる）
 
@@ -42,29 +44,40 @@ export function eyeOf(e) {
 }
 export const EYE = 13.5; // 足元から目までの高さ（ボクセル）
 
-// 撃つ。戻り値は出来事 { type: 'shoot', actor, target, result: 'dent' | 'chip' | 'killed' | 'blocked' | 'miss', hits }
+// 撃つ。戻り値は出来事 { type: 'shoot', actor, target, result, hits, dragon }
+// result: 'dent' | 'chip' | 'killed'（球体）/ 'severed' | 'wound' | 'graze'（龍）/ 'blocked' | 'miss'
 export function shoot(world, e) {
-  const ev = { type: 'shoot', actor: e, target: null, result: 'miss', hits: 0 };
+  const ev = { type: 'shoot', actor: e, target: null, result: 'miss', hits: 0, dragon: 0 };
   const rng = mulberry32(world.tickCount * 7919 + 13);
   const muzzle = muzzleOf(e);
   let yaw = e.pose.yaw, pitch = 0;
   // 弾の飛び始め: 一人称なら目（照準の先に飛ぶ）、三人称なら銃口
   let from = muzzle;
   const mon = world.monster;
+  const dragon = world.dragon;
   if (e.aimPitch !== null && e.aimPitch !== undefined) {
     pitch = e.aimPitch;
     from = eyeOf(e);
-  } else if (mon && !mon.dead) {
-    const dx = mon.c[0] - muzzle[0], dy = mon.c[1] - muzzle[1], dz = mon.c[2] - muzzle[2];
-    const h = Math.hypot(dx, dz);
-    const a = Math.atan2(dx, dz);
-    if (h < SHOT_RANGE + mon.R && Math.abs(wrap(a - yaw)) < ASSIST) {
-      yaw = a;
-      pitch = Math.atan2(dy, h);
-    }
+  } else {
+    // 前の方にいる球体か龍の胴（いちばん正面に近いもの）へ向ける
+    let bestOff = ASSIST;
+    const consider = (c, reach) => {
+      const dx = c[0] - muzzle[0], dy = c[1] - muzzle[1], dz = c[2] - muzzle[2];
+      const h = Math.hypot(dx, dz);
+      const a = Math.atan2(dx, dz);
+      const off = Math.abs(wrap(a - e.pose.yaw));
+      if (h < SHOT_RANGE + reach && off < bestOff) {
+        bestOff = off;
+        yaw = a;
+        pitch = Math.atan2(dy, h);
+      }
+    };
+    if (mon && !mon.dead) consider(mon.c, mon.R);
+    if (dragon?.pts) for (let k = 0; k < dragon.pts.length; k += 6) if (dragon.pts[k].s <= dragon.length) consider(dragon.pts[k].c, 4);
   }
   const trails = [];
   const results = new Set();
+  const dragonResults = new Set();
   let blocked = false;
   for (let k = 0; k < PELLETS; k++) {
     const da = ((k / (PELLETS - 1)) - 0.5) * 2 * SPREAD + (rng() - 0.5) * 0.05;
@@ -72,15 +85,30 @@ export function shoot(world, e) {
     const cp = Math.cos(pitch + dp);
     const dir = [Math.sin(yaw + da) * cp, Math.sin(pitch + dp), Math.cos(yaw + da) * cp];
     let end = SHOT_RANGE;
+    // 龍の形に当たる距離（チャンクに描いていない所にも当たる）
+    const tDragon = dragon ? dragon.rayHit(from, dir, SHOT_RANGE) : Infinity;
     for (let s = 0; s <= SHOT_RANGE; s += 0.5) {
       const p = [from[0] + dir[0] * s, from[1] + dir[1] * s, from[2] + dir[2] * s];
-      const o = ownerLoaded(world, Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
+      const o = s >= tDragon ? dragon.id : ownerLoaded(world, Math.floor(p[0]), Math.floor(p[1]), Math.floor(p[2]));
       if (o === -1) break; // 空の上・地の底
       if (o === 0 || o === e.id || o === e.toolId || o === WATER_ID || o === FALL_ID) continue;
       if (o > 0 && world.entities.get(o)?.yields) continue;
       end = s;
       const m = world.monster;
-      if (m && !m.dead && o === m.id) {
+      if (dragon && o === dragon.id) {
+        if (s >= tDragon) {
+          end = tDragon;
+          p[0] = from[0] + dir[0] * tDragon;
+          p[1] = from[1] + dir[1] * tDragon;
+          p[2] = from[2] + dir[2] * tDragon;
+        }
+        const power = Math.max(0.08, 1 - end / SHOT_RANGE) ** 1.3;
+        const r = dragon.shot(p, power);
+        dragonResults.add(r?.severed ? 'severed' : r ? 'wound' : 'graze');
+        ev.hits++;
+        ev.dragon++;
+        if (!ev.target) ev.target = dragon.entity;
+      } else if (m && !m.dead && o === m.id) {
         const power = Math.max(0.08, 1 - s / SHOT_RANGE) ** 1.3;
         const r = m.hit(p, power);
         if (r) {
@@ -99,9 +127,13 @@ export function shoot(world, e) {
     const len = Math.hypot(...v) || 1;
     trails.push([muzzle, v.map((c) => c / len), len]);
   }
+  if (ev.dragon) dragon.provoke();
   if (results.has('killed')) ev.result = 'killed';
+  else if (dragonResults.has('severed')) ev.result = 'severed';
   else if (results.has('chip')) ev.result = 'chip';
   else if (results.has('dent')) ev.result = 'dent';
+  else if (dragonResults.has('wound')) ev.result = 'wound';
+  else if (dragonResults.has('graze')) ev.result = 'graze';
   else if (blocked) ev.result = 'blocked';
   drawTrails(world, trails);
   return ev;

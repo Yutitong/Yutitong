@@ -1019,7 +1019,7 @@ test('太刀: 離れた所から龍を深く斬り（一太刀で胴の半分）
   assertConsistent(w);
 });
 
-test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷・切り口も）', async () => {
+test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷・切り口・弾痕も）', async () => {
   const { Dragon } = await import('../src/dragon.js');
   const w = new World({ generate: false });
   const d = new Dragon(w, [0, 90, 0]);
@@ -1031,15 +1031,23 @@ test('龍: 胴に穴がなく、中の空洞が外から見えない（切り傷
     const { c, B } = d.pts[k];
     for (let n = 0; n < (k === 330 ? 12 : 3); n++) d.wound([c[0] + B[0] * 6, c[1] + B[1] * 6, c[2] + B[2] * 6]);
   }
+  // 散弾の弾痕（深いものも浅いものも）
+  for (const [k, ang, n] of [[100, 0.4, 1], [110, 2.0, 4], [210, -1.2, 2], [290, 3.0, 6]]) {
+    const { c, N, B } = d.pts[k];
+    const dir = [0, 1, 2].map((i) => N[i] * Math.cos(ang) + B[i] * Math.sin(ang));
+    for (let m = 0; m < n; m++) d.shot([c[0] + dir[0] * 6, c[1] + dir[1] * 6, c[2] + dir[2] * 6], 0.9);
+  }
+  assert.ok(d.pocks.length >= 4);
   d.advance = () => {};
   d.update(0.08, [0, 0, 0]);
   const own = (x, y, z) => w.ownerAt(x, y, z) === d.id;
   // 背骨の中心から、龍のセルを面で通り抜けずに（6 近傍で）胴の外へ出られるか
   const radiusOf = (s) => (s / 400 < 0.12 ? 4.6 + 1.6 * (s / 48) : s / 400 < 0.4 ? 7 : Math.max(1.2, 6.2 * (1 - (s / 400 - 0.4) / 0.6) ** 0.9));
   let tested = 0;
-  for (let k = 60; k < d.pts.length && d.pts[k].s < d.length - 30; k += 15) {
+  for (let k = 60; k < d.pts.length && d.pts[k].s < d.length - 30; k += 12) {
     const start = d.pts[k].c.map(Math.floor);
-    if (own(...start)) continue;
+    // 深い弾痕のまわりは、芯まで肉が詰まっているか、芯が弾痕の穴の中（外とつながっている）
+    if (own(...start) || d.inPock(start.map((v) => v + 0.5))) continue;
     tested++;
     const seen = new Set([start.join()]);
     const q = [start];
@@ -1377,6 +1385,121 @@ test('一人称: どの角度へも歩け、視線の向きを向いたまま横
   assert.ok(x1 - p.pos[0] > 10 && Math.abs(p.pos[2] - z1) <= 1, `横歩き ${x1 - p.pos[0]}`);
   assert.equal(p.pose.yaw, 0);
   assertConsistent(w);
+});
+
+// 地面に降りた龍の胴（頭から s の所）を、プレイヤーの目から狙う向き
+function aimAtDragon(p, d, s) {
+  const q = d.spine().find((k) => k.s >= s);
+  const eye = [p.pos[0] + 4.5, p.pos[1] + 13.5, p.pos[2] + 4.5];
+  return {
+    face: Math.atan2(q.c[0] - eye[0], q.c[2] - eye[2]),
+    pitch: Math.atan2(q.c[1] - eye[1], Math.hypot(q.c[0] - eye[0], q.c[2] - eye[2])),
+  };
+}
+
+test('ショットガン: 龍の胴を撃つと丸い弾痕があいて肉が見え、龍が怒る。撃ち続けると尾の側がちぎれて落ちる', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const { w, p } = monsterWorld();
+  const d = spawnDragon(w, p.pos);
+  // 10m ほど先に、横向きに寝そべった龍（動かない）
+  d.land(p.pos[0] + 150, p.pos[2] + 70, Math.PI / 2);
+  d.advance = () => {};
+  d.update(0.08, p.pos);
+  const flesh = new Set([0xa3262e, 0xbc3438, 0xcf4f4c, 0xb02c33]);
+  const countFlesh = () => {
+    let n = 0;
+    for (const c of w.chunks.values()) for (let i = 0; i < c.owner.length; i++) if (c.owner[i] === d.id && flesh.has(c.color[i])) n++;
+    return n;
+  };
+  assert.equal(countFlesh(), 0);
+  const aim = aimAtDragon(p, d, 150);
+  const first = step(w, { dir: null, run: false, chop: true, tool: 'gun', ...aim }).find((e) => e.type === 'shoot');
+  assert.equal(first.result, 'wound');
+  assert.ok(first.dragon >= 5, `当たった粒 ${first.dragon}`);
+  assert.ok(d.pocks.length >= 3, `弾痕 ${d.pocks.length}`);
+  assert.ok(d.anger > 0, '怒った');
+  d.update(0.08, p.pos);
+  assert.ok(countFlesh() > 20, `穴の中の肉 ${countFlesh()}`);
+  // 撃ち続けると、ちぎれる（狙った所のあたりで）
+  let shots = 1, severed = null;
+  for (let k = 0; k < 600 && !severed; k++) {
+    const ev = step(w, { dir: null, run: false, chop: true, ...aim }).find((e) => e.type === 'shoot');
+    if (!ev) continue;
+    shots++;
+    if (ev.result === 'severed') severed = ev;
+  }
+  assert.ok(severed, 'ちぎれた');
+  assert.ok(shots <= 12, `${shots} 発`);
+  assert.ok(d.length > 110 && d.length < 190, `ちぎれた所 ${d.length}`);
+  assert.ok([...w.entities.values()].some((e) => e.name === '龍の尾'), '尾が落ちる');
+  assertConsistent(w);
+});
+
+test('ショットガン: 首を撃ち続けても、龍の首はちぎれない', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const { w, p } = monsterWorld();
+  const d = spawnDragon(w, p.pos);
+  d.land(p.pos[0] + 40, p.pos[2] + 50, Math.PI / 2);
+  d.advance = () => {};
+  d.update(0.08, p.pos);
+  const aim = aimAtDragon(p, d, 30);
+  let wounds = 0;
+  for (let k = 0; k < 15 * 12; k++) {
+    const ev = step(w, { dir: null, run: false, chop: true, tool: 'gun', ...aim }).find((e) => e.type === 'shoot');
+    if (ev?.result === 'wound') wounds++;
+    assert.notEqual(ev?.result, 'severed');
+  }
+  assert.ok(wounds >= 5);
+  assert.equal(d.length, 400);
+});
+
+test('ショットガン: 細かく描く範囲の外にいて、チャンクに描かれていない龍にも当たる', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const { w, p } = monsterWorld();
+  w.bodyMakesChunks = false;
+  const d = spawnDragon(w, p.pos);
+  d.land(p.pos[0] + 150, p.pos[2] + 100, Math.PI / 2);
+  d.advance = () => {};
+  // 細かく描く範囲は、プレイヤーのまわりの狭い正方形だけ
+  w.drawCenter = [p.pos[0], 0, p.pos[2]];
+  w.drawRadius = 40;
+  d.update(0.08, p.pos);
+  let painted = 0;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o === d.id) painted++;
+  const aim = aimAtDragon(p, d, 150);
+  const ev = step(w, { dir: null, run: false, chop: true, tool: 'gun', ...aim }).find((e) => e.type === 'shoot');
+  assert.equal(ev.result, 'wound', `チャンクに描いた龍のセル ${painted}`);
+  assert.ok(d.pocks.length > 0);
+});
+
+test('龍: 撃たれて怒ると、プレイヤーの近くへ降りてきて、プレイヤーへ向けて火を吹く', async () => {
+  const { spawnDragon } = await import('../src/dragon.js');
+  const { w, p } = monsterWorld();
+  ensureAround(w, p.pos[0], p.pos[2], 10);
+  const d = spawnDragon(w, p.pos);
+  for (let i = 0; i < 50; i++) d.update(0.08, p.pos);
+  assert.equal(d.mode, 'fly');
+  d.provoke();
+  let t = 0;
+  while (t < 40 && d.mode !== 'breathe') {
+    d.update(0.08, p.pos);
+    t += 0.08;
+  }
+  assert.equal(d.mode, 'breathe', `${t.toFixed(1)} 秒`);
+  assert.ok(Math.hypot(d.head[0] - p.pos[0], d.head[2] - p.pos[2]) < 120, 'プレイヤーの近く');
+  const ft = d.fireTarget;
+  assert.ok(Math.hypot(ft[0] - p.pos[0] - 4.5, ft[2] - p.pos[2] - 4.5) < 1, 'プレイヤーへ向けて');
+  // 吹き終わっても、怒っている間はすぐにまたプレイヤーへ向けて吹く
+  let again = false, left = false;
+  for (let i = 0; i < 200 && !again; i++) {
+    d.update(0.08, p.pos);
+    if (d.mode !== 'breathe') left = true;
+    else if (left) again = true;
+  }
+  assert.ok(again, 'もう一度吹く');
+  // しばらくすると怒りがおさまる
+  for (let i = 0; i < 400; i++) d.update(0.08, p.pos);
+  assert.equal(d.anger, 0);
 });
 
 test('一人称: ショットガンは視線の先（上下も）へ撃つ', async () => {

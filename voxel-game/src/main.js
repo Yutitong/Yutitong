@@ -659,6 +659,9 @@ function describe(ev) {
       case 'dent': return { cls: 'push', text: '散弾で黄色い球体が大きくえぐれた（波打って戻っていく）', rule: n };
       case 'chip': return { cls: 'push', text: '散弾で正八面体が欠けた！', rule: n };
       case 'killed': return { cls: 'push', text: '黄色い球体が砕け散った！', rule: '撃破' };
+      case 'severed': return { cls: 'push', text: '散弾で龍の尾がちぎれ落ちた！ 龍は怒っている', rule: '切断' };
+      case 'wound': return { cls: 'push', text: '散弾で龍の鱗に穴があいた。龍が怒って向かってくる', rule: n };
+      case 'graze': return { cls: 'push', text: '散弾が龍の頭や足に当たった。龍が怒って向かってくる', rule: n };
       case 'blocked': return { cls: 'block', text: '散弾が木や地面に当たった', rule: '' };
       default: return { cls: 'block', text: `${a.name} はショットガンを撃った（外れ）`, rule: '' };
     }
@@ -820,7 +823,7 @@ function tick() {
   posLabel.textContent = `${(player.pos[0] * VOXEL_METERS).toFixed(1)}, ${(player.pos[2] * VOXEL_METERS).toFixed(1)} m`;
   speedLabel.textContent = `${(player.speed * VOXEL_METERS).toFixed(1)} m/s`;
   chunkLabel.textContent = world.chunks.size;
-  dragonLabel.textContent = DRAGON_MODES[dragon.mode];
+  dragonLabel.textContent = DRAGON_MODES[dragon.mode] + (dragon.anger > 0 ? '（怒っている）' : '');
   toolLabel.textContent = TOOL_NAMES[player.tool];
   soilLabel.textContent = `${player.soil}/${SOIL_MAX}`;
   chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る', gun: '撃つ' }[player.tool];

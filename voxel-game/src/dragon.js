@@ -31,6 +31,9 @@ const FLESH = [0xa3262e, 0xbc3438, 0xcf4f4c, 0xb02c33];
 const FAT = 0xe9b9a0;
 const BONE = 0xeee3c8;
 const GROUNDED = new Set(['walk', 'aim', 'breathe']);
+const NO_HOLES = [];
+const ANGER_TIME = 25; // 撃たれてから怒っている時間（秒）
+const MAX_POCKS = 160;
 
 export const DRAGON_MODES = {
   fly: '飛んでいる', descend: '降りてくる', walk: '歩いている', aim: '火を吹く相手を見ている',
@@ -93,6 +96,24 @@ function cutsNear(wounds, s, r, margin) {
     cuts.push({ cu0: Math.cos(w.th), su0: Math.sin(w.th), ws: w.s, half, deep, norm: Math.sqrt(1 + slope * slope) });
   }
   return cuts;
+}
+
+// 胴の位置 s のまわりにある弾痕。弾痕は、皮の上の点から胴の芯の向きへ掘った、太さ a の穴（両端の丸いカプセル）
+// w0 / w1: 穴の芯が通る範囲（弾痕の向きに測った、背骨からの距離）
+function pocksNear(pocks, s, r, margin) {
+  const out = [];
+  for (const q of pocks) {
+    if (Math.abs(s - q.s) > q.a + margin) continue;
+    out.push({ ws: q.s, cu0: Math.cos(q.th), su0: Math.sin(q.th), a: q.a, a2: q.a * q.a, w0: r - q.d + q.a, w1: r + 1.5 });
+  }
+  return out;
+}
+
+// 点 (背骨に沿った ds, 胴の断面の u, v) と弾痕の穴の面との距離（負なら穴の中）
+function pockDist(h, ds, u, v) {
+  const w = u * h.cu0 + v * h.su0, pp = v * h.cu0 - u * h.su0;
+  const wc = w < h.w0 ? h.w0 : w > h.w1 ? h.w1 : w;
+  return Math.sqrt(ds * ds + pp * pp + (w - wc) * (w - wc)) - h.a;
 }
 
 // 円周を n 等分した点の cos / sin（何度も使うので覚えておく）
@@ -240,6 +261,8 @@ export class Dragon {
     this.pts = null;
     this.length = DRAGON_LENGTH; // 尾を切り落とされると短くなる
     this.wounds = []; // 切り傷: { s: 頭からの距離, th: 胴のまわりの向き, f: 深さ（直径に対する割合） }
+    this.pocks = []; // 弾痕: { s, th, a: 穴の太さ（半径）, d: 皮からの深さ }（ボクセル）
+    this.anger = 0; // 撃たれて怒っている残りの時間（秒）。怒っている間はプレイヤーに向かってきて火を吹く
     this.head = [...start];
     this.yaw = 0;
     this.pitch = 0;
@@ -355,7 +378,7 @@ export class Dragon {
     this.setMode('walk');
     this.walkClock = 0;
     this.walkTime = 36 + this.rng() * 16;
-    this.nextBreath = 5 + this.rng() * 4;
+    this.nextBreath = this.anger > 0 ? 1 : 5 + this.rng() * 4;
     this.walkTarget = null;
     this.speed = Math.min(this.speed, WALK_SPEED);
   }
@@ -365,9 +388,19 @@ export class Dragon {
     const rng = this.rng;
     this.time += dt;
     this.modeTime += dt;
+    this.anger = Math.max(0, this.anger - dt);
     switch (this.mode) {
       case 'fly':
-        if (this.modeTime > this.nextLanding) {
+        // 怒っているときは、すぐにプレイヤーの近くへ降りる場所を探す
+        if (this.anger > 0 && this.time >= (this.angerLanding ?? 0)) {
+          const spot = this.findLanding(around);
+          if (spot) {
+            this.landing = spot;
+            this.setMode('descend');
+          } else {
+            this.angerLanding = this.time + 1;
+          }
+        } else if (this.modeTime > this.nextLanding) {
           const spot = this.findLanding(around);
           if (spot) {
             this.landing = spot;
@@ -429,17 +462,23 @@ export class Dragon {
   // 地面を歩く（立ち止まって火を吹くときも）
   groundStep(dt, around) {
     const rng = this.rng;
+    const angry = this.anger > 0;
+    // 怒っているときの相手: プレイヤーの胸
+    const foe = [around[0] + 4.5, around[1] + 9, around[2] + 4.5];
     if (this.mode === 'walk') {
+      if (angry) this.walkTime = Math.max(this.walkTime, this.walkClock + 5); // 怒っている間は飛び去らない
       if (this.walkClock > this.walkTime) {
         this.setMode('takeoff');
         return this.flyStep(dt, around);
       }
       if (this.walkClock > this.nextBreath) {
-        this.fireTarget = this.findFireTarget();
+        this.fireTarget = angry ? foe : this.findFireTarget();
         this.setMode('aim');
       }
       this.walkTargetLeft = (this.walkTargetLeft ?? 0) - dt;
-      if (!this.walkTarget || this.walkTargetLeft <= 0 || Math.hypot(this.walkTarget[0] - this.head[0], this.walkTarget[2] - this.head[2]) < 20) {
+      if (angry) {
+        this.walkTarget = foe; // プレイヤーへ向かって歩く
+      } else if (!this.walkTarget || this.walkTargetLeft <= 0 || Math.hypot(this.walkTarget[0] - this.head[0], this.walkTarget[2] - this.head[2]) < 20) {
         // プレイヤーのまわりの開けた所を目指して歩く
         let t = null;
         for (let k = 0; k < 12 && !t; k++) {
@@ -452,6 +491,7 @@ export class Dragon {
         this.walkTargetLeft = 10 + rng() * 6;
       }
     }
+    if (angry && this.mode !== 'walk') this.fireTarget = foe; // 逃げても追って向きを変える
     const target = this.mode === 'walk' ? this.walkTarget : this.fireTarget;
     const to = [target[0] - this.head[0], 0, target[2] - this.head[2]];
     let wantYaw = Math.atan2(to[0], to[2]);
@@ -462,7 +502,7 @@ export class Dragon {
     } else if (this.mode === 'breathe' && this.modeTime > BREATH_TIME + 0.6) {
       this.mode = 'walk';
       this.modeTime = 0;
-      this.nextBreath = this.walkClock + 9 + rng() * 6;
+      this.nextBreath = this.walkClock + (angry ? 2.5 + rng() * 2 : 9 + rng() * 6);
     }
     // 木や岩を避ける: 前が塞がっていたら、空いている側へ曲がる
     if (this.mode !== 'breathe') {
@@ -653,9 +693,10 @@ export class Dragon {
       const cap = (from > 0 && s - from < SPINE_STEP * 1.5) || (to < DRAGON_LENGTH && to - s < SPINE_STEP * 1.5);
       // この輪にかかる切り傷: 向き th の側から V 字に削れている。真ん中が一番深い
       const cuts = cutsNear(this.wounds, s, r, SLAB);
+      const holes = this.pocks.length ? pocksNear(this.pocks, s, r, SLAB + SHELL) : NO_HOLES;
       const r2 = r * r;
       const inner = Math.max(0, r - SHELL);
-      const inner2 = cuts.length || cap ? -1 : inner * inner; // 切り傷も切り口もなければ、中の空洞はすぐに飛ばせる
+      const inner2 = cuts.length || holes.length || cap ? -1 : inner * inner; // 切り傷も切り口もなければ、中の空洞はすぐに飛ばせる
       // 背骨の向きに一番近い軸を内側のループにし、その軸では「受け持つ厚み」に入る範囲だけを調べる
       const ax = Math.abs(T[0]) >= Math.abs(T[1]) && Math.abs(T[0]) >= Math.abs(T[2]) ? 0 : Math.abs(T[1]) >= Math.abs(T[2]) ? 1 : 2;
       const [a1, a2] = [0, 1, 2].filter((a) => a !== ax);
@@ -706,6 +747,17 @@ export class Dragon {
                 break;
               }
               face = Math.min(face, -e / q.norm);
+            }
+            // 弾痕の穴の中は描かない。穴の面のすぐ下は肉
+            if (!removed) for (const h of holes) {
+              const ds = s + t - h.ws;
+              if (ds > h.a + SHELL || ds < -h.a - SHELL) continue; // 穴のまわりの肉の層まで調べる
+              const e = pockDist(h, ds, u, v);
+              if (e < 0) {
+                removed = true;
+                break;
+              }
+              face = Math.min(face, e);
             }
             if (removed) continue;
             const rho = Math.sqrt(rho2);
@@ -978,13 +1030,114 @@ export class Dragon {
     return { s: w.s, f: w.f, severed: null };
   }
 
+  // 点 o から向き dir（長さ 1）へ飛ぶ弾が、龍の体（胴と頭）に当たる距離（当たらなければ Infinity）。
+  // チャンクに描いていない遠くの体にも当たるように、セルではなく形（背骨に沿った球の列と、頭の球）で調べる。弾痕の穴は通り抜ける
+  rayHit(o, dir, maxT) {
+    if (!this.pts) return Infinity;
+    let best = Infinity;
+    const sphere = (c, r) => {
+      const ox = c[0] - o[0], oy = c[1] - o[1], oz = c[2] - o[2];
+      const tc = ox * dir[0] + oy * dir[1] + oz * dir[2];
+      if (tc < -r || tc - r > Math.min(best, maxT)) return Infinity;
+      const d2 = ox * ox + oy * oy + oz * oz - tc * tc;
+      if (d2 > r * r) return Infinity;
+      const t = tc - Math.sqrt(r * r - d2);
+      return t >= 0 ? t : tc >= 0 ? 0 : Infinity;
+    };
+    for (let k = 0; k < this.pts.length; k += 2) {
+      const q = this.pts[k];
+      if (q.s < 3 || q.s > this.length) continue;
+      const t = sphere(q.c, radiusAt(q.s));
+      if (t < best && !this.inPock(add(o, mul(dir, t + 0.5)))) best = t;
+    }
+    // 頭（頭蓋・鼻づら・鼻先）
+    const { c, T } = this.pts[0];
+    for (const [f, r] of [[0, 9], [13, 6.5], [24, 5]]) best = Math.min(best, sphere(add(c, mul(T, f)), r));
+    return best <= maxT ? best : Infinity;
+  }
+
+  // 点 p が弾痕の穴の中か
+  inPock(p) {
+    if (!this.pocks.length) return false;
+    const q = this.nearestSpine(p);
+    if (!q) return false;
+    const r = radiusAt(q.s);
+    const v = sub(p, q.c);
+    const u = dot(v, q.N), w = dot(v, q.B), ds = dot(v, q.T);
+    return pocksNear(this.pocks, q.s, r, 0).some((h) => pockDist(h, q.s + ds - h.ws, u, w) < 0);
+  }
+
+  // 点 p に一番近い背骨の点
+  nearestSpine(p) {
+    let best = null;
+    let bd = Infinity;
+    for (const q of this.pts ?? []) {
+      if (q.s < 3 || q.s > this.length) continue;
+      const d = (q.c[0] - p[0]) ** 2 + (q.c[1] - p[1]) ** 2 + (q.c[2] - p[2]) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = q;
+      }
+    }
+    return best;
+  }
+
+  // 散弾が点 p に当たった（power: 0〜1、近いほど大きい）。胴なら、丸い弾痕をあける（近くの弾痕に当たれば、それが広く深くなる）。
+  // 弾痕が重なって胴の断面がすべてなくなると、そこから尾の側がちぎれて落ちる（首はちぎれない）。
+  // 戻り値: null（胴に当たっていない: 頭・足・ひれなど）/ { s, depth: 胴の太さに対する深さ, severed }
+  shot(p, power) {
+    const q = this.nearestSpine(p);
+    if (!q) return null;
+    const r = radiusAt(q.s);
+    const v = sub(p, q.c);
+    if (Math.hypot(...v) > r + 2.5) return null;
+    const th = Math.atan2(dot(v, q.B), dot(v, q.N));
+    const ds = dot(v, q.T);
+    const sHit = q.s + ds;
+    let hole = null;
+    for (const h of this.pocks) {
+      if (Math.abs(h.s - sHit) < h.a + 2.5 && Math.abs(wrap(h.th - th)) * r < h.a + 2.5) {
+        hole = h;
+        break;
+      }
+    }
+    const before = hole ? { a: hole.a, d: hole.d } : null;
+    if (hole) {
+      hole.a = Math.min(r * 1.15, hole.a + 0.45 * power + 0.2);
+      hole.d = Math.min(2 * r + 2, hole.d + 1.5 * power + 0.5);
+    } else {
+      hole = { s: sHit, th, a: 1.3 + 1.1 * power, d: 1.4 + 2.8 * power };
+      this.pocks.push(hole);
+      if (this.pocks.length > MAX_POCKS) this.pocks.shift();
+    }
+    const through = this.cutThrough(hole.s);
+    if (through !== null && through < SEVER_MIN) {
+      // 首はちぎれない: これ以上は深くならない
+      if (before) Object.assign(hole, before);
+      else this.pocks.pop();
+      return { s: hole.s, depth: hole.d / (2 * r), severed: null };
+    }
+    if (through !== null) return { s: through, depth: 1, severed: this.sever(through) };
+    return { s: hole.s, depth: Math.min(1, hole.d / (2 * r)), severed: null };
+  }
+
+  // 撃たれて怒る: しばらくの間、プレイヤーの近くへ降りてきて、プレイヤーへ向けて火を吹く
+  provoke() {
+    const was = this.anger > 0;
+    this.anger = ANGER_TIME;
+    if (was) return;
+    this.angerLanding = 0;
+    if (this.mode === 'walk') this.nextBreath = this.walkClock; // すぐに振り向いて火を吹く
+  }
+
   // s0 のまわりで、切り傷のせいで胴の断面がすべて削れている所の s（なければ null）
   cutThrough(s0) {
     for (let s = s0 - 6; s <= s0 + 6; s += 0.4) {
       if (s < 3 || s > this.length) continue;
       const r = radiusAt(s);
       const cuts = cutsNear(this.wounds, s, r, 0);
-      if (!cuts.length) continue;
+      const holes = pocksNear(this.pocks, s, r, 0);
+      if (!cuts.length && !holes.length) continue;
       let gone = true;
       for (let u = -r + 0.3; u <= r - 0.3 && gone; u += 0.5) {
         const L = Math.sqrt(Math.max(0, r * r - u * u)) - 0.3;
@@ -993,6 +1146,12 @@ export class Dragon {
           for (const q of cuts) {
             const ds = Math.abs(s - q.ws);
             if (ds <= q.half && u * q.cu0 + v * q.su0 > q.deep + (r - q.deep) * (ds / q.half)) {
+              removed = true;
+              break;
+            }
+          }
+          if (!removed) for (const h of holes) {
+            if (pockDist(h, s - h.ws, u, v) < 0) {
               removed = true;
               break;
             }
@@ -1012,6 +1171,7 @@ export class Dragon {
   sever(sCut) {
     const w = this.world;
     this.wounds = this.wounds.filter((q) => Math.abs(q.s - sCut) > 5);
+    this.pocks = this.pocks.filter((q) => q.s < sCut - 5);
     const tail = new Map();
     this.shape((x, y, z, color) => tail.set(`${x},${y},${z}`, [x, y, z, color]), sCut + SPINE_STEP, this.length, true);
     this.length = sCut;
