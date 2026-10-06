@@ -10,6 +10,7 @@ import { floorDiv } from './grid.js';
 import { noise2, shade } from './rng.js';
 import { groundColor, waterColor } from './terrain.js';
 import { forestDensity, regionSpec, REGION } from './trees.js';
+import { giantSpec, giantBoxes, GIANT_CELL } from './giant.js';
 
 const LEVELS = [
   { cell: 4, tile: 64, reach: 5 }, // 4 ボクセル四方の柱を、まわり 5 タイル（≈ 350 ボクセル ≈ 50m）
@@ -34,7 +35,7 @@ function treeBoxes(spec, out) {
   const f = 0.9 + (spec.seed % 20) / 100;
   const leaf = shade(look.leaf, f);
   const trunk = Math.max(1.5, 3 * spec.scale);
-  const add = (dx, y0, dz, wd, h, c) => out.push(x + dx, y + y0, z + dz, wd, h, c);
+  const add = (dx, y0, dz, wd, h, c) => out.push(x + dx, y + y0, z + dz, wd, h, c, 0);
   if (spec.species === 'conifer') {
     add(0, 0, 0, trunk, H * 0.4, look.bark);
     add(0, H * 0.16, 0, H * 0.36, H * 0.3, shade(leaf, 0.9));
@@ -145,7 +146,7 @@ export class FarTerrain {
         cols[(i + 1) + S * (j + 1)] = col;
       }
     }
-    const boxes = []; // [中心 x, 下, 中心 z, 幅, 高さ, 色]
+    const boxes = []; // [中心 x, 下, 中心 z, 幅, 高さ, 色, 縦の軸まわりの回転]
     const trees = L.cell <= 16 && w.terrain; // 近い段は木を 1 本ずつ描く。遠い段は森の色と高さだけ
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
@@ -172,7 +173,7 @@ export class FarTerrain {
           }
         }
         const bottom = Math.max(0, Math.min(lo, col.top) - 4);
-        boxes.push(x, bottom, z, L.cell, top - bottom, color);
+        boxes.push(x, bottom, z, L.cell, top - bottom, color, 0);
       }
     }
     if (trees) {
@@ -186,12 +187,24 @@ export class FarTerrain {
         }
       }
     }
-    const count = boxes.length / 6;
+    if (w.terrain) {
+      // 巨大樹は遠くからも見える（どの段でも 1 本ずつ描く）
+      const x0 = tx * L.tile, z0 = tz * L.tile;
+      for (let gz = floorDiv(z0, GIANT_CELL); gz <= floorDiv(z0 + L.tile - 1, GIANT_CELL); gz++) {
+        for (let gx = floorDiv(x0, GIANT_CELL); gx <= floorDiv(x0 + L.tile - 1, GIANT_CELL); gx++) {
+          const spec = giantSpec(w, gx, gz);
+          if (!spec || spec.x < x0 || spec.x >= x0 + L.tile || spec.z < z0 || spec.z >= z0 + L.tile) continue;
+          giantBoxes(w, spec, boxes);
+        }
+      }
+    }
+    const count = boxes.length / 7;
     const mesh = new THREE.InstancedMesh(box, L.m, count);
     mesh.frustumCulled = false;
     for (let k = 0; k < count; k++) {
-      const b = k * 6;
+      const b = k * 7;
       this.tmp.position.set(boxes[b], boxes[b + 1], boxes[b + 2]);
+      this.tmp.rotation.set(0, boxes[b + 6], 0);
       this.tmp.scale.set(boxes[b + 3], boxes[b + 4], boxes[b + 3]);
       this.tmp.updateMatrix();
       mesh.setMatrixAt(k, this.tmp.matrix);

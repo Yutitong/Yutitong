@@ -18,6 +18,7 @@ import { CHUNK, HEIGHT, LAYER, chunkKeyAt } from './grid.js';
 import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
 import { removeCell } from './shovel.js';
 import { eraseTreeCell } from './trees.js';
+import { eraseGiantCell } from './giant.js';
 import { mulberry32, hash3, shade } from './rng.js';
 import { hurtPlayer } from './world.js';
 
@@ -686,6 +687,8 @@ export class Monster {
         if (e.tree) {
           eraseTreeCell(e.tree, x, y, z);
           w.setCell(x, y, z, EMPTY, 0);
+        } else if (e.giant) {
+          eraseGiantCell(w, e.giant, x, y, z);
         } else if (e.kind === 'player') {
           if (!this.beamHitPlayer) {
             this.beamHitPlayer = true;

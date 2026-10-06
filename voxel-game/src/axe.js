@@ -7,6 +7,7 @@
 
 import { WATER_ID } from './ids.js';
 import { redrawBody } from './body.js';
+import { chopGiant } from './giant.js';
 
 const REACH = 11.5; // 体の中心から刃が届く距離（ボクセル）
 const NOTCH_STEP = 0.9; // 1 回で幹を削る深さ（太い木は 4〜6 回で倒れる）
@@ -52,6 +53,8 @@ export function chop(world, e) {
     }
     return ev;
   }
+  const gh = hits.find((q) => world.entities.get(q.o)?.giant);
+  if (gh) return chopGiant(world, e, world.entities.get(gh.o).giant, f, m, ev);
   const th = hits.find((q) => world.entities.get(q.o)?.tree);
   if (th) return chopTree(world, e, world.entities.get(th.o), f, m, ev);
   if (hits.length) ev.target = world.entities.get(hits[0].o);

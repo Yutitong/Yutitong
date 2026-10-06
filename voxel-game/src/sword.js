@@ -26,7 +26,7 @@ export function slash(world, e, horizontal) {
     const o = world.ownerAt(Math.floor(x), Math.floor(y), Math.floor(z));
     if (o <= 0 || o === e.id || o === e.toolId) return;
     if (dragon && o === dragon.id) hits.push({ p: [x, y, z], score });
-    else if (o === GROUND_ID || o === ROCK_ID || world.entities.get(o)?.tree) {
+    else if (o === GROUND_ID || o === ROCK_ID || world.entities.get(o)?.tree || world.entities.get(o)?.giant) {
       blocked = true;
     }
   };

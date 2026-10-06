@@ -7,6 +7,7 @@
 
 import { GROUND_ID } from './ids.js';
 import { burnTreeCell } from './trees.js';
+import { burnGiantCell } from './giant.js';
 import { CHUNK, floorDiv, chunkKey } from './grid.js';
 
 export const FIRE_SPEED = 80; // ボクセル/秒（≈ 12 m/s）
@@ -108,6 +109,17 @@ export class Fire {
           const c = w.colorAt(gx, gy, gz);
           if (!c || CHAR_GROUND.includes(c)) continue;
           this.ignite(gx, gy, gz, owner, CHAR_GROUND[(gx * 7 + gz * 13) & 3]);
+        }
+      }
+    } else if (e?.giant) {
+      // 巨大樹: まわりの葉や幹が焦げる（燃え落ちはしない）
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            if (dx * dx + dy * dy + dz * dz > 5) continue;
+            const final = burnGiantCell(w, e.giant, x + dx, y + dy, z + dz);
+            if (final !== null) this.ignite(x + dx, y + dy, z + dz, owner, final);
+          }
         }
       }
     } else if (e?.tree) {

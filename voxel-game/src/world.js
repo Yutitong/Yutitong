@@ -18,6 +18,7 @@ import { dig, place } from './shovel.js';
 import { slash } from './sword.js';
 import { shoot, updateShots } from './shotgun.js';
 import { WaterSim } from './water.js';
+import { paintGiantsInto, forgetGiants, giantZone } from './giant.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
@@ -137,6 +138,8 @@ export class World {
     this.trees = new Map(); // 区画 → 木
     this.treeSpecs = new Map(); // 区画 → 木の設計図（なければ null）
     this.felling = []; // 倒れていく木
+    this.giants = new Map(); // 区画 → 巨大樹
+    this.giantSpecs = new Map(); // 区画 → 巨大樹の設計図（なければ null）
     this.time = 0;
   }
 
@@ -161,6 +164,7 @@ export class World {
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
       fillTerrain(this, c, cols);
       if (this.generate) {
+        if (this.terrain) paintGiantsInto(this, c); // 巨大樹は先に塗る（ふつうの木や草は空いている所にだけ入る）
         paintTreesInto(this, c); // 木は隣の区画から枝を伸ばしてくることもあるので先に塗る
         if (this.terrain) {
           paintRocksInto(this, c);
@@ -592,7 +596,8 @@ function paintPlantsInto(world, c, cols) {
       if (hash3(x, z, world.seed + 61) % 1000 >= 130) continue; // 先に間引く（fernAt の上限）
       const inner = x >= x0 - 1 && x <= x0 + CHUNK && z >= z0 - 1 && z <= z0 + CHUNK;
       const col = inner ? cols[(x - x0 + 1) + S * (z - z0 + 1)] : world.sample(x, z, {});
-      if (!fernAt(world.seed, x, z, col)) continue;
+      // 川沿いと、巨大樹の森の林床にシダが茂る
+      if (!fernAt(world.seed, x, z, col) && !(hash3(x, z, world.seed + 61) % 1000 < 45 && giantZone(world, x, z, col.h) > 0.45)) continue;
       for (const [dx, dy, dz, color] of fernCells(world.seed, x, z)) {
         const fx = x + dx, fz = z + dz, fy = col.h + dy;
         if (fx < x0 || fx >= x0 + CHUNK || fz < z0 || fz >= z0 + CHUNK || fy <= c.base) continue;
@@ -712,9 +717,10 @@ export function ensureAround(world, x, z, radius) {
 // 片付けたチャンクは、また近づいたときに種から作り直される（木の切り口や焦げ跡は木の記録に残る）。
 // そこにいた NPC はいなくなる（作り直したときに新しく置かれる）
 export function forgetFar(world, centers, keep) {
-  const far = (cx, cz) => centers.every(([x, z]) => Math.max(Math.abs(cx - floorDiv(x, CHUNK)), Math.abs(cz - floorDiv(z, CHUNK))) > keep);
+  const far = (cx, cz, k) => centers.every(([x, z]) => Math.max(Math.abs(cx - floorDiv(x, CHUNK)), Math.abs(cz - floorDiv(z, CHUNK))) > k);
   const gone = [];
-  for (const c of world.chunks.values()) if (far(c.cx, c.cz)) gone.push(c);
+  // 巨大樹のかかる背の高いチャンクはメモリを多く使うので、近くだけ残す
+  for (const c of world.chunks.values()) if (far(c.cx, c.cz, c.top - c.base > 260 ? Math.min(keep, 8) : keep)) gone.push(c);
   if (!gone.length) return 0;
   const keys = new Set(gone.map((c) => c.key));
   // 片付けるチャンクに体がかかっている物（NPC・岩・切り落とされた尾など）は、先に消しておく
@@ -749,5 +755,6 @@ export function forgetFar(world, centers, keep) {
     world.dirty.delete(c.key);
   }
   forgetTrees(world);
+  forgetGiants(world);
   return gone.length;
 }

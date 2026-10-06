@@ -1413,3 +1413,127 @@ test('野原には小さな岩を置かない（川の岩はある）', () => {
   const rocks = [...w.entities.values()].filter((e) => e.name === '岩' && e.offsets.length);
   assert.equal(rocks.length, 0);
 });
+
+// ---- 巨大樹 -----------------------------------------------------------------
+
+async function groveWorld() {
+  const { giantSpecsNear, giantZone } = await import('../src/giant.js');
+  const w = new World({ seed: 20261004 });
+  giantZone(w, 0, 0);
+  const G = w.giantGrove;
+  const specs = giantSpecsNear(w, G[0] - 520, G[1] - 520, G[0] + 520, G[1] + 520).filter((s) => Math.hypot(s.x - G[0], s.z - G[1]) < 520);
+  specs.sort((a, b) => Math.hypot(a.x - G[0], a.z - G[1]) - Math.hypot(b.x - G[0], b.z - G[1]));
+  return { w, G, specs };
+}
+
+test('巨大樹: 出発地点のそばの森に、樹高およそ 100m・直径およそ 10m の巨大樹が 20〜40m おきに林立する', async () => {
+  const { w, G, specs } = await groveWorld();
+  const d0 = Math.hypot(G[0], G[1]) * 0.15;
+  assert.ok(d0 > 60 && d0 < 130, `森まで ${d0.toFixed(0)}m`);
+  assert.ok(specs.length >= 8, `巨大樹 ${specs.length} 本`);
+  for (const s of specs) {
+    assert.ok(s.H * 0.15 >= 88 && s.H * 0.15 <= 110, `樹高 ${(s.H * 0.15).toFixed(0)}m`);
+    const others = specs.filter((o) => o !== s).map((o) => Math.hypot(o.x - s.x, o.z - s.z) * 0.15);
+    assert.ok(Math.min(...others) >= 15 && Math.min(...others) <= 45, `となりまで ${Math.min(...others).toFixed(0)}m`);
+  }
+  // 幹の太さと高さ
+  const s = specs[0];
+  ensureAround(w, s.x, s.z, 2);
+  const g = w.giants.get(s.key);
+  const y = s.y + 40;
+  let n = 0;
+  for (let x = s.x - 60; x <= s.x + 60; x++) if (w.ownerAt(x, y, s.z) === g.id) n++;
+  assert.ok(n * 0.15 >= 7 && n * 0.15 <= 11, `直径 ${(n * 0.15).toFixed(1)}m`);
+  let top = 0;
+  for (const c of w.chunks.values()) for (let i = 0; i < c.owner.length; i++) if (c.owner[i] === g.id) top = Math.max(top, c.yOf(i));
+  assert.ok((top - s.y) * 0.15 > 85, `てっぺん ${((top - s.y) * 0.15).toFixed(0)}m`);
+  // 幹は赤褐色（赤 > 緑 > 青）
+  let edge = s.x - 60;
+  while (w.ownerAt(edge, y, s.z) !== g.id) edge++;
+  const bark = w.colorAt(edge, y, s.z);
+  const [r, gg, b] = [(bark >> 16) & 255, (bark >> 8) & 255, bark & 255];
+  assert.ok(r > gg && gg > b, `幹の色 ${bark.toString(16)}`);
+});
+
+test('巨大樹の森: ふつうの木は生えず、林床にはシダがある', async () => {
+  const { w, G } = await groveWorld();
+  const { regionSpec, REGION } = await import('../src/trees.js');
+  for (let rz = Math.floor((G[1] - 150) / REGION); rz <= Math.floor((G[1] + 150) / REGION); rz++) {
+    for (let rx = Math.floor((G[0] - 150) / REGION); rx <= Math.floor((G[0] + 150) / REGION); rx++) assert.equal(regionSpec(w, rx, rz), null);
+  }
+  ensureAround(w, G[0], G[1], 3);
+  let ferns = 0;
+  for (const c of w.chunks.values()) for (const o of c.owner) if (o === PLANT_ID) ferns++;
+  assert.ok(ferns > 50, `シダ ${ferns}`);
+});
+
+test('巨大樹: チャンクを作る順番が違っても同じ形になる', async () => {
+  const { specs } = await groveWorld();
+  const s = specs[0];
+  const cells = (order) => {
+    const w = new World({ seed: 20261004 });
+    for (const [dx, dz] of order) w.chunkAt(Math.floor(s.x / CHUNK) + dx, Math.floor(s.z / CHUNK) + dz);
+    const g = [...w.giants.values()].find((q) => q.spec.key === s.key);
+    const out = [];
+    for (const [dx, dz] of [[0, 0], [1, 1], [-2, 0]]) {
+      const c = w.chunkAt(Math.floor(s.x / CHUNK) + dx, Math.floor(s.z / CHUNK) + dz);
+      for (let i = 0; i < c.owner.length; i++) if (c.owner[i] === g.id) out.push(`${c.key}:${i}:${c.color[i]}`);
+    }
+    return out.sort();
+  };
+  const order = [];
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) order.push([dx, dz]);
+  const a = cells(order);
+  const b = cells([...order].reverse());
+  assert.ok(a.length > 1000);
+  assert.deepEqual(a, b);
+});
+
+test('巨大樹: 斧で切り倒すと切り株が残り、100m の倒木が横たわる。あけた穴はチャンクを作り直しても残る', async () => {
+  const { eraseGiantCell } = await import('../src/giant.js');
+  const { w, specs } = await groveWorld();
+  w.bodyMakesChunks = false;
+  const p = spawnPlayer(w);
+  const s = specs[0];
+  ensureAround(w, s.x, s.z, 5);
+  const g = w.giants.get(s.key);
+  // 幹の西から近づいて、東を向いて斧を振る
+  const px = s.x - 50, pz = s.z - 4;
+  w.paint(p, false);
+  p.pos = [px, w.groundAt(px + 4, pz + 4), pz];
+  w.paint(p, true);
+  for (let k = 0; k < 120; k++) step(w, { dir: [1, 0], run: false, face: Math.PI / 2, pitch: 0 });
+  const results = [];
+  for (let k = 0; k < 3000 && !g.falling; k++) {
+    for (const ev of step(w, { dir: null, run: false, chop: true, face: Math.PI / 2, pitch: 0 })) if (ev.type === 'chop') results.push(ev.result);
+  }
+  assert.equal(results.at(-1), 'felled');
+  assert.ok(results.length >= 15 && results.length <= 60, `${results.length} 回で倒れた`);
+  for (let k = 0; k < 3000 && w.felling.length; k++) step(w, idle);
+  assert.ok(g.fallen);
+  let stump = 0, high = 0, log = 0;
+  for (const c of w.chunks.values()) {
+    for (let i = 0; i < c.owner.length; i++) {
+      if (c.owner[i] !== g.id) continue;
+      const y = c.yOf(i), x = c.cx * CHUNK + (i % CHUNK), z = c.cz * CHUNK + (Math.floor(i / CHUNK) % CHUNK);
+      if (y < g.cut.y) stump++;
+      else if (y > g.cut.y + 150) high++;
+      else if (x - s.x > 45) log++; // 東（プレイヤーと反対側）へ倒れた
+    }
+  }
+  assert.ok(stump > 1000, `切り株 ${stump}`);
+  assert.equal(high, 0, '立っていた所には何も残らない');
+  assert.ok(log > 5000, `倒木 ${log}`);
+  assertConsistent(w);
+  // 切り株に穴をあけ、チャンクを片付けて作り直しても残っている
+  const y = g.cut.y - 6;
+  let x = s.x - 60;
+  while (w.ownerAt(x, y, s.z) !== g.id) x++;
+  assert.ok(eraseGiantCell(w, g, x, y, s.z));
+  assert.ok(w.colorAt(x + 1, y, s.z) !== 0, '穴の奥に木の中の色が見える');
+  const key = chunkKeyAt(x, s.z);
+  w.chunks.delete(key);
+  assert.equal(w.ownerAt(x, y, s.z), EMPTY);
+  assert.equal(w.ownerAt(x + 1, y, s.z), g.id);
+  assert.ok(w.colorAt(x + 1, y, s.z) !== 0);
+});
