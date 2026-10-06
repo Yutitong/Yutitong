@@ -86,12 +86,22 @@ function look(dx, dy, speed) {
   lookPitch = Math.max(-1.55, Math.min(1.55, lookPitch - dy * speed));
 }
 
-let dragLook = null; // スマホで見回している指
+let dragLook = null; // ドラッグで見回している指（スマホ）やマウス
+let lockFailed = !canvas.requestPointerLock; // カーソルを固定できない（埋め込まれたページなど）ときは、マウスもドラッグで見回す
+function lockFailedNow() {
+  lockFailed = true;
+  document.querySelector('.look-hint').textContent = 'ドラッグで見回す・V で三人称';
+}
+document.addEventListener('pointerlockerror', lockFailedNow);
 canvas.addEventListener('pointerdown', (e) => {
   if (!firstPerson || watchDragon) return;
-  if (e.pointerType === 'mouse') {
+  if (e.pointerType === 'mouse' && !lockFailed) {
     if (document.pointerLockElement !== canvas) {
-      canvas.requestPointerLock?.();
+      try {
+        canvas.requestPointerLock()?.catch?.(lockFailedNow);
+      } catch {
+        lockFailedNow();
+      }
       return;
     }
     if (e.button === 0) chopHeld = chopPending = true;
