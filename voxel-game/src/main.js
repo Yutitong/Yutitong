@@ -18,6 +18,7 @@ import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
 import { ALPHA_SHIFT } from './terrain.js';
+import { SoundSystem } from './sound.js';
 
 const TICK_MS = TICK_SECONDS * 1000; // 1秒に25回、体の位置と姿勢を更新する
 const VOXEL_SIZE = 1.002; // 隙間なく密着させる（わずかに重ねて、継ぎ目に細い線が出ないようにする）
@@ -605,6 +606,8 @@ window.addEventListener('keydown', (e) => {
     jumpPending = true;
   } else if (e.code === 'KeyM' && !e.repeat) {
     dropMeteor();
+  } else if (e.code === 'KeyN' && !e.repeat) {
+    setMuted(!sound.muted);
   } else if (e.code === 'KeyP') {
     e.preventDefault();
     setPaused(!paused);
@@ -880,6 +883,7 @@ function tick() {
   for (const ev of events) {
     if (ev.type === 'push') pushed.add(ev.target.id);
     if (shouldLog(ev)) log(ev);
+    sound.event(ev, world);
   }
   markOwners(highlight);
   highlight = pushed;
@@ -972,6 +976,50 @@ function setQuality(q) {
   }
   far.setLevels(QUALITY[q].far);
   shown = null;
+}
+
+// ---- 効果音 ---------------------------------------------------------------------
+
+const sound = new SoundSystem();
+// 水しぶきは、どこで上がったものも音にする
+const splashRaw = world.splashes.splash.bind(world.splashes);
+world.splashes.splash = (x, y, z, size) => {
+  sound.splash(x, y, z, size);
+  return splashRaw(x, y, z, size);
+};
+// 音はブラウザの決まりで、最初のクリックやキー入力のあとでないと鳴らせない
+const unlockSound = () => sound.unlock();
+for (const type of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(type, unlockSound, { capture: true });
+const muteBtns = [...document.querySelectorAll('[data-mute]')];
+const volumeInput = document.getElementById('volume');
+function setMuted(m) {
+  sound.unlock();
+  sound.setMuted(m);
+  showSound();
+}
+function showSound() {
+  for (const b of muteBtns) {
+    b.setAttribute('aria-pressed', String(sound.muted));
+    b.textContent = sound.muted ? (b.dataset.off ?? '🔇') : (b.dataset.on ?? '🔊');
+  }
+  if (volumeInput) volumeInput.value = String(Math.round(sound.volume * 100));
+}
+for (const b of muteBtns) {
+  b.addEventListener('pointerdown', (e) => e.stopPropagation());
+  b.addEventListener('click', () => setMuted(!sound.muted));
+}
+volumeInput?.addEventListener('input', () => {
+  sound.unlock();
+  sound.setVolume(Number(volumeInput.value) / 100);
+  if (sound.muted && sound.volume > 0) sound.setMuted(false);
+  showSound();
+});
+showSound();
+const earRight = new THREE.Vector3();
+function updateSound(dt) {
+  earRight.setFromMatrixColumn(camera.matrixWorld, 0);
+  const p = camera.position;
+  sound.update(dt, world, { pos: [p.x, p.y, p.z], right: [earRight.x, earRight.y, earRight.z], shake: world.meteor ? meteorView.shake : 0 });
 }
 
 // ---- 隕石落下 -------------------------------------------------------------------
@@ -1084,6 +1132,7 @@ function frame(now) {
     scene.fog.far += 1500 * near;
   }
   renderMeteor(dt / 1000);
+  updateSound(paused ? 0 : dt / 1000);
   renderer.setClearColor(skyColor);
   renderer.clear();
   if (world.meteor) {

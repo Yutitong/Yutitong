@@ -300,7 +300,7 @@ export class ImpactUpdater {
       if (spec) paintGiantLoaded(w, getGiant(w, spec));
       const cells = removed.map(([x, y, z, col]) => [x, y, z, hash3(x, y, z) % 3 ? CHAR[hash3(x, z, y) % CHAR.length] : shade(col, 0.5)]);
       this.scatter(cells, [sp.x, sp.y, sp.z], r, spec ? '焼けた巨大樹の枝葉' : '吹き飛ばされた巨大樹', 6);
-      this.events.push({ type: 'meteorGiant', actor: this.actor ?? { kind: 'meteor', name: '巨大隕石' }, gone: !spec });
+      this.events.push({ type: 'meteorGiant', actor: this.actor ?? { kind: 'meteor', name: '巨大隕石' }, gone: !spec, at: [sp.x, sp.y + 200, sp.z] });
     }
   }
 

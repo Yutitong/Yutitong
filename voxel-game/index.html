@@ -203,6 +203,14 @@
   }
   .meteor-btn:hover:not(:disabled) { background: rgba(160, 40, 22, 0.9); }
   .meteor-btn:disabled { opacity: 0.55; cursor: default; }
+  .sound-btn {
+    position: absolute; top: 132px; right: 12px; z-index: 4;
+    font: inherit; font-size: 15px; line-height: 1; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    color: var(--fg); background: rgba(20, 24, 30, 0.6); border: 1px solid rgba(255, 255, 255, 0.25);
+  }
+  .sound-btn[aria-pressed="true"] { opacity: 0.7; }
+  .volume { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+  .volume input { width: 110px; }
   .btn {
     font: 500 13px var(--font-body);
     color: var(--fg);
@@ -282,6 +290,7 @@
     </div>
     <div class="flash" id="flash" aria-hidden="true"></div>
     <button type="button" class="meteor-btn" data-meteor data-done="落下済み">☄ 隕石</button>
+    <button type="button" class="sound-btn" data-mute aria-pressed="false" aria-label="音を消す / 出す（N）">🔊</button>
     <div class="crosshair" aria-hidden="true"></div>
     <div class="look-hint">クリックでマウス視点（Esc で解除）・V で三人称</div>
     <div class="hp" aria-label="体力">体力 <span class="track"><span class="fill" id="hpBar"></span></span><b id="hpText">100</b></div>
@@ -332,6 +341,7 @@
       <p class="rule-text">空には全長 10m ほどの古代魚が泳いでいる。ナマズのような平たい頭と長い髭、大きな扇の胸びれ。実は小魚の群れがすっかり融け合った 1 匹で、木が行く手にあると 2 匹に分かれて両側を回り込み、通り過ぎるとまた融け合う。撃たれると一気に小魚の群れにほどけて散り、しばらくすると集まり直す。速く泳ぐときはマグロのような回遊魚の形に変わる。</p>
       <p class="rule-text">遠くに、高さ 90m の巨大ピラミッドがそびえる。頂上には紫に怪しく光る正八面体の水晶が浮かんで回っている。正面の参道にはオベリスクやスフィンクスが並び、巨大な門の前では 2 体の巨アヌビス像が守っていて、近づくと体ごとこちらへ向き直り、背中を反らせて杖を両手で振りかぶり、踏み込みながら全身で叩きつけてくる（撃つと割れて落ちる）。中腹の入り口から入ると、竜の紋様と歴代王の調べが描かれた暗い廊下、巨岩の洞窟、天井のとても高い祈祷室（奥に棺）が続く。倒れている墓場泥棒の骸骨は、近づくと起き上がって襲ってくる（太刀で斬ると骨がばらばらに飛び散る）。奥深くに隠された玉座の間には、赤い骨の王が鎮座している。</p>
       <p class="rule-text">画面右上の「☄ 隕石」ボタン（<kbd>M</kbd>）を押すと、空が赤く焼け、巨大な隕石が 10 秒かけて 1.5km 先へ落ちてくる。激突すると地形が本当に動く: 隕石がえぐった穴が広がりながら深くなり、押しのけられた岩と土が盛り上がった波になって外へ広がり、通ったあとに外輪山と岩屑が積もる（波は出発地点まで届いて地面が波打つ）。木は吹き飛び、巨大樹は黒焦げの幹だけが残る。火の玉はボクセルの箱でできた渦の輪になってキノコ雲として昇り、数分かけて消える。縁から底まで 100m のクレーターが残り、半径 1km は焼け野原。巻き上げられた岩が空から降ってくる。近くにいると持ち上げられ、吹き飛ばされて傷を受ける。</p>
+      <p class="rule-text">効果音は音声ファイルを使わず、ブラウザがその場で合成している（最初にクリックかキーを押すと鳴り始める）。斧・シャベル・太刀・ショットガンの音、骨や石像の崩れる音、龍の吠え声と炎、黄色い球体の光線、隕石の轟音と爆音、足音（草・土・砂・石・水で違う）、水しぶき、川のせせらぎ、風、森の小鳥。遠い音ほど小さく、こもって、遅れて届き、左右にも分かれる。遠くの隕石は、閃光から何秒も遅れて爆音が届く。ピラミッドの中ではよく響く。右上の「🔊」ボタン（<kbd>N</kbd>）で音を消せ、音量は操作の欄で変えられる。</p>
       <p class="rule-text">ショットガンは龍にも当たる。胴に丸い弾痕があいて肉が見え、撃ち続けると尾の側がちぎれて落ちる（首はちぎれない）。撃たれた龍は怒って、プレイヤーの近くへ降りてきて火を吹きかけてくる。</p>
       <p class="rule-text">出発地点から 100m ほど先の平地（と世界のあちこち）には巨大樹の森がある。樹高およそ 100m・根元の直径およそ 10m のセコイアのような巨木が 20〜40m おきに林立し、赤褐色の幹には縦の溝、根元は板のように張り出す。林床は落ち葉と苔とシダ。斧で 30 回ほど切り込むと、ゆっくり倒れて 100m の倒木になる。</p>
       <p class="rule-text">掘ったり削ったりした所のまわりでは、支えを失った土砂が落ち、急な斜面は崩れて滑り落ちる（もとの地面は 63°、崩れた土は 45° まで）。地面から切り離された岩の塊はまるごと落ちる。落ちた物は水に沈んで水位を上げ、勢いよく水に入ると、しぶきと外へ広がる波が立つ。</p>
@@ -347,8 +357,10 @@
         <label class="check"><input type="checkbox" id="hitbox">当たり判定を表示</label>
         <label class="check"><input type="checkbox" id="watchDragon">カメラで龍を追う</label>
         <button type="button" class="btn" data-meteor data-done="隕石は落ちた（開き直すと元に戻る）">隕石を落とす</button>
+        <button type="button" class="btn" data-mute data-on="音を消す" data-off="音を出す" aria-pressed="false">音を消す</button>
+        <label class="volume">音量 <input type="range" id="volume" min="0" max="100" step="1" value="70" aria-label="音量"></label>
       </div>
-      <p class="keys" style="margin-top:10px">一人称視点で始まる。画面をクリックするとマウスで上下左右どこでも見回せる（<kbd>Esc</kbd> で解除。スマホは画面をドラッグ）。<kbd>V</kbd> で三人称視点と切り替え。<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（視線の向き基準。どの角度へも歩ける。<kbd>A</kbd><kbd>D</kbd> で横歩き）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>Space</kbd> でジャンプ（高さ 1m ほど）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> / 左クリックで道具を使う（視線の先へ。斧を振る・シャベルで掘る・太刀で斬る・照準へ撃つ。押し続けると続ける）、<kbd>G</kbd> / 右クリックで土を盛る、三人称ではドラッグで視点回転・ホイールでズーム、<kbd>M</kbd> で隕石を落とす、<kbd>P</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
+      <p class="keys" style="margin-top:10px">一人称視点で始まる。画面をクリックするとマウスで上下左右どこでも見回せる（<kbd>Esc</kbd> で解除。スマホは画面をドラッグ）。<kbd>V</kbd> で三人称視点と切り替え。<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 矢印で移動（視線の向き基準。どの角度へも歩ける。<kbd>A</kbd><kbd>D</kbd> で横歩き）、<kbd>Shift</kbd> で走る（押し続けると全力疾走）、<kbd>Space</kbd> でジャンプ（高さ 1m ほど）、<kbd>1</kbd> 斧 / <kbd>2</kbd> シャベル / <kbd>3</kbd> 太刀 / <kbd>4</kbd> ショットガンに持ち替え、<kbd>F</kbd> / 左クリックで道具を使う（視線の先へ。斧を振る・シャベルで掘る・太刀で斬る・照準へ撃つ。押し続けると続ける）、<kbd>G</kbd> / 右クリックで土を盛る、三人称ではドラッグで視点回転・ホイールでズーム、<kbd>M</kbd> で隕石を落とす、<kbd>N</kbd> で音を消す / 出す、<kbd>P</kbd> で一時停止、停止中に <kbd>.</kbd> で1ティック進む。</p>
     </section>
 
     <section>
