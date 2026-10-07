@@ -72,8 +72,9 @@ export function meteorSite(world, giantZone, pyramid) {
 
 // 激突のあとの列 (x, z) の地形。out は world.sample の結果（h, water など）を書き換える。
 // out.blast: 焼け野原の度合い 0..1、out.crater: すり鉢の中（0..1。底ほど 1）、out.ejecta: 外輪山と飛び散った岩屑の上
-export function craterShape(world, x, z, out) {
-  const I = world.impact;
+// at: 落ちる所（なければ world.impact）
+export function craterShape(world, x, z, out, at = world.impact) {
+  const I = at;
   const dx = x - I.x, dz = z - I.z;
   const r = Math.hypot(dx, dz);
   out.blast = 0;
@@ -179,7 +180,7 @@ export function giantBurn(world, x, z, seed) {
     gone: false,
     cut: Math.min(0.95, 0.32 + 0.5 * u + rnd * 0.18),
     lean: [(dx / r) * push, (dz / r) * push],
-    ember: 0.12 * (1 - u) + 0.03,
+    ember: 0.06 * (1 - u) + 0.02,
     twigs: u > 0.45, // 遠い木は焦げた枝が少し残る
   };
 }
@@ -188,9 +189,11 @@ export function giantBurn(world, x, z, seed) {
 
 // 激突を世界に記録し、覚えておいた木・巨大樹・地形の情報のうち、変わる所を忘れる。
 // チャンクを作るスレッドでも呼ぶ（そちらではチャンクを持たないので、覚えた情報を忘れるだけ）
-export function applyImpact(world, at) {
+// keepLoaded: いま世界にある木・巨大樹は消さない（画面を描くスレッドで、激突の波が届いたときに一本ずつ変える）。
+// epoch: false なら、チャンクを作るスレッドとの合い言葉（impactEpoch）を進めない（激突の最中は、まだスレッドに知らせない）
+export function applyImpact(world, at, { keepLoaded = false, epoch = true } = {}) {
   world.impact = { x: at.x, z: at.z };
-  world.impactEpoch = (world.impactEpoch ?? 0) + 1;
+  if (epoch) world.impactEpoch = (world.impactEpoch ?? 0) + 1;
   const R = BLAST_R + 400;
   const near = (x, z, m) => Math.hypot(x - at.x, z - at.z) < R + m;
   const fromKey = (key) => [Math.floor(key / 65536) - 32768, (key % 65536) - 32768];
@@ -200,7 +203,7 @@ export function applyImpact(world, at) {
     if (near(rx * 24 + 12, rz * 24 + 12, 60)) world.treeSpecs.delete(key);
   }
   for (const [key, tree] of [...(world.trees ?? [])]) {
-    if (!near(tree.spec.x, tree.spec.z, 60)) continue;
+    if (keepLoaded || !near(tree.spec.x, tree.spec.z, 60)) continue;
     world.trees.delete(key);
     world.entities.delete(tree.id);
   }
@@ -210,12 +213,68 @@ export function applyImpact(world, at) {
     if (near(gx * 210 + 105, gz * 210 + 105, 400)) world.giantSpecs.delete(key);
   }
   for (const [key, g] of [...(world.giants ?? [])]) {
-    if (!near(g.spec.x, g.spec.z, 400)) continue;
+    if (keepLoaded || !near(g.spec.x, g.spec.z, 400)) continue;
     world.giants.delete(key);
     world.entities.delete(g.id);
   }
   world.physics?.memo?.clear();
 }
+
+// ---- 激突のあと、地形がどう動くか（世界のセルと、遠景のシェーダーで同じ式） ----------------
+//
+// 列の高さ = もとの高さ h0 + (最後の高さ hf - h0) × 進み P + 地面の波 W
+// - すり鉢の中: 隕石がえぐった穴（一時的な空洞）が、外へ広がりながら深くなる。穴の縁が通った所から下がっていく
+// - すり鉢の外: 押しのけられた岩と土が、盛り上がった波（波頭）になって外へ転がるように広がり、通ったあとに岩屑が積もる
+//   （外輪山はこうしてできる）。波頭は地面の波としてさらに遠くまで伝わり、何度か揺れて収まる
+export const SETTLE = 12; // 激突からこの秒数で、すべて最後の形になる
+
+// 空洞の縁の半径（激突からの時間 tau）
+export function cavityR(tau) {
+  return tau <= 0 ? 0 : CRATER_R * (1 - Math.exp(-tau / 1.4));
+}
+
+// 最後の形への進み 0..1
+export function impactP(r, tau) {
+  if (tau <= 0) return 0;
+  if (tau >= SETTLE) return 1;
+  if (r < CRATER_R) return Math.max(0, Math.min(1, (cavityR(tau) - r) / 260 + 0.5));
+  return Math.max(0, Math.min(1, (GROUND_WAVE * tau - r) / 700));
+}
+
+// 地面の波の高さ（ボクセル）。外輪山のすぐ外では 18m ほど盛り上がる
+export function waveAmp(r) {
+  return Math.max(2, 120 / (1 + Math.max(0, r - CRATER_R) / 500));
+}
+
+// 波の形: 大きな波頭と、そのうしろの浅い谷（s: 波頭からの距離。前が正）
+const waveShape = (s) => (s >= 0 ? Math.exp(-(s * s) / 22500) : Math.exp(-(s * s) / 48400) - 0.35 * Math.exp(-(((s + 420) / 200) ** 2)));
+export function impactW(r, tau) {
+  if (tau <= 0 || tau >= SETTLE + 4 || r < CRATER_R * 0.97) return 0;
+  const s = r - GROUND_WAVE * tau;
+  if (s > 520 || s < -900) return 0;
+  return waveAmp(r) * waveShape(s);
+}
+
+// 同じ式の GLSL（uImpact = 落ちた所 x, z、激突からの時間、1 なら動いている）
+export const IMPACT_GLSL = `
+uniform vec4 uImpact;
+float impCavity(float tau) { return tau <= 0.0 ? 0.0 : ${CRATER_R.toFixed(1)} * (1.0 - exp(-tau / 1.4)); }
+float impP(float r, float tau) {
+  if (tau <= 0.0) return 0.0;
+  if (tau >= ${SETTLE.toFixed(1)}) return 1.0;
+  if (r < ${CRATER_R.toFixed(1)}) return clamp((impCavity(tau) - r) / 260.0 + 0.5, 0.0, 1.0);
+  return clamp((${GROUND_WAVE.toFixed(1)} * tau - r) / 700.0, 0.0, 1.0);
+}
+float impW(float r, float tau) {
+  if (tau <= 0.0 || tau >= ${(SETTLE + 4).toFixed(1)} || r < ${(CRATER_R * 0.97).toFixed(1)}) return 0.0;
+  float s = r - ${GROUND_WAVE.toFixed(1)} * tau;
+  if (s > 520.0 || s < -900.0) return 0.0;
+  float q = (s + 420.0) / 200.0;
+  float g = s >= 0.0 ? exp(-s * s / 22500.0) : exp(-s * s / 48400.0) - 0.35 * exp(-q * q);
+  float amp = max(2.0, 120.0 / (1.0 + max(0.0, r - ${CRATER_R.toFixed(1)}) / 500.0));
+  return amp * g;
+}
+`;
 
 // 激突でかたちの変わるチャンクか
 export function impactTouches(world, cx, cz) {
@@ -233,10 +292,13 @@ const DEBRIS_HOT = [0xff7a1a, 0xe0501a, 0xffa030];
 
 export class MeteorEvent {
   // site: 落ちる所 { x, z }、onImpact(world): 激突の瞬間に呼ぶ（チャンクの作り直しなど、描画側の後始末）
-  constructor(world, site, { onImpact = null, seed = 7 } = {}) {
+  // updater: 地形を動かすもの（impact.js）、onSettle(world): すべて最後の形になったときに呼ぶ
+  constructor(world, site, { onImpact = null, onSettle = null, updater = null, seed = 7 } = {}) {
     this.world = world;
     this.site = site;
     this.onImpact = onImpact;
+    this.onSettle = onSettle;
+    this.updater = updater;
     this.t = 0; // ボタンを押してからの時間（秒）
     this.phase = 'falling';
     this.events = [];
@@ -253,6 +315,7 @@ export class MeteorEvent {
     const a = toStart + Math.PI * 0.62;
     this.from = [site.x + Math.cos(a) * 15000, 14000, site.z + Math.sin(a) * 15000];
     this.first = { type: 'meteorSpotted', actor: this.entity }; // 最初のティックで知らせる
+    if (updater) updater.actor = this.entity;
   }
 
   get impactAt() {
@@ -279,23 +342,39 @@ export class MeteorEvent {
     const w = this.world;
     this.t += dt;
     if (this.phase === 'falling' && this.t >= T_FALL) {
-      this.phase = 'impact';
-      applyImpact(w, this.site);
+      // 激突: このあと SETTLE 秒かけて、地形がクレーターの形へ動いていく（live）。チャンクを作るスレッドには、
+      // 動き終わってから知らせる（それまでは、もとの地形のチャンクを作ってもらい、こちらで動かす）
+      this.phase = 'live';
+      applyImpact(w, this.site, { keepLoaded: true, epoch: false });
+      w.meteorLive = true;
       this.onImpact?.(w);
       this.events.push({ type: 'meteorImpact', actor: this.entity });
     }
-    if (this.phase === 'falling') return;
+    if (this.phase === 'falling') {
+      this.updater?.prepare(player); // 落ちてくる間に、まわりのチャンクの最後の形を少しずつ計算しておく
+      return;
+    }
     const tau = this.since;
+    if (this.phase === 'live') {
+      // 地形を動かす（1 秒に 12.5 回）
+      if (this.updater && (w.tickCount % 2 === 0 || tau >= SETTLE)) {
+        this.updater.update(Math.min(tau, SETTLE), player);
+        this.events.push(...this.updater.events);
+      }
+      if (tau >= SETTLE) {
+        this.phase = 'impact';
+        w.meteorLive = false;
+        w.impactEpoch = (w.impactEpoch ?? 0) + 1;
+        this.onSettle?.(w);
+      }
+    }
     const P = player?.pos;
     const rp = P ? Math.hypot(P[0] + 4.5 - this.site.x, P[2] + 4.5 - this.site.z) : Infinity;
-    // 地面の波が届いた: 足もとが持ち上がって跳ねる
+    // 地面の波が届いた（体を持ち上げるのは地形を動かす側）
     if (!this.quakeDone && tau * GROUND_WAVE >= rp) {
       this.quakeDone = true;
       const amp = waveAmp(rp);
-      if (P && amp > 2) {
-        if (player.vy === 0) player.vy = -Math.min(34, 8 + amp * 2.2);
-        this.events.push({ type: 'meteorQuake', actor: this.entity, target: player, amp });
-      }
+      if (P && amp > 2) this.events.push({ type: 'meteorQuake', actor: this.entity, target: player, amp });
     }
     // 衝撃波が届いた: 半径 1km の中なら、吹き飛ばされて傷を受ける
     if (!this.blastDone && tau * AIR_BLAST >= rp) {
@@ -352,15 +431,12 @@ export class MeteorEvent {
 
   get label() {
     if (this.phase === 'falling') return `落下中（激突まで ${Math.max(0, Math.ceil(T_FALL - this.t))} 秒）`;
+    if (this.phase === 'live') return '激突。大地が波打っている';
     if (this.phase === 'impact') return '激突。岩が降っている';
     return 'クレーターが残った';
   }
 }
 
-// 地面の波の高さ（激突した所からの距離 r で）。描画側の波と同じ式
-export function waveAmp(r) {
-  return 70 / (1 + r / 700) + 2;
-}
 
 // ---- 降ってくる岩 ----------------------------------------------------------------
 

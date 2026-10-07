@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv, PLAYER_HP, startMeteor } from './world.js';
-import { MeteorView, quake, QUAKE_GLSL, quakeAt } from './meteorview.js';
-import { impactTouches, CRATER_R } from './meteor.js';
+import { MeteorView } from './meteorview.js';
+import { impactTouches, CRATER_R, T_FALL } from './meteor.js';
+import { impactUniform } from './far.js';
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { spawnMonster } from './monster.js';
@@ -177,9 +178,8 @@ function voxelMaterial(options, alpha = false) {
     shader.uniforms.uHead = cutaway.uHead;
     shader.uniforms.uCut = cutaway.uCut;
     shader.uniforms.uSelf = cutaway.uSelf;
-    shader.uniforms.uQuake = quake.uQuake;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;\nuniform vec4 uSelf;' + QUAKE_GLSL)
+      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;\nuniform vec4 uSelf;')
       // 色は sRGB で持っている（水は不透明度も持つ）
       .replace('#include <color_vertex>', alpha ? 'vColor = vec4(pow(color.rgb, vec3(2.2)), color.a);' : 'vColor = pow(color, vec3(2.2));')
       .replace('#include <begin_vertex>', `
@@ -194,7 +194,6 @@ function voxelMaterial(options, alpha = false) {
         // 一人称のときは、自分の体（当たり判定の円柱の中）を描かない（道具ははみ出した所だけ見える）
         if (uSelf.w > 0.5 && wc.y > uSelf.z && wc.y < uSelf.z + 15.0 && length(wc.xz - uSelf.xy) < 4.65) show = 0.0;
         transformed = transformed * show + iCell.xyz;
-        transformed.y += quakeY(wc.xz); // 隕石の地面の波
       `);
   };
   return m;
@@ -364,6 +363,12 @@ function upload(layer, all) {
 function updateView(chunk) {
   const v = views.get(chunk.key);
   if (!v) return;
+  // 持つ高さの下の端が変わった（隕石のクレーター）: セルの番号がずれたので作り直す
+  if (chunk.rebased) {
+    chunk.rebased = false;
+    buildView(chunk);
+    return;
+  }
   for (const i of chunk.changed) writeCell(v, chunk, i);
   chunk.changed.length = 0;
   const wasteful = (l) => l.hidden > 2000 && l.hidden > l.count / 2;
@@ -441,6 +446,8 @@ function syncChunks() {
   for (const t of farTemple) t.view.update(t.body, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
   // チャンク（と粗いブロック）がそろったら、その範囲の遠景を隠す
   if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (Math.max(viewRadius, lod.ready) + 0.5) * CHUNK };
+  // 隕石で地形が動いている間は、まだ来ていないチャンクがあっても、細かく描く範囲の遠景は隠す（チャンクと遠景が重ならないように）
+  else if (world.meteorLive) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (viewRadius + 0.5) * CHUNK };
 }
 let shown = null; // チャンクで描いている正方形
 
@@ -701,6 +708,7 @@ function describe(ev) {
   if (ev.type === 'meteorImpact') return { cls: 'push', text: '隕石が森に激突した！ 地面が大きくえぐれる', rule: '' };
   if (ev.type === 'meteorQuake') return { cls: 'push', text: '地面の波が足もとを通り抜け、体が持ち上がった', rule: `波の高さ ${(ev.amp * VOXEL_METERS).toFixed(1)}m` };
   if (ev.type === 'meteorWind') return { cls: 'block', text: '遠くから衝撃波の轟音と熱い風が届いた', rule: '' };
+  if (ev.type === 'meteorGiant') return { cls: 'push', text: ev.gone ? '押し寄せた土の波に、巨大樹が根こそぎ吹き飛ばされた' : '巨大樹の枝葉が吹き飛び、焦げた幹だけが残った', rule: '' };
   if (ev.type === 'meteorBlast') return { cls: 'push', text: '衝撃波に吹き飛ばされた！', rule: `体力 -${ev.damage}` };
   if (ev.type === 'meteorDebrisHit') return { cls: 'push', text: '空から降ってきた岩が当たった', rule: `体力 -${ev.damage}` };
   if (ev.type === 'skeletonWake') return { cls: 'push', text: '倒れていた墓場泥棒の骸骨が、骨を鳴らして起き上がった', rule: '' };
@@ -957,6 +965,11 @@ function setQuality(q) {
   slowFor = fastFor = 0;
   viewRadius = QUALITY[q].view;
   lod.setRadii(viewRadius, QUALITY[q].lod1, QUALITY[q].lod2);
+  // 隕石で地形が動いている間は、粗いブロックの輪を使わない（動く遠景で描く）。地形を動かす範囲も細かく描く範囲に合わせる
+  if (world.meteorLive) {
+    lod.setRadii(viewRadius, viewRadius, viewRadius);
+    world.impactRadius = viewRadius;
+  }
   far.setLevels(QUALITY[q].far);
   shown = null;
 }
@@ -971,15 +984,30 @@ let shaken = null; // このフレームだけカメラをずらした量（描�
 // クレーターの近さ（外輪山の外 500m までは 1、そこから 300m で 0）
 const smoothNear = (r) => Math.max(0, Math.min(1, (CRATER_R + 5300 - r) / 2000));
 
+let qualityBefore = null;
 function dropMeteor() {
   if (world.meteor) return;
   const m = startMeteor(world, {
-    // 激突の瞬間: チャンクを作るスレッドにも知らせ、形の変わる所の粗いブロックと遠景を作り直す
+    // 激突の瞬間: 地形が動いている間は画質を下げ（細かく描く範囲を狭め、粗いブロックの輪をやめて、動く遠景で描く）、
+    // クレーターのまわりのチャンクは、動き終わるまでスレッドから受け取らない
     onImpact: (w) => {
+      qualityBefore = quality;
+      setQuality(Math.min(quality, 1));
+      lod.setRadii(viewRadius, viewRadius, viewRadius);
+      w.impactRadius = viewRadius;
+      generator.hold = (cx, cz) => impactTouches(w, cx, cz);
+      far.refresh();
+      shown = null;
+    },
+    // 動き終わった: チャンクを作るスレッドにも知らせ、粗いブロックと遠景を最後の形で作り直し、画質を戻す
+    onSettle: (w) => {
       generator.impact(w.impact);
       lod.gen.impact(w.impact);
+      generator.hold = null;
+      w.impactRadius = undefined;
       lod.forget((cx, cz) => impactTouches(w, cx, cz));
-      far.reset();
+      setQuality(qualityBefore ?? quality);
+      far.refresh();
       shown = null;
     },
   });
@@ -1001,6 +1029,9 @@ function renderMeteor(dt) {
   if (!m) return;
   const t = m.t + (paused ? 0 : Math.min(acc, TICK_MS) / 1000);
   meteorView.update(m, t, camera.position, paused ? 0 : dt);
+  // 動く遠景（地形が動いている間だけ）
+  // 動き終わったあとも、最後の形（激突の最中に作った遠景）を保つ。最後の形で作り直した遠景は、この式では動かない
+  impactUniform.value.set(m.site.x, m.site.z, Math.max(0, t - T_FALL), m.since > 0 ? 1 : 0);
   skyColor.copy(meteorView.sky);
   scene.fog.color.copy(skyColor);
   const dust = meteorView.dust;
@@ -1009,9 +1040,8 @@ function renderMeteor(dt) {
   hemi.color.copy(baseHemi).lerp(RED_LIGHT, 0.5 * meteorView.redness);
   sun.color.copy(baseSun).lerp(RED_LIGHT, 0.6 * meteorView.redness);
   const s = meteorView.shake;
-  const dy = quakeAt(camera.position.x, camera.position.z);
-  if (!s && !dy) return;
-  shaken = new THREE.Vector3((Math.random() - 0.5) * s, dy + (Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  if (!s) return;
+  shaken = new THREE.Vector3((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
   camera.position.add(shaken);
 }
 

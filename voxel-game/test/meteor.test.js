@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, spawnPlayer, step, startMeteor, ensureAround, ROCK_ID, EMPTY } from '../src/world.js';
+import { World, spawnPlayer, step, startMeteor, ensureAround, ROCK_ID, EMPTY, chunkKey } from '../src/world.js';
 import { pyramidSite } from '../src/pyramid.js';
-import { meteorSite, applyImpact, CRATER_R, RIM_Y, BLAST_R, T_FALL, AIR_BLAST, GROUND_WAVE } from '../src/meteor.js';
+import { meteorSite, applyImpact, CRATER_R, RIM_Y, BLAST_R, T_FALL, AIR_BLAST, GROUND_WAVE, SETTLE } from '../src/meteor.js';
 import { giantZone, giantSpecsNear } from '../src/giant.js';
 import { regionSpec } from '../src/trees.js';
 
@@ -175,4 +175,69 @@ test('隕石: 激突のあと、空に巻き上げられた岩がプレイヤー
   for (const c of w.chunks.values()) for (let i = 0; i < c.owner.length; i++) if (c.owner[i] === ROCK_ID && [0xff7a1a, 0xe0501a, 0xffa030, 0x2a2422, 0x3a302a, 0x1f1b19, 0x4a3a30].includes(c.color[i])) rocks++;
   assert.ok(rocks > 10, `残った岩のセル ${rocks}`);
   void EMPTY;
+});
+
+test('隕石: 激突すると、プレイヤーのまわりの地面のセルが本当に動く（押しのけられた土の波が通り、岩屑が積もって最後の形になる）', () => {
+  const w = gameWorld();
+  const p = spawnPlayer(w);
+  const m = startMeteor(w);
+  const s = m.site;
+  const X = s.x + 4600, Z = s.z;
+  ensureAround(w, X, Z, 6);
+  moveTo(w, p, X, Z);
+  run(w, T_FALL);
+  // 落ちた所の側の列
+  const cols = [[X - 50, Z + 10], [X - 20, Z - 15], [X + 30, Z + 25]];
+  const h0 = cols.map(([x, z]) => w.groundAt(x, z));
+  const y0 = p.pos[1];
+  const hist = cols.map(() => []);
+  let ymax = y0;
+  for (let i = 0; i < Math.round((SETTLE + 0.5) / 0.04); i++) {
+    step(w, idle);
+    cols.forEach(([x, z], k) => hist[k].push(w.groundAt(x, z)));
+    ymax = Math.max(ymax, p.pos[1]);
+  }
+  cols.forEach(([x, z], k) => {
+    const final = w.sample(x, z, {}).h;
+    const h = hist[k];
+    assert.ok(Math.abs(h[h.length - 1] - final) <= 1, `最後の形 ${h[h.length - 1]} / ${final}`);
+    // 途中で、もとの高さと最後の高さのどちらよりも高く盛り上がった（波頭が通った）
+    assert.ok(Math.max(...h) > h0[k] + 12 && Math.max(...h) > final, `波頭 ${Math.max(...h)} / ${h0[k]} → ${final}`);
+    // 少しずつ動いた（一度に変わったのではない）
+    assert.ok(new Set(h).size > 6, `${new Set(h).size} 通りの高さ`);
+  });
+  // 地面のセルが本当に積まれている
+  const [x, z] = cols[0];
+  const g = w.groundAt(x, z);
+  assert.ok([1, 2, 6, 7].includes(w.ownerAt(x, g - 1, z)) || w.ownerAt(x, g - 1, z) > 0);
+  assert.equal(w.ownerAt(x, g + 2, z), 0);
+  assert.ok(ymax > y0 + 8, `プレイヤーが持ち上げられた ${y0} → ${ymax}`);
+  assert.equal(m.phase, 'impact');
+});
+
+test('隕石: 波が届いた木は吹き飛び、かけらが飛んで地面に散らばる。クレーターの中では地中の奥まで掘られる', () => {
+  const w = gameWorld();
+  const p = spawnPlayer(w);
+  const m = startMeteor(w);
+  const s = m.site;
+  // クレーターの縁の内側に立つ（地面がえぐれていく）。衝撃波で力尽きないように、体力を大きくしておく
+  const X = s.x + 1500, Z = s.z;
+  ensureAround(w, X, Z, 6);
+  moveTo(w, p, X, Z);
+  p.hp = 1e6;
+  run(w, T_FALL);
+  const base0 = w.chunks.get(chunkKey(Math.floor(X / 16), Math.floor(Z / 16))).base;
+  const trees0 = [...w.trees.values()].filter((t) => Math.abs(t.spec.x - X) < 100 && Math.abs(t.spec.z - Z) < 100).length;
+  const evs = run(w, SETTLE + 0.5);
+  // 出来事にはどれも「誰が」がある（画面のログに書けるように）
+  for (const e of evs) assert.ok(e.actor && e.actor.kind, e.type);
+  const c = w.chunks.get(chunkKey(Math.floor(X / 16), Math.floor(Z / 16)));
+  const final = w.sample(X, Z, {}).h;
+  assert.ok(Math.abs(w.groundAt(X, Z) - final) <= 1, `${w.groundAt(X, Z)} / ${final}`);
+  assert.ok(final < base0 || c.base <= base0, 'チャンクの下の端が下がった');
+  const trees1 = [...w.trees.values()].filter((t) => Math.abs(t.spec.x - X) < 100 && Math.abs(t.spec.z - Z) < 100).length;
+  if (trees0) {
+    assert.equal(trees1, 0, '木は吹き飛んだ');
+    assert.ok(m.updater.fragments > 0, 'かけらが飛んだ');
+  }
 });

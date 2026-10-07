@@ -12,8 +12,10 @@ import { groundColor, waterColor } from './terrain.js';
 import { forestDensity, regionSpec, REGION } from './trees.js';
 import { giantSpec, giantBoxes, GIANT_CELL } from './giant.js';
 import { farStructure } from './pyramid.js';
-import { scarColor } from './meteor.js';
-import { quake, QUAKE_GLSL } from './meteorview.js';
+import { scarColor, craterShape, IMPACT_GLSL } from './meteor.js';
+
+// 隕石の激突の最中: 落ちた所 x, z、激突からの時間、1 なら地形が動いている（meteorview.js が毎フレーム書く）
+export const impactUniform = { value: new THREE.Vector4(0, 0, 0, 0) };
 
 const LEVELS = [
   { cell: 4, tile: 64, reach: 7 }, // 4 ボクセル四方の柱を、まわり 7 タイル（≈ 480 ボクセル ≈ 70m）
@@ -65,17 +67,38 @@ function farMaterial() {
   const m = new THREE.MeshLambertMaterial();
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHide = hide;
-    shader.uniforms.uQuake = quake.uQuake;
+    shader.uniforms.uImpact = impactUniform;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uHide;' + QUAKE_GLSL)
+      .replace('#include <common>', '#include <common>\nuniform vec3 uHide;\nattribute vec4 aImp;\nattribute vec3 aColF;' + IMPACT_GLSL)
+      // 隕石: 柱の色は、最後の形に近づくにつれて焼けた色へ
+      .replace('#include <color_vertex>', `#include <color_vertex>
+        vec2 icw = instanceMatrix[3].xz;
+        float impR = distance(icw, uImpact.xy);
+        float impPr = uImpact.w > 0.5 ? impP(impR, uImpact.z) : 0.0;
+        #ifdef USE_INSTANCING_COLOR
+        if (aImp.z < 0.5) vColor.xyz = mix(vColor.xyz, aColF, impPr);
+        #endif
+      `)
       .replace('#include <begin_vertex>', `
         vec3 transformed = vec3(position);
         vec2 ic = instanceMatrix[3].xz;
         if (abs(ic.x - uHide.x) < uHide.z && abs(ic.y - uHide.y) < uHide.z) transformed = vec3(0.0);
         // カメラのすぐそばの柱や木は、大きく見えて視界をふさぐので描かない
         if (distance(ic, cameraPosition.xz) < 70.0) transformed = vec3(0.0);
-        // 隕石の地面の波（柱の高さで割って、世界の高さで上下させる）
-        transformed.y += quakeY(ic) / max(length(instanceMatrix[1].xyz), 0.001);
+        // 隕石: 地面の柱のてっぺんを、クレーターがえぐれ・岩屑が積もり・波が通る高さへ動かす（世界のセルと同じ式）。
+        // 木や巨大樹の箱は、根元の地面と一緒に上下する。aImp = (もとの高さ, 最後の高さ, 種類, 柱の下)
+        if (uImpact.w > 0.5) {
+          float dy = (aImp.y - aImp.x) * impPr + impW(impR, uImpact.z);
+          float sy = max(length(instanceMatrix[1].xyz), 0.001);
+          float bottom = instanceMatrix[3].y;
+          if (aImp.z < 0.5) {
+            float topNew = aImp.x + dy;
+            float bottomNew = min(bottom, topNew - 8.0);
+            transformed.y = (mix(bottomNew, topNew, position.y) - bottom) / sy;
+          } else {
+            transformed.y += dy / sy;
+          }
+        }
       `);
   };
   return { m, hide };
@@ -90,12 +113,18 @@ export class FarTerrain {
     this.color = new THREE.Color();
   }
 
-  // 遠景を全部作り直す（隕石のクレーターなど、地形が変わったとき）
+  // 遠景を、いまあるものを描いたまま、近い順に少しずつ作り直す（隕石のクレーターなど、地形が変わったとき）
+  refresh() {
+    this.ver = (this.ver ?? 0) + 1;
+  }
+
+  // 遠景を全部作り直す
   reset() {
     for (const L of this.levels) {
       for (const mesh of L.tiles.values()) {
         this.scene.remove(mesh);
         mesh.dispose();
+        mesh.geometry.dispose();
       }
       L.tiles.clear();
       L.center = null;
@@ -122,12 +151,21 @@ export class FarTerrain {
           for (let dx = -r; dx <= r; dx++) {
             if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
             const key = `${tx + dx},${tz + dz}`;
-            if (L.tiles.has(key)) continue;
+            const old = L.tiles.get(key);
+            if (old && (old.userData.ver ?? 0) === (this.ver ?? 0)) continue;
             if (performance.now() - start > budget) {
-              ready = false;
+              if (!old) ready = false;
               break;
             }
-            L.tiles.set(key, this.build(L, tx + dx, tz + dz));
+            // 作り直すときは、新しいものができてから古いものを消す（穴が開かないように）
+            const mesh = this.build(L, tx + dx, tz + dz);
+            mesh.userData.ver = this.ver ?? 0;
+            if (old) {
+              this.scene.remove(old);
+              old.dispose();
+              old.geometry.dispose();
+            }
+            L.tiles.set(key, mesh);
           }
         }
       }
@@ -139,6 +177,7 @@ export class FarTerrain {
           if (Math.max(Math.abs(kx - tx), Math.abs(kz - tz)) <= L.reach + 1) continue;
           this.scene.remove(mesh);
           mesh.dispose();
+          mesh.geometry.dispose();
           L.tiles.delete(key);
         }
       }
@@ -156,15 +195,19 @@ export class FarTerrain {
     const n = L.tile / L.cell;
     const S = n + 2;
     const cols = new Array(S * S);
+    // 隕石の激突の最中は、動き出す前の地形で作り、最後の形はシェーダーへ渡す
+    const live = w.meteorLive && w.impact;
     for (let j = -1; j <= n; j++) {
       for (let i = -1; i <= n; i++) {
         const x = tx * L.tile + i * L.cell + L.cell / 2, z = tz * L.tile + j * L.cell + L.cell / 2;
-        const col = w.sample(x, z, {});
+        const col = live ? w.sampleBase(x, z, {}) : w.sample(x, z, {});
         col.top = Math.max(col.h, col.water);
         cols[(i + 1) + S * (j + 1)] = col;
       }
     }
     const boxes = []; // [中心 x, 下, 中心 z, 幅, 高さ, 色, 縦の軸まわりの回転]
+    const imp = []; // 箱ごとに [もとの高さ, 最後の高さ, 種類（0 = 地面・1 = 木など）, 最後の色]
+    const fin = {};
     const trees = L.cell <= 16 && w.terrain; // 近い段は木を 1 本ずつ描く。遠い段は森の色と高さだけ
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
@@ -201,8 +244,18 @@ export class FarTerrain {
         // ピラミッドは表面の近くだけの殻にする（中の部屋に遠景の柱が入り込まないように）
         if (st) bottom = Math.max(bottom, st.bottom ?? st.top - (L.cell * 1.3 + 10));
         boxes.push(x, bottom, z, L.cell, top - bottom, color, 0);
+        if (live && Math.hypot(x - w.impact.x, z - w.impact.z) < 7400 && !st) {
+          // 最後の形（クレーター・岩屑・焼け野原）の高さと色
+          Object.assign(fin, col);
+          craterShape(w, x, z, fin);
+          const fc = fin.blast ? scarColor(w.seed, x, fin.h - 1, z, fin, groundColor(w.seed, x, fin.h - 1, z, fin, Math.round((slope / L.cell) * 2.2))) : color;
+          imp.push(top, Math.max(fin.h, fin.water), 0, fc);
+        } else {
+          imp.push(top, top, 0, color);
+        }
       }
     }
+    const groundBoxes = boxes.length / 7;
     if (trees) {
       // 幹の根元がこのタイルにある木
       const x0 = tx * L.tile, z0 = tz * L.tile;
@@ -226,7 +279,28 @@ export class FarTerrain {
       }
     }
     const count = boxes.length / 7;
-    const mesh = new THREE.InstancedMesh(box, L.m, count);
+    // 木や巨大樹の箱: 根元の地面と一緒に動く
+    for (let k = groundBoxes; k < count; k++) {
+      const bx = boxes[k * 7], bz = boxes[k * 7 + 2];
+      let dh = 0;
+      if (live && Math.hypot(bx - w.impact.x, bz - w.impact.z) < 7400) {
+        const b = w.sampleBase(bx, bz, {});
+        const h0 = b.h;
+        craterShape(w, bx, bz, b);
+        dh = b.h - h0;
+      }
+      imp.push(0, dh, 1, boxes[k * 7 + 5]);
+    }
+    const aImp = new Float32Array(count * 4), aColF = new Float32Array(count * 3);
+    for (let k = 0; k < count; k++) {
+      aImp.set([imp[k * 4], imp[k * 4 + 1], imp[k * 4 + 2], 0], k * 4);
+      this.color.setHex(imp[k * 4 + 3]);
+      aColF.set([this.color.r, this.color.g, this.color.b], k * 3);
+    }
+    const geo = box.clone();
+    geo.setAttribute('aImp', new THREE.InstancedBufferAttribute(aImp, 4));
+    geo.setAttribute('aColF', new THREE.InstancedBufferAttribute(aColF, 3));
+    const mesh = new THREE.InstancedMesh(geo, L.m, count);
     mesh.frustumCulled = false;
     for (let k = 0; k < count; k++) {
       const b = k * 7;

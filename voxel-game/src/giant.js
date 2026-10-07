@@ -891,6 +891,38 @@ export class FallingGiant {
   }
 }
 
+// 隕石の波が届いた巨大樹: 作ってあるチャンクにある、この木のセルを全部取り除く。
+// 取り除いたセルのうち、見えていたもの [x, y, z, 色] を返す（every 個に 1 つ）
+export function stripGiant(world, g, every = 1) {
+  const sp = g.spec, out = [];
+  let n = 0;
+  for (const c of world.chunks.values()) {
+    const x0 = c.cx * CHUNK, z0 = c.cz * CHUNK;
+    if (x0 + CHUNK < sp.x - GIANT_REACH || x0 > sp.x + GIANT_REACH || z0 + CHUNK < sp.z - GIANT_REACH || z0 > sp.z + GIANT_REACH) continue;
+    const to = Math.min(c.owner.length, (c.top - c.base) * LAYER);
+    for (let i = 0; i < to; i++) {
+      if (c.owner[i] !== g.id) continue;
+      if (c.color[i] && n++ % every === 0) out.push([x0 + (i % CHUNK), c.yOf(i), z0 + (Math.floor(i / CHUNK) % CHUNK), c.color[i]]);
+      c.owner[i] = EMPTY;
+      c.color[i] = 0;
+      c.changed.push(i);
+    }
+    world.dirty.add(c.key);
+  }
+  return out;
+}
+
+// 巨大樹を、作ってあるチャンクに塗る（形が変わった巨大樹を塗り直す）
+export function paintGiantLoaded(world, g) {
+  const sp = g.spec;
+  for (const c of world.chunks.values()) {
+    const x0 = c.cx * CHUNK, z0 = c.cz * CHUNK;
+    if (x0 + CHUNK < sp.x - GIANT_REACH || x0 > sp.x + GIANT_REACH || z0 + CHUNK < sp.z - GIANT_REACH || z0 > sp.z + GIANT_REACH) continue;
+    paintUpright(c, g, true);
+    world.dirty.add(c.key);
+  }
+}
+
 // 片付けたチャンクにしかかかっていない、手を加えていない巨大樹を忘れる
 export function forgetGiants(world) {
   if (!world.giants) return;

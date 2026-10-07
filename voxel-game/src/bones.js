@@ -15,7 +15,7 @@
 import { initCharacter, updateCharacter } from './character.js';
 import { buildParts, createPose, SKELETON_PALETTE, KING_PALETTE } from './humanoid.js';
 import { redrawBody, clearBody } from './body.js';
-import { HEIGHT } from './grid.js';
+import { HEIGHT, chunkKeyAt } from './grid.js';
 import { hash3 } from './rng.js';
 
 const WAKE_RANGE = 34; // 骸骨が起き上がる距離（ボクセル ≈ 5m）
@@ -228,7 +228,8 @@ const SCATTER_TIME = 3.5; // これより長く飛んでいたら、その場に
 export class BoneScatter {
   // cells: 骨のセル [[x, y, z, 色], ...]（世界の座標。もう世界からは消してあること）
   // center: 飛び散る中心、block: かけらの大きさ、power: 飛び散る勢い、from: 打たれた向きの元（そちらから遠ざかる）
-  constructor(world, cells, { name = '崩れた骨', center, block = 3, power = 1, from = null, seed = 1 } = {}) {
+  // upK: 上の方のかけらほど高く跳ね上がる度合い
+  constructor(world, cells, { name = '崩れた骨', center, block = 3, power = 1, from = null, seed = 1, upK = 0.6 } = {}) {
     this.world = world;
     this.id = world.nextId++;
     this.entity = {
@@ -265,7 +266,7 @@ export class BoneScatter {
       if (od < 0.5) [ox, oz] = [Math.cos(a), Math.sin(a)];
       else [ox, oz] = [ox / od, oz / od];
       const sp = (10 + rand() * 22) * power;
-      const up = Math.max(0, m[1] - center[1]); // 上の方の骨ほど高く跳ね上がる
+      const up = Math.max(0, m[1] - center[1]) * (upK / 0.6); // 上の方の骨ほど高く跳ね上がる
       const axis = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
       const al = Math.hypot(...axis) || 1;
       this.frags.push({
@@ -288,11 +289,18 @@ export class BoneScatter {
 
   // 他の物・地形があって入れないセルか
   solid(x, y, z) {
+    if (!this.world.chunks.has(chunkKeyAt(x, z))) return true; // 作られていない所（そこで止まる）
     const o = this.world.ownerAt(x, y, z);
     if (o === 0 || o === this.id) return false;
     if (o === -1) return y < 1;
     const e = this.world.entities.get(o);
     return !e?.yields && e?.kind !== 'water';
+  }
+
+  // 世界に登録して、毎ティック動かしてもらう（骸骨のように持ち主がいないかけら）
+  register(world) {
+    (world.scatters ??= []).push(this);
+    return this;
   }
 
   // かけらの今の形（回っている）

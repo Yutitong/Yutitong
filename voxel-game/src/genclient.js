@@ -39,6 +39,7 @@ export class ChunkGenerator {
   request(cx, cz) {
     const key = chunkKey(cx, cz);
     if (this.pending.has(key)) return true;
+    if (this.hold?.(cx, cz)) return true; // いまは頼まない（隕石で地形が動いている所）
     if (this.pending.size >= MAX_PENDING) return false;
     this.pending.add(key);
     this.worker.postMessage({ type: 'gen', cx, cz });
@@ -53,6 +54,7 @@ export class ChunkGenerator {
       const m = this.ready.shift();
       this.pending.delete(chunkKey(m.cx, m.cz));
       if ((m.epoch ?? 0) !== (this.world.impactEpoch ?? 0)) continue; // 激突の前の地形で作ったもの
+      if (this.hold?.(m.cx, m.cz)) continue; // 地形が動いている所（動き終わってから作り直してもらう）
       if (installChunk(this.world, m)) n++;
     }
     return n;

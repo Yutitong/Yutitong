@@ -1,36 +1,12 @@
-// 隕石落下の見た目: 赤くなる空、落ちてくる火の玉と尾、激突の閃光、立ちのぼる火の玉ときのこ雲、
-// 空気を伝わる衝撃波のドーム、地面を伝わる砂ぼこりの輪、空から時間差で降ってくる岩の火の筋。
-// 地面そのものが波打つのは、ボクセルのマテリアルに入れた quakeY（下の QUAKE_GLSL）で描く。
+// 隕石落下の見た目: 赤くなる空、落ちてくる火の玉と尾、激突の閃光、空気を伝わる衝撃波のドーム、
+// ボクセルのキノコ雲（世界の格子にそろった箱の粒。火の玉が渦を巻くトーラスになって昇り、数分かけて薄れて消える）、
+// 空洞の縁から外へ放り出される岩と土の塊（箱の粒）、空から降ってくる岩の火の筋。
+// 地面が動くのは世界のセル（impact.js）と遠景のシェーダー（far.js）。ここでは描かない
 //
-// 遠くの物（火の玉・雲・衝撃波など）は、遠くまで描ける別のカメラで先に描き、その上に世界を描く（世界の方が手前）
+// 遠くの物は、遠くまで描ける別のカメラで先に描き、その上に世界を描く（世界の方が手前）
 
 import * as THREE from 'three';
-import { T_FALL, GROUND_WAVE, AIR_BLAST, waveAmp, RIM_Y } from './meteor.js';
-
-// 地面の波: x, y = 激突した所（x, z）、z = 波の先頭の半径、w = 1 なら波がある
-export const quake = { uQuake: { value: new THREE.Vector4(0, 0, 0, 0) } };
-export const QUAKE_GLSL = `
-uniform vec4 uQuake;
-float quakeY(vec2 p) {
-  if (uQuake.w < 0.5) return 0.0;
-  float r = distance(p, uQuake.xy);
-  float s = r - uQuake.z;
-  if (s > 500.0 || s < -1700.0) return 0.0;
-  float amp = 70.0 / (1.0 + r / 700.0) + 2.0;
-  float g = s >= 0.0 ? exp(-s * s / 14400.0) : exp(s / 520.0);
-  return amp * g * cos(s * 0.016);
-}
-`;
-// 同じ式（カメラを波に乗せるため）
-export function quakeAt(x, z) {
-  const u = quake.uQuake.value;
-  if (u.w < 0.5) return 0;
-  const r = Math.hypot(x - u.x, z - u.y);
-  const s = r - u.z;
-  if (s > 500 || s < -1700) return 0;
-  const g = s >= 0 ? Math.exp(-(s * s) / 14400) : Math.exp(s / 520);
-  return waveAmp(r) * g * Math.cos(s * 0.016);
-}
+import { T_FALL, AIR_BLAST, CRATER_R } from './meteor.js';
 
 const SKY = new THREE.Color(0xa9c9e8);
 const RED = new THREE.Color(0xd2583a); // 落ちてくる間の、赤く焼けた空
@@ -102,37 +78,13 @@ export class MeteorView {
     this.flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: 0xffffff, ...additive }));
     this.flash.visible = false;
     fx.add(this.flash);
-    // 立ちのぼる火の玉（光の塊）と、きのこ雲（柱と笠）。雲はボクセルらしく、傾いた箱を積み重ねる
-    this.cloud = new THREE.MeshLambertMaterial({ color: 0x5c4a42, transparent: true, opacity: 0.97, fog: false, flatShading: true });
-    this.hotGlow = new THREE.SpriteMaterial({ map: tex, color: 0xff7a28, ...additive });
-    fx.add(new THREE.HemisphereLight(0xffc8a8, 0x2a140c, 1.5));
-    const sun = new THREE.DirectionalLight(0xffb080, 1.4);
-    sun.position.set(0.4, 1, 0.3);
-    fx.add(sun);
-    const cube = new THREE.BoxGeometry(1, 1, 1);
-    this.puffs = [];
-    let seed = 11;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let k = 0; k < 150; k++) {
-      const cap = k >= 50;
-      const p = {
-        cap,
-        a: rnd() * Math.PI * 2,
-        f: rnd(), // 柱の高さ・笠の中の位置
-        r: rnd(), // 笠の中の、中心からの距離
-        size: 0.7 + rnd() * 0.6,
-        shade: 0.75 + rnd() * 0.35,
-        mesh: new THREE.Mesh(cube, this.cloud),
-      };
-      p.mesh.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
-      fx.add(p.mesh);
-      this.puffs.push(p);
-    }
-    this.fireballs = Array.from({ length: 14 }, () => {
-      const sp = new THREE.Sprite(this.hotGlow);
-      fx.add(sp);
-      return { sp, a: rnd() * Math.PI * 2, f: rnd(), r: rnd() };
-    });
+    // ボクセルのキノコ雲と、放り出される岩と土の塊（箱の粒。動きはシェーダーで計算する）
+    this.cloud = voxelCloud();
+    fx.add(this.cloud.mesh);
+    const rnd = (() => {
+      let seed = 11;
+      return () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    })();
     // 衝撃波のドーム（縁ほど明るい半球）
     this.dome = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 16, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.ShaderMaterial({
       ...additive,
@@ -142,9 +94,6 @@ export class MeteorView {
       fragmentShader: 'uniform float uFade; varying vec3 vN; varying vec3 vV; void main() { float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.0); gl_FragColor = vec4(vec3(1.0, 0.93, 0.85) * f * uFade, 1.0); }',
     }));
     fx.add(this.dome);
-    // 地面を伝わる砂ぼこりの輪
-    this.ring = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 96, 1, true), new THREE.MeshBasicMaterial({ color: 0x8a6c58, transparent: true, opacity: 0.6, depthWrite: false, fog: false, side: THREE.DoubleSide }));
-    fx.add(this.ring);
     // 空から降ってくる岩の火の筋（遠く）
     const N = 120;
     this.streaks = Array.from({ length: N }, () => ({ live: false, p: [0, 0, 0], v: [0, 0, 0] }));
@@ -177,7 +126,7 @@ export class MeteorView {
     if (!this.built) this.build();
     const site = m.site;
     const tau = t - T_FALL; // 激突からの時間
-    const ground = RIM_Y * 0.15;
+    const ground = 100;
     // ---- 空の色 ----
     const falling = smooth(0, T_FALL * 0.85, t);
     const after = tau > 0 ? smooth(0, 4, tau) * (1 - smooth(60, 200, tau)) : 0;
@@ -214,51 +163,10 @@ export class MeteorView {
     const dist = Math.hypot(eye.x - site.x, eye.z - site.z);
     const white = tau > 0 ? (1 - smooth(0, 0.9, tau)) * (0.55 + 0.45 * smooth(16000, 3000, dist)) : 0;
     this.flashEl.style.opacity = white.toFixed(3);
-    // ---- 火の玉ときのこ雲 ----
+    // ---- キノコ雲と、放り出される塊 ----
     const rise = tau > 0;
-    const T = Math.max(0, tau);
-    const H = 6000 * (1 - Math.exp(-T / 13)); // 雲の柱の高さ
-    const capR = 600 + 2400 * (1 - Math.exp(-T / 16)); // 笠の半径
-    const heat = rise ? 1 - smooth(1, 18, tau) : 0;
-    this.hotGlow.opacity = heat;
-    this.cloud.opacity = 0.97 * smooth(0.5, 4, tau) * (1 - smooth(150, 280, tau));
-    // はじめは下から火に照らされて赤く、冷えると灰色がかった茶色
-    this.cloud.color.setHex(0x55463f).lerp(new THREE.Color(0xc0603a), heat * 0.75);
-    const grow = smooth(0, 2, tau);
-    for (const pf of this.puffs) {
-      pf.mesh.visible = rise && this.cloud.opacity > 0.01;
-      if (!pf.mesh.visible) continue;
-      let x, y, z, s;
-      if (!pf.cap) {
-        // 柱: 根元は広がり、上は細い。ゆっくりねじれながら昇る
-        const hh = pf.f * H;
-        const w = 380 + 700 * (1 - pf.f) ** 3;
-        const a = pf.a + T * 0.05 * (1 - pf.f);
-        x = site.x + Math.cos(a) * w * 0.55;
-        z = site.z + Math.sin(a) * w * 0.55;
-        y = ground + hh;
-        s = (240 + w * 0.55) * pf.size;
-      } else {
-        // 笠: 柱のてっぺんで外へ巻き込みながら広がる、平たいドーナツ
-        const roll = pf.f * Math.PI * 2 + T * 0.1;
-        const rr = capR * (0.25 + 0.75 * pf.r) * (0.85 + 0.15 * Math.cos(roll));
-        x = site.x + Math.cos(pf.a) * rr;
-        z = site.z + Math.sin(pf.a) * rr;
-        y = ground + H + capR * (0.32 * Math.sin(roll) * (1 - pf.r * 0.5) + 0.12 * (1 - pf.r));
-        s = (200 + capR * 0.28) * pf.size;
-      }
-      pf.mesh.position.set(x, y, z);
-      pf.mesh.scale.setScalar(s * grow);
-    }
-    // 激突の直後に立ちのぼる火の玉（光の塊）
-    for (const fb of this.fireballs) {
-      fb.sp.visible = rise && heat > 0.01;
-      if (!fb.sp.visible) continue;
-      const hh = H * (0.15 + 0.85 * fb.f) * Math.min(1, 0.4 + T / 6);
-      const rr = (300 + capR * 0.6 * fb.f) * fb.r;
-      fb.sp.position.set(site.x + Math.cos(fb.a) * rr, ground + hh * 0.9, site.z + Math.sin(fb.a) * rr);
-      fb.sp.scale.setScalar((1800 + 2400 * fb.f) * (0.5 + 0.5 * grow));
-    }
+    this.cloud.mesh.visible = rise && tau < 330;
+    this.cloud.uniforms.uCloud.value.set(site.x, site.z, Math.max(0, tau), 60);
     // ---- 衝撃波のドームと、砂ぼこりの輪 ----
     const R = Math.max(1, AIR_BLAST * tau);
     this.dome.visible = rise && R < 26000;
@@ -267,23 +175,12 @@ export class MeteorView {
       this.dome.scale.set(R, R * 0.55, R);
       this.dome.material.uniforms.uFade.value = 0.9 * Math.exp(-tau / 6);
     }
-    const Rg = Math.max(1, GROUND_WAVE * tau);
-    this.ring.visible = rise && Rg < 22000;
-    if (this.ring.visible) {
-      const h = 160 + waveAmp(Rg) * 6;
-      this.ring.position.set(site.x, ground + h * 0.35, site.z);
-      this.ring.scale.set(Rg, h, Rg);
-      this.ring.material.opacity = 0.65 * Math.exp(-tau / 9);
-    }
-    // 地面の波（ボクセルを上下させる）
-    const u = quake.uQuake.value;
-    u.set(site.x, site.z, GROUND_WAVE * Math.max(0, tau), rise && Rg < 24000 ? 1 : 0);
     // ---- 空から降ってくる岩の火の筋 ----
     this.updateStreaks(m, tau, eye, dt);
     this.updateNear(m);
     // ---- 揺れ（激突の衝撃と、波・衝撃波が届いたとき） ----
     const front = (c) => Math.exp(-(((tau * c - dist) / 900) ** 2));
-    this.shake = rise ? 2.2 * front(GROUND_WAVE) * Math.min(1, waveAmp(dist) / 8) + 1.6 * front(AIR_BLAST) * smooth(14000, 2000, dist) + 1.2 * (1 - smooth(0, 1.5, tau)) * smooth(16000, 4000, dist) : 0;
+    this.shake = rise ? 1.6 * front(AIR_BLAST) * smooth(14000, 2000, dist) + 1.2 * (1 - smooth(0, 1.5, tau)) * smooth(16000, 4000, dist) : 0;
   }
 
   updateStreaks(m, tau, eye, dt) {
@@ -291,7 +188,7 @@ export class MeteorView {
     const col = this.streakLines.geometry.attributes.color.array;
     const heads = this.heads.geometry.attributes.position.array;
     const active = tau > 3 && tau < 55;
-    const rate = active ? 22 * Math.exp(-(tau - 3) / 22) : 0;
+    const rate = active ? 10 * Math.exp(-(tau - 3) / 22) : 0;
     let spawn = rate * dt;
     this.streaks.forEach((s, i) => {
       if (s.live) {
@@ -350,4 +247,116 @@ export class MeteorView {
     this.cam.updateProjectionMatrix();
     renderer.render(this.fx, this.cam);
   }
+}
+
+// ---- ボクセルのキノコ雲 ----------------------------------------------------------------
+//
+// 粒（箱）ごとに、トーラスの中の位置（輪のまわりの角度・断面の角度・断面の中心からの距離）を持つ。
+// シェーダーで時刻から位置を求め、世界の格子（40 ボクセル）にそろえて置く（箱が積み重なったボクセルの雲に見える）。
+// - はじめの数秒: 地面の上で火の玉が膨らみながら昇る
+// - その後: 火の玉が渦の輪（トーラス）になり、内側が昇って外側が下がるように巻き込みながら、広がって昇っていく。
+//   下には地面から吸い上げられる柱が立つ。熱いうちは中ほど赤く光り、冷えると灰色がかった茶色になる
+// - 数分かけて粒が減っていき、薄れて消える
+// 放り出される塊: 空洞の縁から、外へ斜め上に飛び出し、放物線を描いて落ちる（16 ボクセルの格子にそろえる）
+const RING = 9000, STEM = 2600, EJECTA = 3200;
+function voxelCloud() {
+  const N = RING + STEM + EJECTA;
+  const geo = new THREE.InstancedBufferGeometry();
+  const cube = new THREE.BoxGeometry(1, 1, 1);
+  geo.setIndex(cube.index);
+  geo.setAttribute('position', cube.attributes.position);
+  geo.setAttribute('normal', cube.attributes.normal);
+  const P = new Float32Array(N * 4), Q = new Float32Array(N * 4);
+  let seed = 977;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let k = 0; k < N; k++) {
+    const kind = k < RING ? 0 : k < RING + STEM ? 1 : 2;
+    P.set([kind, rnd(), rnd(), rnd()], k * 4);
+    Q.set([rnd(), rnd(), 0.7 + rnd() * 0.6, rnd()], k * 4);
+  }
+  geo.setAttribute('aP', new THREE.InstancedBufferAttribute(P, 4));
+  geo.setAttribute('aQ', new THREE.InstancedBufferAttribute(Q, 4));
+  geo.instanceCount = N;
+  const uniforms = { uCloud: { value: new THREE.Vector4() } };
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: `
+      uniform vec4 uCloud; // 落ちた所 x, z、激突からの時間、地面の高さ
+      attribute vec4 aP; // 種類（0 = 輪、1 = 柱、2 = 放り出される塊）、乱数 3 つ
+      attribute vec4 aQ; // 乱数 2 つ、大きさ、寿命
+      varying vec3 vColor;
+      const float PI = 3.14159265;
+      void main() {
+        float tau = uCloud.z;
+        float g = uCloud.w;
+        vec3 site = vec3(uCloud.x, g, uCloud.y);
+        float kind = aP.x;
+        vec3 c;
+        float S = 40.0; // 格子の大きさ
+        float size = aQ.z;
+        float heat = exp(-tau / 7.0);
+        float alive = 1.0;
+        vec3 hot = vec3(1.0, 0.42, 0.08), dark = vec3(0.30, 0.25, 0.23), ash = vec3(0.48, 0.42, 0.38);
+        vec3 col;
+        if (kind < 0.5) {
+          // 輪: 火の玉（はじめ）→ 渦の輪
+          float m = smoothstep(1.5, 9.0, tau);
+          float Hc = 700.0 + 6200.0 * (1.0 - exp(-tau / 26.0));
+          float Rm = 650.0 + 1700.0 * (1.0 - exp(-tau / 30.0));
+          float a = 420.0 + 650.0 * (1.0 - exp(-tau / 24.0));
+          float th = aP.y * 2.0 * PI + 0.04 * tau;
+          float ph = aP.z * 2.0 * PI - 0.32 * tau; // 内側が昇り、外側が下がる
+          float rho = a * (0.5 + 0.5 * aP.w);
+          vec3 ring = vec3((Rm + rho * cos(ph)) * cos(th), Hc + rho * sin(ph) * 0.75, (Rm + rho * cos(ph)) * sin(th));
+          // 火の玉: 地面の上で膨らみながら昇る球
+          float Rb = 1300.0 * (1.0 - exp(-tau / 1.6));
+          vec3 dir = normalize(vec3(cos(aP.y * 6.2832) * sin(aP.z * 3.1416), cos(aP.z * 3.1416), sin(aP.y * 6.2832) * sin(aP.z * 3.1416)));
+          vec3 ball = vec3(0.0, Rb * 0.9 + 200.0 * tau, 0.0) + dir * Rb * pow(aP.w, 0.35);
+          c = site + mix(ball, ring, m);
+          c += vec3(sin(tau * 0.31 + aQ.x * 40.0), sin(tau * 0.27 + aQ.y * 40.0), cos(tau * 0.23 + aQ.x * 31.0)) * 90.0;
+          float inner = 1.0 - aP.w;
+          col = mix(mix(dark, ash, aQ.y * 0.6), hot * (1.2 + inner), clamp(heat * (0.5 + inner), 0.0, 1.0));
+          // だんだん粒が減る（1 分ほどから、4〜5 分で消える）
+          alive = step(tau, 60.0 + 240.0 * aQ.w);
+        } else if (kind < 1.5) {
+          // 柱: 地面から吸い上げられて昇る
+          float Hc = 700.0 + 6200.0 * (1.0 - exp(-tau / 26.0));
+          float f = fract(aP.w + tau * 0.03);
+          float top = Hc - 300.0;
+          float rr = (220.0 + 520.0 * pow(1.0 - f, 2.0)) * sqrt(aP.z);
+          float th = aP.y * 2.0 * PI + tau * (0.25 + 0.4 * (1.0 - f));
+          c = site + vec3(rr * cos(th), f * top, rr * sin(th));
+          col = mix(mix(dark, ash, aQ.y * 0.5), hot * 1.3, clamp(heat * (1.2 - f), 0.0, 1.0));
+          alive = step(6.0, tau) * step(tau, 40.0 + 150.0 * aQ.w) * step(f * top, Hc);
+        } else {
+          // 放り出される塊: 空洞の縁から、外へ斜め上に飛び出して落ちる
+          S = 16.0;
+          float t0 = aP.y * 4.0;
+          float t = tau - t0;
+          float r0 = ${CRATER_R.toFixed(1)} * (1.0 - exp(-max(t0, 0.05) / 1.4));
+          float th = aP.z * 2.0 * PI;
+          float v = 380.0 + 820.0 * aP.w;
+          float el = 0.75 + 0.35 * aQ.x;
+          float G = 140.0;
+          float y = v * sin(el) * t - 0.5 * G * t * t;
+          float r = r0 + v * cos(el) * t;
+          c = site + vec3(r * cos(th), y, r * sin(th));
+          size = 0.6 + aQ.z * 0.8;
+          col = mix(vec3(0.24, 0.2, 0.17), hot * 1.4, clamp(exp(-t / 4.0) * aQ.y, 0.0, 1.0));
+          alive = step(0.0, t) * step(0.0, y + 40.0);
+        }
+        vec3 snapped = floor(c / S + 0.5) * S;
+        vec3 p = snapped + position * S * size * alive;
+        // 上から光が当たる（下の面は暗い）
+        float light = 0.62 + 0.38 * max(dot(normal, normalize(vec3(0.4, 1.0, 0.3))), 0.0);
+        vColor = col * light;
+        gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      }
+    `,
+    fragmentShader: 'varying vec3 vColor; void main() { gl_FragColor = vec4(vColor, 1.0); }',
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  return { mesh, uniforms };
 }

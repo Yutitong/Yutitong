@@ -23,6 +23,7 @@ import { Physics } from './physics.js';
 import { Splashes } from './splash.js';
 import { paintGiantsInto, forgetGiants, giantZone, giantSpec, getGiant, refreshGiantsIn } from './giant.js';
 import { craterShape, scarColor, CRATER_R, impactTouches, meteorSite, MeteorEvent } from './meteor.js';
+import { ImpactUpdater } from './impact.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
@@ -83,6 +84,25 @@ class Chunk {
   // セル番号 i の高さ
   yOf(i) {
     return this.base + Math.floor(i / LAYER);
+  }
+
+  // 持つ高さの下の端を newBase まで下げる（隕石のクレーターなど、地中の奥まで掘られるとき）。
+  // 新しく持つ段は地面で埋める。セルの番号がずれるので、描画は作り直す（rebased）
+  lower(newBase) {
+    newBase = Math.max(0, newBase);
+    if (newBase >= this.base) return;
+    const shift = (this.base - newBase) * LAYER;
+    const owner = new Int32Array(this.owner.length + shift);
+    const color = new Uint32Array(this.color.length + shift);
+    owner.fill(GROUND_ID, 0, shift);
+    owner.set(this.owner, shift);
+    color.set(this.color, shift);
+    this.owner = owner;
+    this.color = color;
+    if (this.stamp) this.stamp = null;
+    this.base = newBase;
+    this.changed.length = 0;
+    this.rebased = true;
   }
 
   // 高さ y のセルまで書けるように配列を広げる（16 段ずつ）
@@ -173,6 +193,7 @@ export class World {
       const base = this.terrain ? structureBase(this, cx, cz, Math.max(0, lo - 8)) : Math.max(0, lo - 8);
       c = new Chunk(cx, cz, base);
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
+      if (this.meteorLive && impactTouches(this, cx, cz)) c.imp = { final: true, fresh: true }; // 隕石が動かしている最中に、最後の形で作ったチャンク
       fillTerrain(this, c, cols);
       if (this.terrain) paintPyramidInto(this, c);
       if (this.generate) {
@@ -206,6 +227,14 @@ export class World {
     out.lowland = 0;
     out.edge = Infinity;
     out.pond = false;
+    return out;
+  }
+
+  // 隕石のクレーターができる前の地形（激突の最中に、動き出す前の高さを知るため）
+  sampleBase(x, z, out = {}) {
+    if (!this.terrain) return this.sample(x, z, out);
+    flattenSite(this, x, z, this.terrain.sample(x, z, out));
+    out.blast = 0;
     return out;
   }
 
@@ -534,6 +563,11 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   if (world.meteor) {
     world.meteor.update(dt, p);
     events.push(...world.meteor.events);
+  }
+  // 吹き飛んだかけら（隕石の波で吹き飛んだ木など）
+  if (world.scatters?.length) {
+    for (const s of world.scatters) s.update(dt);
+    world.scatters = world.scatters.filter((s) => !s.settled);
   }
   // 崩れる土砂と岩、水しぶき
   world.physics.step();
@@ -901,40 +935,21 @@ function dropChunks(world, gone) {
   return gone.length;
 }
 
-// 隕石の激突: 形の変わるチャンクを片付ける（描画側が作り直す）。プレイヤーのまわりはすぐに作り直し、地面の上へ立たせ直す
-export function rebuildForImpact(world) {
-  const gone = [...world.chunks.values()].filter((c) => impactTouches(world, c.cx, c.cz));
-  if (!gone.length) return 0;
-  const p = world.player;
-  const keys = new Set(gone.map((c) => c.key));
-  const inside = p && [[0, 0], [8, 0], [0, 8], [8, 8]].some(([dx, dz]) => keys.has(chunkKey(floorDiv(p.pos[0] + dx, CHUNK), floorDiv(p.pos[2] + dz, CHUNK))));
-  if (inside) world.paint(p, false);
-  const n = dropChunks(world, gone);
-  if (inside) {
-    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) world.chunkAt(floorDiv(p.pos[0], CHUNK) + dx, floorDiv(p.pos[2], CHUNK) + dz);
-    let y = 0;
-    for (let dz = 0; dz < 9; dz++) for (let dx = 0; dx < 9; dx++) y = Math.max(y, world.groundAt(p.pos[0] + dx, p.pos[2] + dz));
-    const free = (yy) => {
-      for (let o = 0; o < p.offsets.length; o += 3) if (world.ownerAt(p.pos[0] + p.offsets[o], yy + p.offsets[o + 1], p.pos[2] + p.offsets[o + 2]) !== EMPTY) return false;
-      return true;
-    };
-    while (y < HEIGHT - 20 && !free(y)) y++;
-    p.pos[1] = y;
-    world.paint(p, true);
-  }
-  return n;
-}
-
 // 隕石を落とす（一度だけ）。onImpact(world): 激突の瞬間に、形の変わったチャンクを片付けたあとで呼ぶ（描画側の後始末）
-export function startMeteor(world, { onImpact = null, seed = 7 } = {}) {
+export function startMeteor(world, { onImpact = null, onSettle = null, seed = 7 } = {}) {
   if (world.meteor || !world.terrain) return null;
   const site = meteorSite(world, giantZone, pyramidSite(world));
   if (!site) return null;
+  const updater = new ImpactUpdater(world, site);
   world.meteor = new MeteorEvent(world, site, {
     seed,
-    onImpact: (w) => {
-      rebuildForImpact(w);
-      onImpact?.(w);
+    updater,
+    onImpact: (w) => onImpact?.(w),
+    // 動き終わった: 動かさなかったクレーターのまわりのチャンクは片付ける（チャンクを作るスレッドが、最後の形で作り直す）
+    onSettle: (w) => {
+      const gone = [...w.chunks.values()].filter((c) => impactTouches(w, c.cx, c.cz) && !c.imp?.final);
+      if (gone.length) dropChunks(w, gone);
+      onSettle?.(w);
     },
   });
   return world.meteor;
