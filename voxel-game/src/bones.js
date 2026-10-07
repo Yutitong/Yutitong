@@ -81,7 +81,7 @@ export class Skeleton {
   lay() {
     const w = this.world;
     const voxels = pileVoxels(this.yaw, this.seed).filter(([dx, dy, dz]) => w.ownerAt(this.at[0] + dx, this.at[1] + dy, this.at[2] + dz) === 0);
-    this.pile = voxels.length ? w.spawn({ kind: 'bones', name: '倒れた骸骨', priority: 4, pos: this.at, voxels }) : null;
+    this.pile = voxels.length ? w.spawn({ kind: 'bones', name: '倒れた骸骨', priority: 4, ground: true, pos: this.at, voxels }) : null;
     if (this.pile) this.pile.body = this;
   }
 
@@ -89,11 +89,19 @@ export class Skeleton {
     return this.state !== 'dead';
   }
 
+  // まだ動かす必要があるか（倒れたあとも、骨が飛び散っているあいだは動かす）
+  get busy() {
+    return this.alive || (this.scatter && !this.scatter.settled);
+  }
+
   // 1 ティック分
   update(dt, player, rng, report) {
     this.events = [];
     const w = this.world;
-    if (this.state === 'dead') return;
+    if (this.state === 'dead') {
+      this.scatter?.update(dt);
+      return;
+    }
     const P = player?.pos;
     if (this.state === 'dormant') {
       if (!P) return;
@@ -172,14 +180,15 @@ export class Skeleton {
 
   // 斬られた・撃たれた: 骨が崩れ落ちる。戻り値は出来事の種類
   slash() {
-    return this.collapse();
+    return this.collapse(this.world.player?.pos);
   }
 
-  shot() {
-    return this.collapse();
+  shot(p, power, from) {
+    return this.collapse(from, 0.8 + (power ?? 0.5) * 0.8);
   }
 
-  collapse() {
+  // 崩れる: 骨がばらばらに飛び散る。from: 打った所（そこから遠ざかる向きに飛ぶ）
+  collapse(from = null, power = 1) {
     const w = this.world;
     if (this.state === 'dead') return null;
     let cells;
@@ -198,18 +207,202 @@ export class Skeleton {
       this.pile = null;
     }
     this.state = 'dead';
-    if (cells?.length) dropBones(w, cells);
+    if (cells?.length) {
+      const c = [0, 1, 2].map((a) => cells.reduce((t, v) => t + v[a], 0) / cells.length);
+      c[1] = Math.min(...cells.map((v) => v[1])); // 足もとから外へ・上へはじける
+      this.scatter = new BoneScatter(w, cells, { center: c, from, power, seed: this.seed + 1 });
+    }
     this.events.push({ type: 'skeletonDown', actor: { name: '骸骨' } });
     return 'collapse';
   }
 }
 
-// 骨を、落ちていく物として世界に置く（崩れ落ちて床に積もる）
-function dropBones(w, cells, name = '崩れた骨') {
-  const lo = [0, 1, 2].map((a) => Math.min(...cells.map((c) => c[a])));
-  const voxels = cells.filter(([x, y, z]) => w.ownerAt(x, y, z) === 0).map(([x, y, z, c]) => [x - lo[0], y - lo[1], z - lo[2], c]);
-  if (!voxels.length) return null;
-  return w.spawn({ kind: 'carcass', name, priority: 8, falling: true, vy: 0, fall: 0, pos: lo, voxels });
+// ---- 飛び散る骨 ----------------------------------------------------------------
+//
+// 倒された骸骨（と骨の王）の骨は、ばらばらのかけらになって外へ飛び散り、くるくる回りながら落ちて、
+// 壁で跳ね返り、床に薄く（1 ボクセルの高さで）散らばる。
+// 散らばった骨は地面と同じ扱い（ground）なので、プレイヤーも骸骨も段差としてまたいで進める。撃つとまた跳ねる
+const GRAVITY = 110; // ボクセル/秒²（少し大げさに速く落とす）
+const SCATTER_TIME = 3.5; // これより長く飛んでいたら、その場に落ちたことにする
+
+export class BoneScatter {
+  // cells: 骨のセル [[x, y, z, 色], ...]（世界の座標。もう世界からは消してあること）
+  // center: 飛び散る中心、block: かけらの大きさ、power: 飛び散る勢い、from: 打たれた向きの元（そちらから遠ざかる）
+  constructor(world, cells, { name = '崩れた骨', center, block = 3, power = 1, from = null, seed = 1 } = {}) {
+    this.world = world;
+    this.id = world.nextId++;
+    this.entity = {
+      id: this.id, kind: 'bones', name, priority: 4, ground: true,
+      pos: center.map(Math.round), offsets: new Int16Array(0), colors: new Uint32Array(0), body: this,
+    };
+    world.entities.set(this.id, this.entity);
+    this.cells = [];
+    this.version = 0;
+    this.seed = seed;
+    let n = 0;
+    const rand = () => (hash3(seed, n++, 77) % 10007) / 10007;
+    // 押された向き（撃った・斬った人から遠ざかる）
+    let push = [0, 0];
+    if (from) {
+      const dx = center[0] - from[0], dz = center[2] - from[2];
+      const d = Math.hypot(dx, dz) || 1;
+      push = [dx / d, dz / d];
+    }
+    // セルを block ごとのかたまりに分けて、かけらにする
+    const groups = new Map();
+    for (const c of cells) {
+      const k = `${Math.floor(c[0] / block)},${Math.floor(c[1] / block)},${Math.floor(c[2] / block)}`;
+      let g = groups.get(k);
+      if (!g) groups.set(k, (g = []));
+      g.push(c);
+    }
+    this.frags = [];
+    for (const g of groups.values()) {
+      const m = [0, 1, 2].map((a) => g.reduce((t, c) => t + c[a], 0) / g.length + 0.5);
+      let ox = m[0] - center[0], oz = m[2] - center[2];
+      const od = Math.hypot(ox, oz);
+      const a = rand() * Math.PI * 2;
+      if (od < 0.5) [ox, oz] = [Math.cos(a), Math.sin(a)];
+      else [ox, oz] = [ox / od, oz / od];
+      const sp = (10 + rand() * 22) * power;
+      const up = Math.max(0, m[1] - center[1]); // 上の方の骨ほど高く跳ね上がる
+      const axis = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
+      const al = Math.hypot(...axis) || 1;
+      this.frags.push({
+        pos: m,
+        vel: [ox * sp + push[0] * 14 * power, (8 + rand() * 18 + up * 0.6) * power, oz * sp + push[1] * 14 * power],
+        rel: g.map(([x, y, z, c]) => [x + 0.5 - m[0], y + 0.5 - m[1], z + 0.5 - m[2], c]),
+        axis: axis.map((v) => v / al),
+        spin: (rand() * 2 - 1) * 14,
+        angle: 0,
+        t: 0,
+        flat: null, // 床に散らばったあとのセル [[x, y, z, 色], ...]
+      });
+    }
+    this.draw();
+  }
+
+  get settled() {
+    return this.frags.every((f) => f.flat);
+  }
+
+  // 他の物・地形があって入れないセルか
+  solid(x, y, z) {
+    const o = this.world.ownerAt(x, y, z);
+    if (o === 0 || o === this.id) return false;
+    if (o === -1) return y < 1;
+    const e = this.world.entities.get(o);
+    return !e?.yields && e?.kind !== 'water';
+  }
+
+  // かけらの今の形（回っている）
+  turned(f) {
+    const [kx, ky, kz] = f.axis, c = Math.cos(f.angle), s = Math.sin(f.angle);
+    return f.rel.map(([x, y, z, col]) => {
+      // ロドリゲスの回転
+      const d = (kx * x + ky * y + kz * z) * (1 - c);
+      return [
+        x * c + (ky * z - kz * y) * s + kx * d,
+        y * c + (kz * x - kx * z) * s + ky * d,
+        z * c + (kx * y - ky * x) * s + kz * d,
+        col,
+      ];
+    });
+  }
+
+  // 1 ティック分。まだ飛んでいるかけらがあるときだけ描き直す
+  update(dt) {
+    if (this.settled) return;
+    for (const f of this.frags) {
+      if (f.flat) continue;
+      f.t += dt;
+      f.angle += f.spin * dt;
+      const steps = Math.max(1, Math.ceil(Math.hypot(...f.vel) * dt / 0.8)); // 壁を抜けないように細かく進める
+      const h = dt / steps;
+      for (let k = 0; k < steps && !f.flat; k++) {
+        f.vel[1] -= GRAVITY * h;
+        for (const a of [0, 2, 1]) {
+          const next = f.pos.slice();
+          next[a] += f.vel[a] * h;
+          if (!this.solid(Math.floor(next[0]), Math.floor(next[1]), Math.floor(next[2]))) {
+            f.pos = next;
+          } else if (a === 1 && f.vel[1] < 0) {
+            // 床に当たった: 速いうちは小さく跳ね、遅くなったら散らばる
+            if (f.vel[1] < -26) {
+              f.vel[1] *= -0.3;
+              f.vel[0] *= 0.6;
+              f.vel[2] *= 0.6;
+              f.spin *= 0.6;
+            } else {
+              this.lay(f);
+            }
+          } else {
+            f.vel[a] *= -0.35; // 壁・天井で跳ね返る
+          }
+        }
+      }
+      if (!f.flat && f.t > SCATTER_TIME) this.lay(f);
+    }
+    this.draw();
+  }
+
+  // かけらを床に寝かせる: 回った形を上から押しつぶして、それぞれの所の床の上に 1 段だけ並べる
+  lay(f) {
+    const w = this.world;
+    const cols = new Map();
+    for (const [x, , z, c] of this.turned(f)) {
+      const X = Math.floor(f.pos[0] + x), Z = Math.floor(f.pos[2] + z);
+      const k = `${X},${Z}`;
+      if (!cols.has(k)) cols.set(k, [X, Z, c]);
+    }
+    const y0 = Math.floor(f.pos[1]);
+    f.flat = [];
+    for (const [X, Z, c] of cols.values()) {
+      // その列の床をさがす（かけらの所から少し上下）
+      for (let y = y0 + 2; y >= y0 - 6 && y >= 1; y--) {
+        if (!this.solid(X, y, Z) && this.solid(X, y - 1, Z) && w.ownerAt(X, y - 1, Z) !== this.id) {
+          f.flat.push([X, y, Z, c]);
+          break;
+        }
+      }
+    }
+    f.vel = [0, 0, 0];
+  }
+
+  shape(emit) {
+    for (const f of this.frags) {
+      if (f.flat) {
+        for (const [x, y, z, c] of f.flat) emit(x, y, z, c);
+      } else {
+        for (const [x, y, z, c] of this.turned(f)) emit(Math.floor(f.pos[0] + x), Math.floor(f.pos[1] + y), Math.floor(f.pos[2] + z), c);
+      }
+    }
+  }
+
+  draw() {
+    const { cells } = redrawBody(this.world, this.id, this.cells, (emit) => this.shape(emit), () => null);
+    this.cells = cells;
+    this.version++;
+  }
+
+  // 撃たれた: 近くの骨がまた跳ねる
+  shot(p, power = 0.5) {
+    let any = false;
+    for (const f of this.frags) {
+      if (!f.flat) continue;
+      const near = f.flat.some(([x, y, z]) => Math.abs(x + 0.5 - p[0]) < 4 && Math.abs(y + 0.5 - p[1]) < 4 && Math.abs(z + 0.5 - p[2]) < 4);
+      if (!near) continue;
+      const dx = f.pos[0] - p[0], dz = f.pos[2] - p[2];
+      const d = Math.hypot(dx, dz) || 1;
+      f.pos[1] = f.flat[0][1] + 0.6;
+      f.vel = [(dx / d) * 16 * power, 18 + 14 * power, (dz / d) * 16 * power];
+      f.spin = 12;
+      f.t = 0;
+      f.flat = null;
+      any = true;
+    }
+    return any ? 'bonesKick' : null;
+  }
 }
 
 // ---- 赤い骨の王 ----------------------------------------------------------------
@@ -248,7 +441,10 @@ export class BoneKing {
 
   update(dt, player) {
     this.events = [];
-    if (this.state === 'dead') return;
+    if (this.state === 'dead') {
+      this.scatter?.update(dt);
+      return;
+    }
     // 体の描き直しは 1 秒に 12.5 回
     this.acc += dt;
     if (this.acc < 0.079) return;
@@ -393,11 +589,11 @@ export class BoneKing {
     return this.hurt(3);
   }
 
-  shot(p, power) {
-    return this.hurt(0.35 + power * 0.55);
+  shot(p, power, from) {
+    return this.hurt(0.35 + power * 0.55, from);
   }
 
-  hurt(amount) {
+  hurt(amount, from = this.world.player?.pos) {
     if (this.state === 'dead') return null;
     if (this.state === 'seated') this.wake();
     this.hp -= amount;
@@ -409,7 +605,8 @@ export class BoneKing {
     clearBody(this.world, this.id, this.cells);
     this.cells = [];
     this.state = 'dead';
-    dropBones(this.world, cells, '赤い骨の王の骨');
+    const c = [this.pos[0], this.pos[1], this.pos[2]];
+    this.scatter = new BoneScatter(this.world, cells, { name: '赤い骨の王の骨', center: c, block: 5, power: 1.3, from });
     this.version++;
     this.events.push({ type: 'kingDown', actor: this.entity });
     return 'kingDown';

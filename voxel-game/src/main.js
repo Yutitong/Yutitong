@@ -676,9 +676,10 @@ function describe(ev) {
       case 'wound': return { cls: 'push', text: '散弾で龍の鱗に穴があいた。龍が怒って向かってくる', rule: n };
       case 'kingDown': return { cls: 'push', text: '散弾で赤い骨の王が崩れ落ちた！', rule: '撃破' };
       case 'kingHurt': return { cls: 'push', text: '散弾が赤い骨の王に当たった', rule: `${ev.hits} 粒` };
-      case 'collapse': return { cls: 'push', text: '散弾で骸骨が崩れ落ちた', rule: '' };
+      case 'collapse': return { cls: 'push', text: '散弾で骸骨の骨がばらばらに飛び散った', rule: '' };
       case 'statueBreak': return { cls: 'push', text: '散弾でアヌビス像が割れた', rule: '' };
       case 'statueChip': return { cls: 'push', text: '散弾でアヌビス像の石が欠けた', rule: `${ev.hits} 粒` };
+      case 'bonesKick': return { cls: 'push', text: '散弾で床の骨が跳ね飛んだ', rule: '' };
       case 'burst': return { cls: 'push', text: '散弾で古代魚が一気に小魚の群れにほどけた', rule: `${ev.fish} 粒` };
       case 'fishKill': return { cls: 'push', text: '散弾がばらけた小魚に当たり、小魚が落ちた', rule: `${ev.fish} 匹` };
       case 'graze': return { cls: 'push', text: '散弾が龍の頭や足に当たった。龍が怒って向かってくる', rule: n };
@@ -725,7 +726,7 @@ function describe(ev) {
     const how = ev.cut === 'h' ? '横に薙いだ' : '斬り下ろした';
     switch (ev.result) {
       case 'wound': return { cls: 'push', text: `${a.name} が ${t.name} を太刀で${how}`, rule: `傷の深さ ${Math.round(ev.progress * 100)}%` };
-      case 'collapse': return { cls: 'push', text: `太刀で骸骨を${how}。骨が崩れ落ちた`, rule: '' };
+      case 'collapse': return { cls: 'push', text: `太刀で骸骨を${how}。骨がばらばらに飛び散った`, rule: '' };
       case 'kingHurt': return { cls: 'push', text: `太刀で赤い骨の王を${how}`, rule: '' };
       case 'kingDown': return { cls: 'push', text: '太刀で赤い骨の王を斬り倒した！', rule: '撃破' };
       case 'severed': return { cls: 'push', text: `太刀で ${t.name} の尾を斬り落とした！`, rule: '切断' };

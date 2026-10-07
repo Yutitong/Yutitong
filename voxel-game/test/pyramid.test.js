@@ -185,7 +185,46 @@ test('骸骨: 倒れている骸骨は、近づくと起き上がって斬りか
   }
   assert.ok(slashed, '太刀で斬った');
   assert.equal(sk.state, 'dead');
-  assert.ok([...w.entities.values()].some((e) => e.name === '崩れた骨'));
+  // 骨がばらばらに飛び散り、床に薄く散らばる
+  const sc = sk.scatter;
+  assert.ok(sc && w.entities.get(sc.id).name === '崩れた骨');
+  assert.ok(w.entities.get(sc.id).ground, '散らばった骨は段差としてまたげる');
+  const heights = [];
+  for (let i = 0; i < 25; i++) {
+    step(w, { dir: null, run: false });
+    if (i === 3) heights.push(...sc.frags.filter((f) => !f.flat).map((f) => f.pos[1]));
+  }
+  assert.ok(heights.length > 4, '骨のかけらが宙を飛んでいる');
+  for (let i = 0; i < 100 && !sc.settled; i++) step(w, { dir: null, run: false });
+  assert.ok(sc.settled, '床に落ちた');
+  const cells = sc.frags.flatMap((f) => f.flat);
+  assert.ok(cells.length > 40);
+  const xs = cells.map((c) => c[0]), zs = cells.map((c) => c[2]);
+  assert.ok(Math.max(...xs) - Math.min(...xs) > 14 || Math.max(...zs) - Math.min(...zs) > 14, '広く散らばる');
+  const keys = new Set(cells.map(([x, y, z]) => `${x},${y},${z}`));
+  for (const [x, y, z] of cells) assert.ok(!keys.has(`${x},${y - 1},${z}`), '骨は積み重ならない（1 段だけ）');
+  assert.ok(![...w.entities.values()].some((e) => e.kind === 'carcass' && e.name === '崩れた骨'), '通せんぼする骨の山は残らない');
+});
+
+test('骸骨: 倒した骸骨の散らばった骨は、またいで先へ進める', () => {
+  const w = gameWorld();
+  const p = spawnPlayer(w);
+  const T = spawnTemple(w);
+  moveTo(w, p, 284, 0, 240);
+  for (let i = 0; i < 3; i++) step(w, { dir: null, run: false });
+  const k = T.skeletons[0];
+  assert.ok(k.actor);
+  // 寝ている骸骨の向こう（ピラミッドの奥）へ、骨の上を通って歩く
+  const s = pyramidSite(w);
+  const back = [-s.f[0], -s.f[1]];
+  moveTo(w, p, 284 + 30, 0, 240);
+  k.actor.collapse([p.pos[0] + 4.5, p.pos[1], p.pos[2] + 4.5], 1.4);
+  for (let i = 0; i < 120 && !k.actor.scatter.settled; i++) step(w, { dir: null, run: false });
+  assert.ok(k.actor.scatter.settled);
+  const start = [...p.pos];
+  for (let i = 0; i < 160; i++) step(w, { dir: back, run: false });
+  const went = (p.pos[0] - start[0]) * back[0] + (p.pos[2] - start[2]) * back[1];
+  assert.ok(went > 65, `骨の上を越えて進めた（${went}）`);
 });
 
 test('赤い骨の王: 玉座に鎮座し、近づくと目を赤く光らせて立ち上がり、大剣で襲ってくる。撃ち続けると崩れ落ちる', () => {
@@ -211,7 +250,9 @@ test('赤い骨の王: 玉座に鎮座し、近づくと目を赤く光らせて
   for (let k = 0; k < 40 && res !== 'kingDown'; k++) res = king.shot([king.pos[0], king.pos[1] + 20, king.pos[2]], 0.9);
   assert.equal(res, 'kingDown');
   assert.equal(king.state, 'dead');
-  assert.ok([...w.entities.values()].some((e) => e.name === '赤い骨の王の骨'));
+  assert.ok([...w.entities.values()].some((e) => e.name === '赤い骨の王の骨' && e.ground));
+  for (let i = 0; i < 120 && !king.scatter.settled; i++) step(w, { dir: null, run: false });
+  assert.ok(king.scatter.settled, '王の骨も床に散らばる');
 });
 
 test('水晶: ピラミッドの頂上の上に浮かび、紫に光りながら回る', () => {

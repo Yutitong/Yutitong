@@ -175,6 +175,7 @@ export function shoot(world, e) {
   else if (fishResults.has('kill')) ev.result = 'fishKill';
   else if (bodyResults.has('kingHurt')) ev.result = 'kingHurt';
   else if (bodyResults.has('chip')) ev.result = 'statueChip';
+  else if (bodyResults.has('bonesKick')) ev.result = 'bonesKick';
   else if (blocked) ev.result = 'blocked';
   drawTrails(world, trails);
   return ev;

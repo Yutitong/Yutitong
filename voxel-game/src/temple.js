@@ -49,7 +49,7 @@ export class Temple {
         if (near(k.at, NEAR) && loaded(k.at)) k.actor = new Skeleton(w, k.at, k.yaw, k.seed);
         continue;
       }
-      if (!k.actor.alive || !near(k.actor.e?.pos ?? k.at, SIM)) continue;
+      if (!k.actor.busy || !near(k.actor.e?.pos ?? k.at, SIM)) continue;
       k.actor.update(dt, player, rng, report);
       events.push(...k.actor.events);
     }
