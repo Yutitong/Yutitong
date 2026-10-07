@@ -105,6 +105,52 @@ test('ピラミッド: 麓から入り口まで巨大な階段を歩いて登れ
   assert.ok(found, `玉座の間まで行けない（調べた所 ${seen.size}）`);
 });
 
+// 点の列を、8 ボクセルおきの点の列にする
+const densify = (pts) => pts.flatMap((a, i) => {
+  if (i === pts.length - 1) return [a];
+  const b = pts[i + 1], n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 8);
+  return Array.from({ length: n }, (_, k) => [a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+});
+
+// プレイヤーを、ピラミッドの座標の点 [u, v] の列に沿って歩かせる。戻り値: 着いた点の数
+function walkRoute(w, p, route) {
+  const s = pyramidSite(w);
+  let reached = 0;
+  for (const [u, v] of route) {
+    let last = '', stuck = 0;
+    for (let i = 0; i < 300; i++) {
+      const [x, z] = [p.pos[0] + 4.5, p.pos[2] + 4.5];
+      const dx = x - s.cx, dz = z - s.cz;
+      const du = u - (dx * s.f[0] + dz * s.f[1]), dv = v - (-dx * s.f[1] + dz * s.f[0]);
+      if (Math.hypot(du, dv) < 3) break;
+      step(w, { dir: [s.f[0] * du - s.f[1] * dv, s.f[1] * du + s.f[0] * dv], run: false });
+      ensureAround(w, p.pos[0], p.pos[2], 5);
+      const key = p.pos.join();
+      stuck = key === last ? stuck + 1 : 0;
+      last = key;
+      if (stuck > 25) return reached;
+    }
+    reached++;
+  }
+  return reached;
+}
+
+test('ピラミッド: 洞窟は下りるだけでなく上り返せる（隠された道を玉座の間の手前から祈祷室へ、下り道を祈祷室から入り口へ）', () => {
+  const w = gameWorld();
+  const p = spawnPlayer(w);
+  // 隠された道（らせん）を、下の端から祈祷室まで上る
+  moveTo(w, p, -205, 0, 10);
+  const hidden = densify([[-192, 0], [-178, 0], [-136, 8], [-106, -16], [-118, -46], [-150, -28], [-168, 22], [-146, 60], [-108, 58], [-84, 46], [-78, 40], [-76, 12]]);
+  const n1 = walkRoute(w, p, hidden);
+  assert.equal(n1, hidden.length, `隠された道の ${hidden[n1]?.join()} の手前で上れない`);
+  assert.ok(p.pos[1] - pyramidSite(w).P >= 139, '祈祷室の床まで戻れた');
+  // 下り道を、祈祷室から入り口の廊下まで上る
+  moveTo(w, p, 30, 0, 140);
+  const descent = densify([[40, 0], [54, 2], [74, 14], [92, -14], [120, 18], [156, 0], [190, 0]]);
+  const n2 = walkRoute(w, p, descent);
+  assert.equal(n2, descent.length, `下り道の ${descent[n2]?.join()} の手前で上れない`);
+});
+
 test('ピラミッド: 中は暗く、松明のそばだけ明るい。壁には竜の紋様と象形文字の帯', () => {
   const w = gameWorld();
   const s = pyramidSite(w);

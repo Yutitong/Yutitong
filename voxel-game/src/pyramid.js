@@ -165,11 +165,11 @@ const BOXES = [
 ];
 // 巨岩の洞窟（点の列は床の高さ。半径 r の筒を、床から上だけ掘る。壁はでこぼこ）
 const TUNNELS = [
-  { name: 'descent', r: 13, pts: [[156, 0, 240], [120, 18, 222], [92, -14, 190], [68, 12, 160], [46, 0, 140]] },
+  { name: 'descent', r: 13, pts: [[156, 0, 240], [120, 18, 222], [92, -14, 190], [74, 14, 160], [54, 2, 141], [40, 0, 140]] },
   { name: 'cave', r: 11, pts: [[10, -50, 140], [8, -90, 140], [-12, -116, 143], [-22, -136, 146]] },
   { name: 'den', r: 22, pts: [[-22, -140, 146], [-34, -152, 146]] },
   // 祈祷室の奥の隅の狭い割れ目から、らせん状にピラミッドの芯の奥深くへ（隠された道）
-  { name: 'hidden', r: 11, pts: [[-84, 46, 140], [-108, 58, 132], [-146, 60, 118], [-168, 22, 100], [-150, -28, 84], [-118, -46, 66], [-106, -16, 48], [-136, 8, 30], [-192, 0, 10]] },
+  { name: 'hidden', r: 11, pts: [[-84, 46, 140], [-108, 58, 132], [-146, 60, 118], [-168, 22, 100], [-150, -28, 84], [-118, -46, 66], [-106, -16, 48], [-136, 8, 30], [-178, 0, 10], [-192, 0, 10]] },
 ];
 for (const t of TUNNELS) {
   const R = t.r * 1.4 + 2;
@@ -191,10 +191,14 @@ for (const t of TUNNELS) {
 const SPACES = [...BOXES, ...TUNNELS];
 
 // 洞窟の中か（y は広場から）
-// 洞窟の芯からの距離（いちばん近い区間）と、その区間の床の高さ
+// 洞窟の芯からの距離（いちばん近い区間）と、その所の床の高さ。
+// 床は、いちばん近い区間とその前後の区間の床を、真上から見た近さで重みをつけて混ぜる。
+// （曲がり角で区間が入れ替わる所や、高さによって近い区間が変わる所に段ができないように。段があると、下りられても上り返せない）
 function tunnelDist(t, u, v, y) {
-  let best = Infinity, floor = 0;
-  for (const s of t.segs) {
+  let best = Infinity, bi = 0;
+  const segs = t.segs;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
     const ex = s.b[0] - s.a[0], ey = s.b[1] - s.a[1], ez = s.b[2] - s.a[2];
     const L2 = ex * ex + ey * ey + ez * ez || 1;
     let k = ((u - s.a[0]) * ex + (y - s.a[1]) * ey + (v - s.a[2]) * ez) / L2;
@@ -203,10 +207,27 @@ function tunnelDist(t, u, v, y) {
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 < best) {
       best = d2;
-      floor = s.fa + (s.fb - s.fa) * k;
+      bi = i;
     }
   }
-  return [Math.sqrt(best), floor];
+  let sw = 0, sf = 0, near = Infinity;
+  const h = [];
+  for (let i = Math.max(0, bi - 1); i <= Math.min(segs.length - 1, bi + 1); i++) {
+    const s = segs[i];
+    const ex = s.b[0] - s.a[0], ez = s.b[2] - s.a[2];
+    const L2 = ex * ex + ez * ez || 1;
+    let k = ((u - s.a[0]) * ex + (v - s.a[2]) * ez) / L2;
+    k = k < 0 ? 0 : k > 1 ? 1 : k;
+    const d = Math.hypot(u - (s.a[0] + ex * k), v - (s.a[2] + ez * k));
+    h.push(d, s.fa + (s.fb - s.fa) * k);
+    if (d < near) near = d;
+  }
+  for (let n = 0; n < h.length; n += 2) {
+    const wt = Math.exp(-(h[n] - near) / 3);
+    sw += wt;
+    sf += wt * h[n + 1];
+  }
+  return [Math.sqrt(best), sf / sw];
 }
 function inTunnel(t, u, v, y) {
   const [d, floor] = tunnelDist(t, u, v, y);
