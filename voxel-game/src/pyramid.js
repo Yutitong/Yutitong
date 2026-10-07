@@ -342,7 +342,7 @@ for (const b of BOXES) {
 }
 // 洞窟の松明（とびとび）
 for (const t of TUNNELS) {
-  if (t.name === 'hidden') continue; // 隠された道は真っ暗（王の間の手前だけ明るい）
+  if (t.name === 'hidden') continue; // 隠された道は下で、壁に沿って細かく置く
   let acc = 0;
   for (const s of t.segs) {
     const L = Math.hypot(s.b[0] - s.a[0], s.b[2] - s.a[2]);
@@ -351,6 +351,41 @@ for (const t of TUNNELS) {
     acc = 0;
     const du = (s.b[0] - s.a[0]) / L, dv = (s.b[2] - s.a[2]) / L;
     TORCHES.push({ u: Math.floor(s.b[0] - dv * (t.r * 0.8)), v: Math.floor(s.b[2] + du * (t.r * 0.8)), y: Math.floor(s.fb + 9), n: [-dv, du], cave: true });
+  }
+}
+// 隠された道（らせんの洞窟）の松明: 道に沿って 24 ボクセルおきに、左右の壁へ交互に掛ける。
+// 道の芯から横へ進んで、壁に当たる手前の空いたセルに置く（宙に浮かないように）
+{
+  const t = TUNNELS.find((q) => q.name === 'hidden');
+  const SP = 24;
+  let acc = SP * 0.6, side = 1;
+  for (const s of t.segs) {
+    const L = Math.hypot(s.b[0] - s.a[0], s.b[2] - s.a[2]);
+    const du = (s.b[0] - s.a[0]) / L, dv = (s.b[2] - s.a[2]) / L;
+    for (let d = SP - acc; d < L; d += SP) {
+      const k = d / L;
+      const cu = s.a[0] + (s.b[0] - s.a[0]) * k, cv = s.a[2] + (s.b[2] - s.a[2]) * k;
+      const y = Math.round(s.fa + (s.fb - s.fa) * k + 9);
+      // 壁が道の芯から 8 ボクセル以上離れている側に掛ける（近いと、歩く人の頭がぶつかる）
+      for (const sd of [side, -side]) {
+        const nu = -dv * sd, nv = du * sd;
+        let last = null;
+        for (let o = 0; o < t.r * 1.6; o += 0.5) {
+          const u = Math.floor(cu + nu * o), v = Math.floor(cv + nv * o);
+          let open = true;
+          for (let yy = y - 1; yy <= y + 2 && open; yy++) open = !!spaceAt(spacesAt(u, v), u, v, yy);
+          if (!open) break;
+          last = { u, v };
+        }
+        // 曲がり角の近くでは、横へ進むと隣の区間の道に出てしまうので、そこの床からの高さも確かめる
+        if (last && Math.hypot(last.u + 0.5 - cu, last.v + 0.5 - cv) >= 8 && y - tunnelDist(t, last.u, last.v, y)[1] >= 7) {
+          TORCHES.push({ u: last.u, v: last.v, y, n: [nu, nv], cave: true, hidden: true });
+          break;
+        }
+      }
+      side = -side;
+    }
+    acc = (acc + L) % SP;
   }
 }
 // 松明は空いているセルにだけ置く（壁の中に埋もれた所はやめる）
@@ -376,13 +411,14 @@ function lightAt(u, v, y, space) {
       if (!list) continue;
       for (const t of list) {
         const d2 = (u - t.u) ** 2 + (v - t.v) ** 2 + ((y - t.y) * 1.2) ** 2;
-        if (d2 < 1600) warm += 1.25 * Math.exp(-d2 / (t.cave ? 260 : 330));
+        if (d2 < 1600) warm += (t.hidden ? 0.8 : 1.25) * Math.exp(-d2 / (t.cave ? 260 : 330));
       }
     }
   }
   let day = 0;
   if (space?.day) day = clamp((u - 220) / 85, 0, 1) * 0.95;
-  const amb = space?.style === 'hall' ? 0.2 : space?.style === 'throne' ? 0.16 : 0.12;
+  // 隠された道は、松明の間でも足もとと壁が見えるくらいの明るさ（祈祷室よりは暗い）
+  const amb = space?.style === 'hall' ? 0.2 : space?.style === 'throne' ? 0.16 : space?.name === 'hidden' ? 0.15 : 0.12;
   return { k: Math.min(1.25, amb + warm + day), warm: Math.min(1, warm) };
 }
 

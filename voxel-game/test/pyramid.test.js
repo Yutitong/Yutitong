@@ -171,6 +171,20 @@ test('ピラミッド: 中は暗く、松明のそばだけ明るい。壁には
   assert.ok(outside && bright(outside) > b[Math.floor(b.length * 0.5)]);
   // 色の種類が多い（帯の絵）
   assert.ok(new Set(lit).size > 60);
+  // 隠された道（らせんの洞窟）も、松明で足もとが見える
+  const path = [[-108, 58, 132], [-146, 60, 118], [-168, 22, 100], [-150, -28, 84], [-118, -46, 66], [-106, -16, 48], [-136, 8, 30]];
+  const floors = [];
+  for (let i = 0; i + 1 < path.length; i++) {
+    for (let k = 0; k < 8; k++) {
+      const [a, c] = [path[i], path[i + 1]];
+      const [x, z] = toWorld(s, a[0] + ((c[0] - a[0]) * k) / 8, a[1] + ((c[1] - a[1]) * k) / 8);
+      let y = Math.round(s.P + a[2] + ((c[2] - a[2]) * k) / 8 + 6);
+      while (w.ownerAt(Math.floor(x), y - 1, Math.floor(z)) === 0) y--;
+      floors.push(bright(w.colorAt(Math.floor(x), y - 1, Math.floor(z))));
+    }
+  }
+  floors.sort((a, c) => a - c);
+  assert.ok(floors[Math.floor(floors.length / 2)] > 100 && floors[Math.floor(floors.length * 0.1)] > 60, `隠された道の床の明るさ ${floors[Math.floor(floors.length * 0.1)]} / ${floors[Math.floor(floors.length / 2)]}`);
 });
 
 test('巨アヌビス像: 近づくと杖を振りかぶってから叩きつけ、当たると体力が減る。撃って杖を落とすと、もう攻撃しない', () => {
