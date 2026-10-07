@@ -141,15 +141,35 @@ test('巨アヌビス像: 近づくと杖を振りかぶってから叩きつけ
   assert.ok(first >= 0 && slam > first, types.filter((t) => t.startsWith('statue')).join());
   assert.ok(types.some((t) => t.startsWith('statueHit')), '叩かれた');
   assert.ok(p.hp < 100);
-  // 振りかぶっている間は、杖が後ろへ上がっている（予備動作）
+  // 体ごとプレイヤーの方へ向き直っている（プレイヤーは像の前の内側）
+  assert.ok(st.yaw > 0.4, `向き直る ${st.yaw}`);
+  assert.ok(st.feet.every((ft) => Math.abs(ft.yaw - st.yaw) < 0.3), '足も踏み替えて向きを変える');
+  // 振りかぶっている間は、背中を反らせて膝を曲げて沈み、両手で杖を頭の後ろへ上げる（予備動作）
   st.phase = 'windup';
-  st.t = 1.4;
+  st.t = 1.6;
   st.update(0.08, p);
-  assert.ok(st.angles[0] < -2, `振りかぶる ${st.angles[0]}`);
+  assert.ok(st.pose.lean < -0.3, `背中を反らせる ${st.pose.lean}`);
+  assert.ok(st.pose.dip > 4, `膝を曲げて沈む ${st.pose.dip}`);
+  assert.ok(st.pose.w > 0.9, '両手で握る');
+  assert.ok(st.rig.staff.G[1] > 80 && st.rig.staff.G[2] < 0, '杖は頭の後ろ');
+  const handGap = Math.hypot(...[0, 1, 2].map((i) => st.rig.arms[0].hand[i] - (st.rig.staff.G[i] - st.rig.staff.sd[i] * 11)));
+  assert.ok(handGap < 3, `外側の手も杖を握る ${handGap}`);
+  // 叩きつけた瞬間は、上体を前へ深く折り、一歩踏み込んで沈み、頭も下を向く
+  st.phase = 'hold';
+  st.t = 10;
+  st.update(0.08, p);
+  st.t = 10;
+  st.update(0.08, p);
+  assert.equal(st.phase, 'recover');
+  assert.ok(st.pose.lean > 0.5, `前へ折れる ${st.pose.lean}`);
+  assert.ok(st.pose.dip > 8 && st.pose.stepF > 5 && st.pose.nod > 0.3);
   // 杖を撃ち続けると割れて落ちる
-  st.angles = [0.25, 0, 0]; // 構えた姿勢（杖は縦）
+  st.phase = 'rest';
+  st.t = 10;
+  st.pose = { ...st.pose, ...{ lean: 0, dip: 0, nod: 0, shiftF: 0, stepF: 0, beta: 0, w: 0, G: [15, 45, 7], grip: 40 } };
+  st.rig = st.buildRig();
   let res = null;
-  for (let k = 0; k < 20 && res !== 'break'; k++) res = st.shot(st.toWorld(13, 100, 7), 0.8);
+  for (let k = 0; k < 20 && res !== 'break'; k++) res = st.shot(st.staffPoint(40), 0.8);
   assert.equal(res, 'break');
   assert.ok(st.staffBroken || st.armBroken);
   assert.ok([...w.entities.values()].some((e) => e.kind === 'carcass' && e.name.startsWith('アヌビス像')), '割れた部位が落ちる');
@@ -158,9 +178,9 @@ test('巨アヌビス像: 近づくと杖を振りかぶってから叩きつけ
   const after = [];
   for (let i = 0; i < 80; i++) after.push(...step(w, { dir: null, run: false }).filter((e) => e.actor === st.entity).map((e) => e.type));
   assert.ok(!after.includes('statueWindup'), '杖を失うと攻撃しない');
-  // 頭も撃てば割れて落ちる
+  // 頭も撃てば割れて落ちる（向きを変えていても、頭の所に当たる）
   let r2 = null;
-  for (let k = 0; k < 30 && r2 !== 'break'; k++) r2 = st.shot(st.toWorld(0, 86, 4), 0.8);
+  for (let k = 0; k < 30 && r2 !== 'break'; k++) r2 = st.shot(st.pointOf('head', [0, 86, 4]), 0.8);
   assert.equal(r2, 'break');
 });
 

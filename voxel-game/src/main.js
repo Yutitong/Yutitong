@@ -696,7 +696,7 @@ function describe(ev) {
   if (ev.type === 'statueWindup') return { cls: 'push', text: `${a.name}が杖を大きく振りかぶった！`, rule: '' };
   if (ev.type === 'statueSlam') return { cls: 'push', text: `${a.name}が杖を参道に叩きつけた`, rule: '' };
   if (ev.type === 'statueHit') return { cls: 'push', text: `${a.name}の杖に打たれた`, rule: `体力 -${ev.damage}` };
-  if (ev.type === 'statueBreak') return { cls: 'push', text: `${a.name}の${{ head: '頭', armL: '左腕', arm: '杖を持つ腕', staff: '杖' }[ev.part] ?? '一部'}が割れて落ちた`, rule: '' };
+  if (ev.type === 'statueBreak') return { cls: 'push', text: `${a.name}の${{ head: '頭', armL: 'アンクを持つ腕', arm: '杖を持つ腕', staff: '杖' }[ev.part] ?? '一部'}が割れて落ちた`, rule: '' };
   if (ev.type === 'fishSplit') return { cls: 'push', text: '古代魚が 2 匹に分かれて、木の両側を回り込んだ', rule: '' };
   if (ev.type === 'fishMerge') return { cls: 'push', text: '2 匹の古代魚が、また 1 匹に融け合った', rule: '' };
   if (ev.type === 'fishBurst') return { cls: 'push', text: '撃たれた古代魚が、一気に小魚の群れにほどけた', rule: `小魚 ${ev.left} 匹` };
