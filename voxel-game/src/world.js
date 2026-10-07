@@ -22,6 +22,7 @@ import { WaterSim } from './water.js';
 import { Physics } from './physics.js';
 import { Splashes } from './splash.js';
 import { paintGiantsInto, forgetGiants, giantZone, giantSpec, getGiant, refreshGiantsIn } from './giant.js';
+import { craterShape, scarColor, CRATER_R, impactTouches, meteorSite, MeteorEvent } from './meteor.js';
 
 export { CHUNK, HEIGHT, floorDiv, chunkKey, cellIndex, hash3, mulberry32 };
 import { EMPTY, GROUND_ID, WATER_ID, ROCK_ID, FALL_ID, PLANT_ID, SOIL_ID } from './ids.js';
@@ -190,7 +191,12 @@ export class World {
 
   // 列 (x, z) の地形: { h: 地面の高さ, water: 水面（0 = なし）, channel: 川の中, bank: 川岸, f: 川の上流(0)〜下流(1), lowland }
   sample(x, z, out = {}) {
-    if (this.terrain) return flattenSite(this, x, z, this.terrain.sample(x, z, out)); // ピラミッドの広場はならす
+    if (this.terrain) {
+      flattenSite(this, x, z, this.terrain.sample(x, z, out)); // ピラミッドの広場はならす
+      if (this.impact) craterShape(this, x, z, out); // 隕石のクレーターと焼け野原
+      else out.blast = 0;
+      return out;
+    }
     const h = this.heightAt(x, z);
     out.h = h;
     out.water = h < this.waterLevel ? this.waterLevel : 0;
@@ -524,6 +530,11 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
   }
   // ピラミッドの住人（水晶・アヌビス像・骸骨・赤い骨の王）
   if (p && world.temple) events.push(...world.temple.step(dt, p, rng, report));
+  // 隕石落下（落ちてくる・激突・地面の波・衝撃波・降ってくる岩）
+  if (world.meteor) {
+    world.meteor.update(dt, p);
+    events.push(...world.meteor.events);
+  }
   // 崩れる土砂と岩、水しぶき
   world.physics.step();
   world.splashes.update(dt);
@@ -556,7 +567,10 @@ function fillTerrain(world, c, cols) {
       for (let y = c.base; y < h; y++) {
         const i = c.index(lx, y, lz);
         c.owner[i] = GROUND_ID;
-        if (y >= Math.min(lowest, h - 1)) c.color[i] = groundColor(world.seed, x, y, z, info, slope);
+        if (y >= Math.min(lowest, h - 1)) {
+          const base = groundColor(world.seed, x, y, z, info, slope);
+          c.color[i] = info.blast ? scarColor(world.seed, x, y, z, info, base) : base;
+        }
       }
       if (W) {
         c.water[col] = W;
@@ -605,7 +619,9 @@ function rockMask(rock) {
 
 function paintRocksInto(world, c) {
   const x0 = c.cx * CHUNK, z0 = c.cz * CHUNK;
+  const I = world.impact;
   for (const rock of world.terrain.rocksNear(x0, z0, x0 + CHUNK - 1, z0 + CHUNK - 1)) {
+    if (I && Math.hypot(rock.x - I.x, rock.z - I.z) < CRATER_R + 3000) continue; // クレーターのまわりは地形が変わったので、川の岩はない
     const m = rockMask(rock);
     for (let z = Math.max(z0, m.z0); z <= Math.min(z0 + CHUNK - 1, m.z1); z++) {
       for (let x = Math.max(x0, m.x0); x <= Math.min(x0 + CHUNK - 1, m.x1); x++) {
@@ -638,6 +654,7 @@ function paintPlantsInto(world, c, cols) {
       const inner = x >= x0 - 1 && x <= x0 + CHUNK && z >= z0 - 1 && z <= z0 + CHUNK;
       const col = inner ? cols[(x - x0 + 1) + S * (z - z0 + 1)] : world.sample(x, z, {});
       // 川沿いと、巨大樹の森の林床にシダが茂る
+      if (col.blast > 0.3) continue; // 焼け野原には草もない
       if (!fernAt(world.seed, x, z, col) && !(hash3(x, z, world.seed + 61) % 1000 < 45 && giantZone(world, x, z, col.h) > 0.45)) continue;
       for (const [dx, dy, dz, color] of fernCells(world.seed, x, z)) {
         const fx = x + dx, fz = z + dz, fy = col.h + dy;
@@ -842,6 +859,11 @@ export function forgetFar(world, centers, keep) {
   // 巨大樹のかかる背の高いチャンクはメモリを多く使うので、近くだけ残す
   for (const c of world.chunks.values()) if (far(c.cx, c.cz, c.top - c.base > 260 ? Math.min(keep, 8) : keep)) gone.push(c);
   if (!gone.length) return 0;
+  return dropChunks(world, gone);
+}
+
+// チャンクを片付ける。体がかかっている物（NPC・岩・切り落とされた尾など。プレイヤーは除く）は先に消す
+function dropChunks(world, gone) {
   const keys = new Set(gone.map((c) => c.key));
   // 片付けるチャンクに体がかかっている物（NPC・岩・切り落とされた尾など）は、先に消しておく
   for (const e of [...world.entities.values()]) {
@@ -877,4 +899,43 @@ export function forgetFar(world, centers, keep) {
   forgetTrees(world);
   forgetGiants(world);
   return gone.length;
+}
+
+// 隕石の激突: 形の変わるチャンクを片付ける（描画側が作り直す）。プレイヤーのまわりはすぐに作り直し、地面の上へ立たせ直す
+export function rebuildForImpact(world) {
+  const gone = [...world.chunks.values()].filter((c) => impactTouches(world, c.cx, c.cz));
+  if (!gone.length) return 0;
+  const p = world.player;
+  const keys = new Set(gone.map((c) => c.key));
+  const inside = p && [[0, 0], [8, 0], [0, 8], [8, 8]].some(([dx, dz]) => keys.has(chunkKey(floorDiv(p.pos[0] + dx, CHUNK), floorDiv(p.pos[2] + dz, CHUNK))));
+  if (inside) world.paint(p, false);
+  const n = dropChunks(world, gone);
+  if (inside) {
+    for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) world.chunkAt(floorDiv(p.pos[0], CHUNK) + dx, floorDiv(p.pos[2], CHUNK) + dz);
+    let y = 0;
+    for (let dz = 0; dz < 9; dz++) for (let dx = 0; dx < 9; dx++) y = Math.max(y, world.groundAt(p.pos[0] + dx, p.pos[2] + dz));
+    const free = (yy) => {
+      for (let o = 0; o < p.offsets.length; o += 3) if (world.ownerAt(p.pos[0] + p.offsets[o], yy + p.offsets[o + 1], p.pos[2] + p.offsets[o + 2]) !== EMPTY) return false;
+      return true;
+    };
+    while (y < HEIGHT - 20 && !free(y)) y++;
+    p.pos[1] = y;
+    world.paint(p, true);
+  }
+  return n;
+}
+
+// 隕石を落とす（一度だけ）。onImpact(world): 激突の瞬間に、形の変わったチャンクを片付けたあとで呼ぶ（描画側の後始末）
+export function startMeteor(world, { onImpact = null, seed = 7 } = {}) {
+  if (world.meteor || !world.terrain) return null;
+  const site = meteorSite(world, giantZone, pyramidSite(world));
+  if (!site) return null;
+  world.meteor = new MeteorEvent(world, site, {
+    seed,
+    onImpact: (w) => {
+      rebuildForImpact(w);
+      onImpact?.(w);
+    },
+  });
+  return world.meteor;
 }

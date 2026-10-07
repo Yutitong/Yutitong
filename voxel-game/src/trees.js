@@ -10,6 +10,7 @@ import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt } from './grid.js';
 import { BASE } from './terrain.js';
 import { giantZone } from './giant.js';
 import { inSite } from './pyramid.js';
+import { blastAt } from './meteor.js';
 
 export const REGION = 24; // この区画ごとに最大1本の木を置く（ボクセル）
 export const MAX_REACH = 30; // 幹の中心から葉先までの最大の水平距離（ボクセル）
@@ -333,6 +334,11 @@ export function regionSpec(world, rx, rz, store = true) {
   const roll = rng();
   const x = rx * REGION + 3 + Math.floor(rng() * (REGION - 6));
   const z = rz * REGION + 3 + Math.floor(rng() * (REGION - 6));
+  // 隕石の焼け野原（半径 1km）では、ふつうの木は燃え尽きて残らない
+  if (world.impact && blastAt(world, x, z) > 0.05) {
+    if (store) world.treeSpecs.set(key, null);
+    return null;
+  }
   // 渓流沿いは森が濃く、木は川の上へ枝を張り出す
   const col = roll < Math.max(p, 0.85) ? world.sample(x, z, {}) : null;
   const riparian = col && col.edge < 26 && col.f < 0.95;
@@ -373,7 +379,7 @@ export function forestDensity(world, x, z, col) {
   const p = 0.06 + 0.86 * smoothstep(0.4, 0.68, noise2(rx * 0.17, rz * 0.17, world.seed));
   const line = 190 + 60 * noise2(rx * 0.3, rz * 0.3, world.seed + 7);
   if (inSite(world, x, z, 30)) return 0;
-  return p * smoothstep(line, line - 90, col.h - BASE) * (1 - giantZone(world, x, z, col.h));
+  return p * smoothstep(line, line - 90, col.h - BASE) * (1 - giantZone(world, x, z, col.h)) * (1 - Math.min(1, (col.blast ?? 0) * 1.2));
 }
 
 // 範囲 [x0, x1] × [z0, z1] に枝葉が届きうる木の設計図（区画の順に並ぶ）

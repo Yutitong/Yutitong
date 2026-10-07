@@ -41,6 +41,15 @@ export class LodRings {
     this.changed = true;
   }
 
+  // 地形が変わった（隕石のクレーター）: 当てはまるチャンクの粗いブロックを忘れて作り直す
+  forget(test) {
+    for (const key of [...this.data.keys()]) {
+      const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
+      if (test(cx, cz)) this.data.delete(key);
+    }
+    this.changed = true;
+  }
+
   // チャンクのセルが変わった
   markDirty(key) {
     this.edited.add(key);

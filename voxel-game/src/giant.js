@@ -15,6 +15,7 @@ import { redrawBody } from './body.js';
 import { splashAlong } from './axe.js';
 import { EMPTY, GROUND_ID } from './ids.js';
 import { inSite } from './pyramid.js';
+import { giantBurn, blastAt } from './meteor.js';
 
 export const GIANT_CELL = 210; // この区画ごとに最大 1 本（≈ 30m おき）
 const MARGIN = 50; // 区画の端からの距離（となりの木と幹がくっつかないように）
@@ -113,6 +114,15 @@ export function giantSpec(world, gx, gz) {
       }
       if (hi - lo >= 30 || wet) continue;
       spec = { key, gx, gz, x, z, y: lo - 2, H, R, lean, seed: hash3(gx, gz, world.seed + 0x9a) };
+    }
+  }
+  // 隕石の焼け野原: クレーターの近くの木は吹き飛ばされ、その外は黒焦げの幹だけが外へ傾いて残る
+  if (spec && world.impact) {
+    const b = giantBurn(world, spec.x, spec.z, spec.seed);
+    if (b?.gone) spec = null;
+    else if (b) {
+      spec.burn = b;
+      spec.lean = [spec.lean[0] + b.lean[0], spec.lean[1] + b.lean[1]];
     }
   }
   world.giantSpecs.set(key, spec);
@@ -231,8 +241,19 @@ function shapeOfSpec(spec) {
     const s = 15 - k * 2.2;
     clump([axX[hi] + (rng() - 0.5) * 4, h, axZ[hi] + (rng() - 0.5) * 4], [s, s * 0.75, s]);
   }
+  // 焼けた木: 葉はすべて焼け落ち、幹の上は折れている（遠い木は焦げた枝が短く残る）
+  if (spec.burn) {
+    const b = spec.burn;
+    S.burn = b;
+    S.H = Math.max(60, Math.round(H * b.cut));
+    S.top = S.H + 3;
+    S.parts = !b.twigs ? [] : S.parts.filter((p) => p.b && p.a[1] < S.H - 12).map((p) => ({
+      ...p, e: [p.a[0] + (p.e[0] - p.a[0]) * 0.45, p.a[1] + (p.e[1] - p.a[1]) * 0.45, p.a[2] + (p.e[2] - p.a[2]) * 0.45], rb: Math.max(1, p.rb),
+    }));
+  }
   // 格子に登録し、高さごとの水平の届く距離を求める
-  for (let h = 0; h < S.reachAt.length; h++) S.reachAt[h] = h < n ? Math.hypot(axX[h], axZ[h]) + rad[h] + flare[h] + 3 : 0;
+  const trunkEnd = S.burn ? S.H + 3 : n;
+  for (let h = 0; h < S.reachAt.length; h++) S.reachAt[h] = h < trunkEnd ? Math.hypot(axX[h], axZ[h]) + rad[h] + flare[h] + 3 : 0;
   for (const p of S.parts) {
     let lo, hi;
     if (p.b) {
@@ -294,6 +315,7 @@ function classify(S, seed, lx, ly, lz) {
       const [rEff, ridge] = trunkRadius(S, h, th);
       if (d <= rEff) {
         if (d <= rEff - 1.7) return INTERIOR;
+        if (S.burn) return charColor(S, h, Math.round(lx), hI, Math.round(lz));
         return barkColor(seed, h, th, ridge, Math.round(lx), hI, Math.round(lz));
       }
     }
@@ -308,7 +330,7 @@ function classify(S, seed, lx, ly, lz) {
     if (lx < p.lo[0] || lx > p.hi[0] || ly < p.lo[1] || ly > p.hi[1] || lz < p.lo[2] || lz > p.hi[2]) continue;
     if (p.b) {
       const [d, t] = distToSegment(lx, ly, lz, p.a, p.e);
-      if (d <= p.ra + (p.rb - p.ra) * t) return shade(WOOD, 0.85 + (hash3(Math.round(lx), Math.round(ly), Math.round(lz)) % 25) / 100);
+      if (d <= p.ra + (p.rb - p.ra) * t) return S.burn ? charColor(S, 0, Math.round(lx), Math.round(ly), Math.round(lz)) : shade(WOOD, 0.85 + (hash3(Math.round(lx), Math.round(ly), Math.round(lz)) % 25) / 100);
       continue;
     }
     const qx = (lx - p.c[0]) * p.inv[0], qy = (ly - p.c[1]) * p.inv[1], qz = (lz - p.c[2]) * p.inv[2];
@@ -324,6 +346,15 @@ function classify(S, seed, lx, ly, lz) {
   }
   if (inner) return INTERIOR;
   return leaf;
+}
+
+// 焼けた幹の色: 黒焦げ。ところどころ（折れた上の方ほど多く）まだ赤く燃えている
+const EMBER = [0xff6a1a, 0xe0401a, 0xffa030];
+function charColor(S, h, x, y, z) {
+  const k = hash3(x, y, z);
+  const hot = noise3(x * 0.18, y * 0.07, z * 0.18) + (h > S.H - 40 ? 0.12 : 0);
+  if (hot > 1 - S.burn.ember * 2.2) return shade(EMBER[k % EMBER.length], 0.85 + (k % 25) / 100);
+  return shade(CHAR[k % CHAR.length], 0.85 + (k % 30) / 100);
 }
 
 function barkColor(seed, h, th, ridge, x, y, z) {
@@ -402,7 +433,10 @@ function paintUpright(c, g, changed) {
         const d2 = dx * dx + dz * dz;
         if (d2 >= rm * rm) continue;
         const d = Math.sqrt(d2);
-        const [rEff] = trunkRadius(S, h, Math.atan2(dz, dx));
+        const th = Math.atan2(dz, dx);
+        // 焼けて折れた幹の上は、ぎざぎざに裂けている
+        if (S.burn && h > S.H - 18 && h > S.H - 18 * noise2(th * 2.2, 0.5, sp.seed % 997)) continue;
+        const [rEff] = trunkRadius(S, h, th);
         if (d <= rEff) st[at(x, y, z)] = d > rEff - 2.5 ? BARKED : INNER;
       }
     }
@@ -458,7 +492,8 @@ function paintUpright(c, g, changed) {
         const seen = empty(x + 1, y, z) || empty(x - 1, y, z) || empty(x, y, z + 1) || empty(x, y, z - 1) || empty(x, y + 1, z) || empty(x, y - 1, z);
         if (seen && v !== INNER) {
           if (v === LEAF) color = leafColor(empty(x, y + 1, z) ? 0.5 : empty(x, y - 1, z) ? -0.5 : 0, x, y, z);
-          else if (v === BRANCH) color = shade(WOOD, 0.85 + (hash3(x, y, z) % 25) / 100);
+          else if (v === BRANCH) color = S.burn ? charColor(S, 0, x, y, z) : shade(WOOD, 0.85 + (hash3(x, y, z) % 25) / 100);
+          else if (S.burn) color = charColor(S, Math.max(0, y - sp.y), x, y, z);
           else {
             const h = Math.max(0, y - sp.y);
             const th = Math.atan2(z - sp.z - S.axZ[h], x - sp.x - S.axX[h]);
@@ -545,6 +580,7 @@ export function paintGiantsInto(world, c) {
       const h = c.height[lx + CHUNK * lz];
       const zone = giantZone(world, x, z, h);
       if (zone < 0.3 || h - 1 < c.base) continue;
+      if (world.impact && blastAt(world, x, z) > 0.2) continue; // 焼け野原の地面はそのまま
       const i = c.index(lx, h - 1, lz);
       if (!c.color[i] || c.owner[i] !== GROUND_ID) continue;
       const k = hash3(x, z, world.seed + 0x1f);
@@ -884,13 +920,14 @@ export function giantBoxes(world, spec, out) {
   const S = shapeOfSpec(spec);
   const top = g && (g.fallen || g.falling) ? g.cut.h0 : S.H;
   const oct = (x, y0, z, d, h, c) => out.push(x, y0, z, d * 0.92, h, c, 0, x, y0, z, d * 0.92, h, shade(c, 0.9), Math.PI / 4);
-  oct(bx, y, bz, (S.rad[0] + S.flare[0] * 0.7) * 1.8, 14, BARK[2]); // 根張り
+  const bark = S.burn ? CHAR : BARK;
+  oct(bx, y, bz, (S.rad[0] + S.flare[0] * 0.7) * 1.8, 14, bark[2 % bark.length]); // 根張り
   for (let h = 0; h < top; h += 24) {
     const hh = Math.min(top, h + 24);
     const m = Math.min(S.n - 1, h + 12);
-    oct(bx + S.axX[m], y + h, bz + S.axZ[m], (S.rad[m] + S.flare[m] * 0.7) * 2, hh - h, BARK[(h / 24) % BARK.length]);
+    oct(bx + S.axX[m], y + h, bz + S.axZ[m], (S.rad[m] + S.flare[m] * 0.7) * 2, hh - h, bark[(h / 24) % bark.length]);
   }
-  if (top < S.H) return; // 切り株
+  if (top < S.H || S.burn) return; // 切り株・焼けた木（葉がない）
   for (const p of S.parts) {
     if (p.b) continue;
     const k = hash3(Math.round(p.c[0]), Math.round(p.c[1]), spec.seed);

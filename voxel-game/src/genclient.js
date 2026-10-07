@@ -30,6 +30,11 @@ export class ChunkGenerator {
     return Boolean(this.worker) && !this.failed;
   }
 
+  // 隕石が落ちた: スレッドの世界にも知らせる（激突の前に頼んだチャンクは、届いても捨てて頼み直す）
+  impact(at) {
+    this.worker?.postMessage({ type: 'impact', at });
+  }
+
   // チャンク (cx, cz) を頼む。頼めなかった（頼みすぎ）なら false
   request(cx, cz) {
     const key = chunkKey(cx, cz);
@@ -47,6 +52,7 @@ export class ChunkGenerator {
     while (this.ready.length && performance.now() - start < budget) {
       const m = this.ready.shift();
       this.pending.delete(chunkKey(m.cx, m.cz));
+      if ((m.epoch ?? 0) !== (this.world.impactEpoch ?? 0)) continue; // 激突の前の地形で作ったもの
       if (installChunk(this.world, m)) n++;
     }
     return n;
@@ -56,6 +62,7 @@ export class ChunkGenerator {
 // 少し遠くのチャンクの粗いブロックを作るスレッド（細かいチャンク作りを待たせないように、別のスレッドにする）
 export class LodGenerator {
   constructor(world, maxPending = 6) {
+    this.world = world;
     this.pending = new Set();
     this.ready = [];
     this.failed = false;
@@ -80,6 +87,10 @@ export class LodGenerator {
     return this.pending.size >= this.maxPending;
   }
 
+  impact(at) {
+    this.worker?.postMessage({ type: 'impact', at });
+  }
+
   request(cx, cz) {
     const key = chunkKey(cx, cz);
     if (this.pending.has(key)) return true;
@@ -91,9 +102,11 @@ export class LodGenerator {
 
   // できあがったものを 1 つ取り出す（なければ null）
   take() {
-    const m = this.ready.shift();
-    if (!m) return null;
-    this.pending.delete(chunkKey(m.cx, m.cz));
-    return m;
+    let m;
+    while ((m = this.ready.shift())) {
+      this.pending.delete(chunkKey(m.cx, m.cz));
+      if ((m.epoch ?? 0) === (this.world.impactEpoch ?? 0)) return m; // 激突の前の地形で作ったものは捨てる
+    }
+    return null;
   }
 }

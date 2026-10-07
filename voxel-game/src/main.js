@@ -1,7 +1,9 @@
 // 描画と入力。チャンクごとに world の owner / color をそのまま「ディスプレイ」として映す。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv, PLAYER_HP } from './world.js';
+import { World, step, spawnPlayer, ensureAround, forgetFar, chunkKey, CHUNK, VOXEL_METERS, TICK_SECONDS, WATER_FLAG, FALL_ID, floorDiv, PLAYER_HP, startMeteor } from './world.js';
+import { MeteorView, quake, QUAKE_GLSL, quakeAt } from './meteorview.js';
+import { impactTouches, CRATER_R } from './meteor.js';
 import { HUMAN_SIZE } from './humanoid.js';
 import { spawnDragon, DRAGON_MODES } from './dragon.js';
 import { spawnMonster } from './monster.js';
@@ -49,8 +51,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 stage.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(SKY);
 scene.fog = new THREE.Fog(SKY, 600, 2300);
+// 空の色は画面を消す色で描く（隕石の遠くの火の玉や雲を先に描き、その上に世界を描くので）
+renderer.autoClear = false;
+const skyColor = new THREE.Color(SKY);
 
 const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 4000);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -147,7 +151,8 @@ document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== canvas) chopHeld = placeHeld = false;
 });
 
-scene.add(new THREE.HemisphereLight(0xeaf2ff, 0x4a5a3a, 1.5));
+const hemi = new THREE.HemisphereLight(0xeaf2ff, 0x4a5a3a, 1.5);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff3dd, 1.9);
 sun.position.set(0.6, 1, 0.35);
 scene.add(sun);
@@ -172,8 +177,9 @@ function voxelMaterial(options, alpha = false) {
     shader.uniforms.uHead = cutaway.uHead;
     shader.uniforms.uCut = cutaway.uCut;
     shader.uniforms.uSelf = cutaway.uSelf;
+    shader.uniforms.uQuake = quake.uQuake;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;\nuniform vec4 uSelf;')
+      .replace('#include <common>', '#include <common>\nattribute vec4 iCell;\nuniform vec3 uHead;\nuniform float uCut;\nuniform vec4 uSelf;' + QUAKE_GLSL)
       // 色は sRGB で持っている（水は不透明度も持つ）
       .replace('#include <color_vertex>', alpha ? 'vColor = vec4(pow(color.rgb, vec3(2.2)), color.a);' : 'vColor = pow(color, vec3(2.2));')
       .replace('#include <begin_vertex>', `
@@ -188,6 +194,7 @@ function voxelMaterial(options, alpha = false) {
         // 一人称のときは、自分の体（当たり判定の円柱の中）を描かない（道具ははみ出した所だけ見える）
         if (uSelf.w > 0.5 && wc.y > uSelf.z && wc.y < uSelf.z + 15.0 && length(wc.xz - uSelf.xy) < 4.65) show = 0.0;
         transformed = transformed * show + iCell.xyz;
+        transformed.y += quakeY(wc.xz); // 隕石の地面の波
       `);
   };
   return m;
@@ -589,6 +596,8 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     jumpHeld = true;
     jumpPending = true;
+  } else if (e.code === 'KeyM' && !e.repeat) {
+    dropMeteor();
   } else if (e.code === 'KeyP') {
     e.preventDefault();
     setPaused(!paused);
@@ -659,6 +668,7 @@ const toolLabel = document.getElementById('tool');
 const soilLabel = document.getElementById('soil');
 const monsterLabel = document.getElementById('monsterState');
 const fishLabel = document.getElementById('fishState');
+const meteorLabel = document.getElementById('meteorState');
 const hpBar = document.getElementById('hpBar');
 const hpText = document.getElementById('hpText');
 const chopBtn = document.querySelector('[data-chop]');
@@ -687,6 +697,12 @@ function describe(ev) {
       default: return { cls: 'block', text: `${a.name} はショットガンを撃った（外れ）`, rule: '' };
     }
   }
+  if (ev.type === 'meteorSpotted') return { cls: 'push', text: '空が赤く染まる……巨大な隕石が落ちてくる！', rule: '激突まで 10 秒' };
+  if (ev.type === 'meteorImpact') return { cls: 'push', text: '隕石が森に激突した！ 地面が大きくえぐれる', rule: '' };
+  if (ev.type === 'meteorQuake') return { cls: 'push', text: '地面の波が足もとを通り抜け、体が持ち上がった', rule: `波の高さ ${(ev.amp * VOXEL_METERS).toFixed(1)}m` };
+  if (ev.type === 'meteorWind') return { cls: 'block', text: '遠くから衝撃波の轟音と熱い風が届いた', rule: '' };
+  if (ev.type === 'meteorBlast') return { cls: 'push', text: '衝撃波に吹き飛ばされた！', rule: `体力 -${ev.damage}` };
+  if (ev.type === 'meteorDebrisHit') return { cls: 'push', text: '空から降ってきた岩が当たった', rule: `体力 -${ev.damage}` };
   if (ev.type === 'skeletonWake') return { cls: 'push', text: '倒れていた墓場泥棒の骸骨が、骨を鳴らして起き上がった', rule: '' };
   if (ev.type === 'skeletonHit') return { cls: 'push', text: `骸骨の錆びた剣に斬られた`, rule: `体力 -${ev.damage}` };
   if (ev.type === 'skeletonDown') return { cls: 'push', text: '骸骨が崩れ落ちた', rule: '' };
@@ -770,7 +786,8 @@ function describe(ev) {
 
 // NPC が木にぶつかるたびに書くと流れてしまうので、プレイヤーが関わる出来事だけ記録する
 function shouldLog(ev) {
-  return ev.actor.kind === 'player' || ev.target?.kind === 'player' || (ev.actor.kind === 'monster' && ev.type !== 'push');
+  if (ev.type === 'meteorDebris') return false; // 地面に落ちた岩は多いので書かない
+  return ev.actor.kind === 'player' || ev.actor.kind === 'meteor' || ev.target?.kind === 'player' || (ev.actor.kind === 'monster' && ev.type !== 'push');
 }
 
 function log(ev) {
@@ -870,6 +887,7 @@ function tick() {
   chopBtn.textContent = { axe: '斧', shovel: '掘る', sword: '斬る', gun: '撃つ' }[player.tool];
   monsterLabel.textContent = world.monster ? world.monster.label : '砕け散った';
   if (world.fish) fishLabel.textContent = world.fish.label;
+  if (world.meteor) meteorLabel.textContent = world.meteor.label;
   const hp = Math.round(player.hp);
   hpBar.style.width = `${(player.hp / PLAYER_HP) * 100}%`;
   hpBar.dataset.low = String(hp <= 30);
@@ -943,6 +961,60 @@ function setQuality(q) {
   shown = null;
 }
 
+// ---- 隕石落下 -------------------------------------------------------------------
+
+const meteorView = new MeteorView(scene, document.getElementById('flash'));
+const meteorBtns = [...document.querySelectorAll('[data-meteor]')];
+const baseHemi = hemi.color.clone(), baseSun = sun.color.clone();
+const RED_LIGHT = new THREE.Color(0xff7a50);
+let shaken = null; // このフレームだけカメラをずらした量（描いたあとで戻す）
+// クレーターの近さ（外輪山の外 500m までは 1、そこから 300m で 0）
+const smoothNear = (r) => Math.max(0, Math.min(1, (CRATER_R + 5300 - r) / 2000));
+
+function dropMeteor() {
+  if (world.meteor) return;
+  const m = startMeteor(world, {
+    // 激突の瞬間: チャンクを作るスレッドにも知らせ、形の変わる所の粗いブロックと遠景を作り直す
+    onImpact: (w) => {
+      generator.impact(w.impact);
+      lod.gen.impact(w.impact);
+      lod.forget((cx, cz) => impactTouches(w, cx, cz));
+      far.reset();
+      shown = null;
+    },
+  });
+  if (!m) return;
+  for (const b of meteorBtns) {
+    b.disabled = true;
+    b.textContent = b.dataset.done ?? b.textContent;
+  }
+}
+for (const b of meteorBtns) {
+  b.addEventListener('pointerdown', (e) => e.stopPropagation());
+  b.addEventListener('click', dropMeteor);
+}
+
+// 空の色・光の色・霧・カメラの揺れ（地面の波に乗る）
+function renderMeteor(dt) {
+  shaken = null;
+  const m = world.meteor;
+  if (!m) return;
+  const t = m.t + (paused ? 0 : Math.min(acc, TICK_MS) / 1000);
+  meteorView.update(m, t, camera.position, paused ? 0 : dt);
+  skyColor.copy(meteorView.sky);
+  scene.fog.color.copy(skyColor);
+  const dust = meteorView.dust;
+  scene.fog.near *= 1 - 0.55 * dust;
+  scene.fog.far *= 1 - 0.4 * dust;
+  hemi.color.copy(baseHemi).lerp(RED_LIGHT, 0.5 * meteorView.redness);
+  sun.color.copy(baseSun).lerp(RED_LIGHT, 0.6 * meteorView.redness);
+  const s = meteorView.shake;
+  const dy = quakeAt(camera.position.x, camera.position.z);
+  if (!s && !dy) return;
+  shaken = new THREE.Vector3((Math.random() - 0.5) * s, dy + (Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  camera.position.add(shaken);
+}
+
 let last = performance.now();
 let acc = 0;
 function frame(now) {
@@ -975,7 +1047,21 @@ function frame(now) {
   const dist = firstPerson && !watchDragon ? 0 : camera.position.distanceTo(controls.target);
   scene.fog.near = dist + 350;
   scene.fog.far = dist + 2300;
+  // 隕石のクレーターの近くでは、すり鉢の向こうまで見えるように霧を遠ざける
+  if (world.impact) {
+    const near = smoothNear(Math.hypot(camera.position.x - world.impact.x, camera.position.z - world.impact.z));
+    scene.fog.near += 700 * near;
+    scene.fog.far += 1500 * near;
+  }
+  renderMeteor(dt / 1000);
+  renderer.setClearColor(skyColor);
+  renderer.clear();
+  if (world.meteor) {
+    meteorView.render(renderer, camera);
+    renderer.clearDepth();
+  }
   renderer.render(scene, camera);
+  if (shaken) camera.position.sub(shaken);
   requestAnimationFrame(frame);
 }
 

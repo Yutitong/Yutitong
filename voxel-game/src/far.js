@@ -12,6 +12,8 @@ import { groundColor, waterColor } from './terrain.js';
 import { forestDensity, regionSpec, REGION } from './trees.js';
 import { giantSpec, giantBoxes, GIANT_CELL } from './giant.js';
 import { farStructure } from './pyramid.js';
+import { scarColor } from './meteor.js';
+import { quake, QUAKE_GLSL } from './meteorview.js';
 
 const LEVELS = [
   { cell: 4, tile: 64, reach: 7 }, // 4 ボクセル四方の柱を、まわり 7 タイル（≈ 480 ボクセル ≈ 70m）
@@ -63,14 +65,17 @@ function farMaterial() {
   const m = new THREE.MeshLambertMaterial();
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uHide = hide;
+    shader.uniforms.uQuake = quake.uQuake;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uHide;')
+      .replace('#include <common>', '#include <common>\nuniform vec3 uHide;' + QUAKE_GLSL)
       .replace('#include <begin_vertex>', `
         vec3 transformed = vec3(position);
         vec2 ic = instanceMatrix[3].xz;
         if (abs(ic.x - uHide.x) < uHide.z && abs(ic.y - uHide.y) < uHide.z) transformed = vec3(0.0);
         // カメラのすぐそばの柱や木は、大きく見えて視界をふさぐので描かない
         if (distance(ic, cameraPosition.xz) < 70.0) transformed = vec3(0.0);
+        // 隕石の地面の波（柱の高さで割って、世界の高さで上下させる）
+        transformed.y += quakeY(ic) / max(length(instanceMatrix[1].xyz), 0.001);
       `);
   };
   return { m, hide };
@@ -83,6 +88,18 @@ export class FarTerrain {
     this.levels = LEVELS.map((l) => ({ ...l, tiles: new Map(), center: null, ...farMaterial() }));
     this.tmp = new THREE.Object3D();
     this.color = new THREE.Color();
+  }
+
+  // 遠景を全部作り直す（隕石のクレーターなど、地形が変わったとき）
+  reset() {
+    for (const L of this.levels) {
+      for (const mesh of L.tiles.values()) {
+        this.scene.remove(mesh);
+        mesh.dispose();
+      }
+      L.tiles.clear();
+      L.center = null;
+    }
   }
 
   // 使う段の数を変える（重いときは遠い段を描かない）
@@ -165,6 +182,7 @@ export class FarTerrain {
           color = waterColor(x, z, col.water - col.h, col.water > w.waterLevel) & 0xffffff;
         } else {
           color = groundColor(w.seed, x, col.h - 1, z, col, Math.round((slope / L.cell) * 2.2));
+          if (col.blast) color = scarColor(w.seed, x, col.h - 1, z, col, color); // 隕石の焼け野原・クレーター
           const forest = !trees && w.terrain ? forestDensity(w, x, z, col) : 0;
           if (forest > 0.2) {
             // 樹冠: 木ごとに高さがでこぼこする

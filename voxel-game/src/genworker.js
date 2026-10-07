@@ -5,6 +5,7 @@
 
 import { World, packChunk, PLANT_ID } from './world.js';
 import { chunkLod } from './lod.js';
+import { applyImpact } from './meteor.js';
 
 let world = null;
 const sent = new Set(); // 形を送ったことのある木（受け取った側が忘れたら消す）
@@ -15,6 +16,9 @@ self.onmessage = (ev) => {
   if (m.type === 'init') {
     world = new World({ seed: m.seed });
     world.noEntities = true;
+  } else if (m.type === 'impact') {
+    // 隕石が落ちた: このあと作るチャンクはクレーターのある地形で作る
+    applyImpact(world, m.at);
   } else if (m.type === 'forget') {
     for (const k of m.keys) sent.delete(k);
   } else if (m.type === 'gen') {
@@ -22,7 +26,7 @@ self.onmessage = (ev) => {
     const out = packChunk(world, c, sent);
     world.chunks.delete(c.key);
     world.dirty.clear();
-    self.postMessage({ type: 'chunk', ...out }, [out.owner.buffer, out.color.buffer, out.height.buffer, out.water.buffer, out.fixed.buffer]);
+    self.postMessage({ type: 'chunk', epoch: world.impactEpoch ?? 0, ...out }, [out.owner.buffer, out.color.buffer, out.height.buffer, out.water.buffer, out.fixed.buffer]);
     // ときどき、遠くの木や巨大樹の形を忘れる（メモリを使いすぎないように）
     if (++count % 64 === 0) prune(m.cx * 16, m.cz * 16);
   } else if (m.type === 'lod') {
@@ -31,7 +35,7 @@ self.onmessage = (ev) => {
     const { i1, i2 } = chunkLod(c, (o) => o === PLANT_ID);
     world.chunks.delete(c.key);
     world.dirty.clear();
-    const out = { type: 'lod', cx: m.cx, cz: m.cz, i1: copy(i1), i2: copy(i2) };
+    const out = { type: 'lod', epoch: world.impactEpoch ?? 0, cx: m.cx, cz: m.cz, i1: copy(i1), i2: copy(i2) };
     self.postMessage(out, [out.i1.cell.buffer, out.i1.rgb.buffer, out.i2.cell.buffer, out.i2.rgb.buffer]);
     if (++count % 64 === 0) prune(m.cx * 16, m.cz * 16);
   }
