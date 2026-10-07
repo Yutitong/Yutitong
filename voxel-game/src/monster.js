@@ -27,6 +27,8 @@ const vol = (r) => (4 / 3) * Math.PI * r ** 3;
 const radiusOf = (mass) => Math.cbrt(mass / ((4 / 3) * Math.PI));
 export const MIN_MASS = vol(4.5); // これより小さくなると砕け散る
 const MAX_RADIUS = 16;
+// NPC を見つけて包み込み、吸収するふるまい。いまは使わない（true にすると戻る）
+const HUNTS_NPCS = false;
 const OCTA = Math.cbrt(Math.PI); // 同じ体積の正八面体の、中心から頂点まで（半径の何倍か）≈ 1.46
 const SEE = 100; // この距離（ボクセル ≈ 15m）までプレイヤーが近づくと気づく
 const LOSE = 150; // これより離れると見失う
@@ -143,6 +145,7 @@ export class Monster {
     this.dead = false;
     this.absorbed = 0;
     this.lastDragonHit = -1;
+    this.hunts = HUNTS_NPCS; // NPC を狙って包み込むか
     // 見た目の変形（つぶれと伸び・ため）。体積はそのまま
     // e: 軸の向きに伸びる量（- ならつぶれる）、k: 全体の大きさ、axis: 伸び縮みの向き（世界の座標）、wob: 震え
     this.squash = { e: 0, k: 1 };
@@ -652,7 +655,7 @@ export class Monster {
     this.octaIn -= dt;
     this.spinRate = approach(this.spinRate, 0.4, dt * 2);
     // NPC を探す（ときどき）
-    if (this.state !== 'hunt' && Math.floor(this.time * 2) !== Math.floor((this.time - dt) * 2)) {
+    if (this.hunts && this.state !== 'hunt' && Math.floor(this.time * 2) !== Math.floor((this.time - dt) * 2)) {
       const prey = this.findPrey();
       if (prey) {
         this.prey = prey;

@@ -25,7 +25,7 @@ const FAR_BUDGET_MS = 3; // 1フレームで遠景作りに使ってよい時間
 const LOD_BUDGET_MS = 3; // 1フレームで、少し遠くの粗いブロック作りに使ってよい時間
 const SKY = 0xa9c9e8;
 
-const world = new World({ seed: 20261004 });
+const world = new World({ seed: 20261004, npcs: false }); // NPC は置かない（歩くのに邪魔なので）
 world.bodyMakesChunks = false; // 龍の体が、まだ作っていない遠くのチャンクを作り始めないように
 // 龍の体は、細かく描く正方形（チャンク）の中だけチャンクに描く。その外は粗いブロックで別に描く（FarDragon）
 world.drawRadius = (viewRadius + 0.5) * CHUNK;

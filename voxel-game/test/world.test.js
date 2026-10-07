@@ -1327,11 +1327,35 @@ test('黄色い球体: 正八面体の頂点から紫の光線。線上の地面
   assertConsistent(w);
 });
 
-test('黄色い球体: NPC を見つけると上から包み込んで吸収し、少し大きくなる', async () => {
+test('ゲームの世界: NPC はいない。黄色い球体は NPC を狙わない（ふるまいは残してある）', async () => {
+  const { Monster } = await import('../src/monster.js');
+  const w = new World({ seed: 4, npcs: false }); // NPC を置いていたシード
+  const p = spawnPlayer(w);
+  ensureAround(w, p.pos[0], p.pos[2], 4);
+  assert.equal([...w.entities.values()].filter((e) => e.kind === 'npc').length, 0);
+  // 近くに NPC がいても、球体は包み込みに行かない
+  let npc = null;
+  for (let k = 0; k < 40 && !npc; k++) {
+    const x = p.pos[0] + 20 + (k % 8) * 6, z = p.pos[2] + Math.floor(k / 8) * 8;
+    const f = w.footprint(x, z, HUMAN_SIZE[0], HUMAN_SIZE[2]);
+    if (!f.wet) npc = w.spawnHuman({ kind: 'npc', name: 'NPC-1', priority: PRIORITY.NPC, pos: [x, f.hi, z], palette: PALETTES.npc[1] });
+  }
+  assert.ok(npc);
+  const m = new Monster(w, [npc.pos[0], npc.pos[1] + 30, npc.pos[2] + 20]);
+  w.monster = m;
+  m.octaIn = 1e9;
+  for (let i = 0; i < 150; i++) m.update(0.08, p);
+  assert.ok(!['hunt', 'wrap', 'absorb'].includes(m.state), m.state);
+  assert.ok(w.entities.has(npc.id));
+  assert.ok(!npc.held);
+});
+
+test('黄色い球体: （ふるまいを戻したとき）NPC を見つけると上から包み込んで吸収し、少し大きくなる', async () => {
   const { Monster } = await import('../src/monster.js');
   const { w, p } = monsterWorld();
   const npc = w.spawnHuman({ kind: 'npc', name: 'NPC-1', priority: PRIORITY.NPC, pos: [-180, 10, 0], palette: PALETTES.npc[1] });
   const m = new Monster(w, [-160, 30, 30]);
+  m.hunts = true;
   w.monster = m;
   m.octaIn = 1e9;
   const R0 = m.R;

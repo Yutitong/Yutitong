@@ -113,9 +113,11 @@ const NO_CELLS = { offsets: new Int16Array(0), colors: new Uint32Array(0) };
 export class World {
   // generate: false にすると平らな地面だけの世界になる（テスト用）。
   // heightAt(x, z) / waterLevel で地形を差し替えられる（テスト用）。
-  constructor({ seed = 1, generate = true, heightAt = null, waterLevel = null } = {}) {
+  // npcs: false にすると NPC を置かない（ゲームでは置かない。テストでは置く）
+  constructor({ seed = 1, generate = true, heightAt = null, waterLevel = null, npcs = true } = {}) {
     this.seed = seed;
     this.generate = generate;
+    this.npcs = npcs;
     // 山と川のある地形。heightAt を渡したとき（テスト用）は、その高さと一定の水面だけの地形
     this.terrain = generate && !heightAt ? new Terrain(seed) : null;
     this.heightAt = heightAt ?? (this.terrain ? (x, z) => this.terrain.height(x, z) : () => 1);
@@ -643,6 +645,7 @@ function paintPlantsInto(world, c, cols) {
 
 // チャンクの中に NPC を置く。そのチャンクの内側に収まるように、地面の上に置く。
 function generateChunk(world, c) {
+  if (!world.npcs) return;
   if (c.cx === 0 && c.cz === 0) return; // 出発地点は空けておく
   const rng = mulberry32(hash3(c.cx, c.cz, world.seed));
   const ox = c.cx * CHUNK;
