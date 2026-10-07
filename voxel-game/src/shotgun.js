@@ -82,6 +82,7 @@ export function shoot(world, e) {
   const results = new Set();
   const dragonResults = new Set();
   const fishResults = new Set();
+  const bodyResults = new Set();
   let blocked = false;
   for (let k = 0; k < PELLETS; k++) {
     const da = ((k / (PELLETS - 1)) - 0.5) * 2 * SPREAD + (rng() - 0.5) * 0.05;
@@ -117,6 +118,16 @@ export function shoot(world, e) {
           ev.fish++;
           if (!ev.target) ev.target = school.entity;
         }
+      } else if (o > 0 && world.entities.get(o)?.body?.shot) {
+        // 骸骨・赤い骨の王・アヌビス像など（当たると反応する物）
+        const ent = world.entities.get(o);
+        const power = Math.max(0.08, 1 - s / SHOT_RANGE) ** 1.3;
+        const r = ent.body.shot(p, power, from);
+        if (r) {
+          bodyResults.add(r);
+          ev.hits++;
+          if (!ev.target) ev.target = ent;
+        }
       } else if (dragon && o === dragon.id) {
         if (s >= tDragon) {
           end = tDragon;
@@ -150,7 +161,11 @@ export function shoot(world, e) {
     trails.push([muzzle, v.map((c) => c / len), len]);
   }
   if (ev.dragon) dragon.provoke();
+  ev.bodyResults = [...bodyResults];
   if (results.has('killed')) ev.result = 'killed';
+  else if (bodyResults.has('kingDown')) ev.result = 'kingDown';
+  else if (bodyResults.has('collapse')) ev.result = 'collapse';
+  else if (bodyResults.has('break')) ev.result = 'statueBreak';
   else if (dragonResults.has('severed')) ev.result = 'severed';
   else if (fishResults.has('burst')) ev.result = 'burst';
   else if (results.has('chip')) ev.result = 'chip';
@@ -158,6 +173,8 @@ export function shoot(world, e) {
   else if (dragonResults.has('wound')) ev.result = 'wound';
   else if (dragonResults.has('graze')) ev.result = 'graze';
   else if (fishResults.has('kill')) ev.result = 'fishKill';
+  else if (bodyResults.has('kingHurt')) ev.result = 'kingHurt';
+  else if (bodyResults.has('chip')) ev.result = 'statueChip';
   else if (blocked) ev.result = 'blocked';
   drawTrails(world, trails);
   return ev;

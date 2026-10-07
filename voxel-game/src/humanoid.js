@@ -156,7 +156,32 @@ function chopKey(t, keys = CHOP_KEYS) {
 // ---- 骨格 → 部位 ------------------------------------------------------------
 
 // 姿勢から部位の一覧を作る（体の座標: x = 右, y = 上, z = 前。足元の中心が原点）
-function buildParts(p, pal) {
+// 骨（骸骨）の体: 手足は細い骨、胸は肋骨（すき間は透けて見える）、頭はどくろ
+function ribShade(pal) {
+  return (lx, ly, lz) => {
+    if (Math.abs(lx) < 0.25 && lz > 0.3) return pal.skin; // 胸骨
+    if (lz < -0.45 && Math.abs(lx) < 0.3) return pal.skin; // 背骨
+    return Math.floor((ly + 1) * 3.2) % 2 === 0 && Math.abs(lz) < 0.95 ? pal.shirt : 0;
+  };
+}
+function spineShade(pal) {
+  return (lx, ly, lz) => (Math.abs(lx) < 0.35 && lz < 0.1 ? pal.skin : 0);
+}
+function skullShade(pal, blink) {
+  return (lx, ly, lz) => {
+    if (pal.crown && ly > 0.45) {
+      // 王冠: 金の輪と、上へとがった飾り
+      if (ly < 0.75) return pal.crown;
+      return (Math.floor((Math.atan2(lx, lz) + Math.PI) * 2.6) % 2 === 0) ? pal.crown : 0;
+    }
+    if (lz > 0.45 && ly > -0.25 && ly < 0.3 && Math.abs(lx) > 0.25 && Math.abs(lx) < 0.85) return blink ? pal.skin : pal.eyes; // 目の穴
+    if (lz > 0.6 && ly > -0.55 && ly < -0.25 && Math.abs(lx) < 0.2) return pal.socket ?? pal.eyes; // 鼻の穴
+    if (lz > 0.45 && ly < -0.55) return Math.floor((lx + 1) * 4) % 2 ? pal.skin : (pal.socket ?? pal.eyes); // 歯
+    return pal.skin;
+  };
+}
+
+export function buildParts(p, pal) {
   const B = BODY;
   const ph = p.phase * Math.PI * 2;
   const s = Math.sin(ph);
@@ -186,7 +211,9 @@ function buildParts(p, pal) {
   const sway = p.sway * 0.35 * (1 - w);
 
   const parts = [];
-  const capsule = (a, b, ra, rb, color, bias = 0, tool = false) => parts.push({ type: 'cap', a, b, ra, rb, color, bias, tool });
+  const bones = Boolean(pal.bones);
+  const thin = (r) => (bones ? Math.max(0.42, r * 0.6) : r);
+  const capsule = (a, b, ra, rb, color, bias = 0, tool = false) => parts.push({ type: 'cap', a, b, ra: tool ? ra : thin(ra), rb: tool ? rb : thin(rb), color, bias, tool });
   // pow = 2 で楕円体、大きくすると角の丸い箱に近づく
   const ellipsoid = (center, radii, color, bias = 0, shade = null, yaw = 0, pow = 2) =>
     parts.push({ type: 'ell', center, radii, color, bias, shade, yaw, pow });
@@ -209,9 +236,15 @@ function buildParts(p, pal) {
   const pelvis = [sway, hipY + 0.35, 0];
   const up = (len) => add(pelvis, tilt([0, len, 0], lean));
   const breathLift = p.breath * 0.3;
-  ellipsoid(pelvis, [1.35, 0.75, 1.05], pal.belt ?? pal.pants);
-  ellipsoid(up(1.15), [1.2, 0.95, 1.0], pal.shirt);
-  ellipsoid(up(2.15), [1.55, 1.2, 1.15 + p.breath * 0.15], pal.shirt, 0.05);
+  if (bones) {
+    ellipsoid(pelvis, [1.2, 0.6, 0.8], pal.pants);
+    ellipsoid(up(1.15), [1.0, 0.95, 0.9], pal.skin, 0, spineShade(pal));
+    ellipsoid(up(2.15), [1.5, 1.2, 1.1], pal.shirt, 0.05, ribShade(pal));
+  } else {
+    ellipsoid(pelvis, [1.35, 0.75, 1.05], pal.belt ?? pal.pants);
+    ellipsoid(up(1.15), [1.2, 0.95, 1.0], pal.shirt);
+    ellipsoid(up(2.15), [1.55, 1.2, 1.15 + p.breath * 0.15], pal.shirt, 0.05);
+  }
   const neckBase = up(B.spine);
 
   // 腕: 同じ側の脚と逆向きに振る。肩も少しひねる。
@@ -255,7 +288,7 @@ function buildParts(p, pal) {
     const hand = add(elbow, swingDown(B.forearm, swingA + elbowBend));
     capsule(shoulder, elbow, 0.66, 0.6, pal.shirt, 0.15);
     capsule(elbow, hand, 0.6, 0.55, pal.skin, 0.15);
-    ellipsoid(hand, [0.6, 0.62, 0.6], pal.skin, 0.2);
+    ellipsoid(hand, bones ? [0.45, 0.48, 0.45] : [0.6, 0.62, 0.6], pal.skin, 0.2);
     if (axeArm) {
       // 柄は前腕の向きを手首で返した向き。刃は柄に直角で、振り下ろす側を向く
       const f = [hand[0] - elbow[0], hand[1] - elbow[1], hand[2] - elbow[2]];
@@ -316,7 +349,7 @@ function buildParts(p, pal) {
   const head = add(neckTop, [0, B.head[1] * 0.9, 0.05]);
   // 頭の高さはボクセルの中心にそろえる。上下動で頭の形が毎コマ変わらず、1段ずつ上下する。
   head[1] = Math.floor(head[1]) + 0.5;
-  ellipsoid(head, B.head, pal.skin, 0.3, headShade(pal, p.blink), p.headYaw, 4);
+  ellipsoid(head, B.head, pal.skin, 0.3, bones ? skullShade(pal, p.blink) : headShade(pal, p.blink), p.headYaw, bones ? 2.6 : 4);
   return parts;
 }
 
@@ -448,6 +481,21 @@ export function rasterizeTool(palette, pose) {
   }
   return [...cells.values()];
 }
+
+// 骸骨（墓場泥棒）と、赤い骨の王
+const BONE = 0xe3d8bc;
+export const SKELETON_PALETTE = {
+  id: 'skeleton', bones: true, skin: BONE, hair: BONE, shirt: 0xd6cbab, pants: 0xcfc3a2, belt: 0x5a4a34, shoes: 0xc8bc9c,
+  eyes: 0x140e0a, socket: 0x140e0a,
+  axe: { handle: 0x5a3a24, blade: 0x7a6e60, edge: 0x9a8e7e },
+  sword: { grip: 0x3a2a20, guard: 0x6a5a40, blade: 0x857766, edge: 0xa3967f },
+};
+export const KING_PALETTE = {
+  id: 'boneKing', bones: true, skin: 0xb3281c, hair: 0xb3281c, shirt: 0x9a2016, pants: 0x8a1a12, belt: 0x4a0e0a, shoes: 0x7a160f,
+  eyes: 0x1a0606, socket: 0x1a0606, crown: 0xe6b84a,
+  axe: { handle: 0x2a1a14, blade: 0x4a4e56, edge: 0xc23a2a },
+  sword: { grip: 0x2a1a14, guard: 0xe6b84a, blade: 0x5a5f69, edge: 0xd2412e },
+};
 
 export const PALETTES = {
   player: {

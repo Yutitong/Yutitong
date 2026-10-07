@@ -9,6 +9,7 @@ import { mulberry32, hash3, noise3, noise2, shade } from './rng.js';
 import { CHUNK, HEIGHT, floorDiv, chunkKey, chunkKeyAt } from './grid.js';
 import { BASE } from './terrain.js';
 import { giantZone } from './giant.js';
+import { inSite } from './pyramid.js';
 
 export const REGION = 24; // この区画ごとに最大1本の木を置く（ボクセル）
 export const MAX_REACH = 30; // 幹の中心から葉先までの最大の水平距離（ボクセル）
@@ -344,7 +345,7 @@ export function regionSpec(world, rx, rz, store = true) {
     const slope = Math.abs(world.heightAt(x + 4, z) - world.heightAt(x - 4, z)) + Math.abs(world.heightAt(x, z + 4) - world.heightAt(x, z - 4));
     const steep = alt > 40 && slope > (riparian ? 22 : 14);
     // 巨大樹の森には、ふつうの木は生えない
-    const ok = !nearSpawn && giantZone(world, x, z, y) < 0.25 && y > world.waterLevel + 1 && !col.water && !col.channel && !col.bank && col.edge > 6
+    const ok = !nearSpawn && !inSite(world, x, z, 30) && giantZone(world, x, z, y) < 0.25 && y > world.waterLevel + 1 && !col.water && !col.channel && !col.bank && col.edge > 6
       && !steep && rng() < smoothstep(line, line - 90, alt);
     if (ok) {
       // 水辺は広葉樹とシラカバ、高い所はスギが多い
@@ -371,6 +372,7 @@ export function forestDensity(world, x, z, col) {
   const rx = x / REGION, rz = z / REGION;
   const p = 0.06 + 0.86 * smoothstep(0.4, 0.68, noise2(rx * 0.17, rz * 0.17, world.seed));
   const line = 190 + 60 * noise2(rx * 0.3, rz * 0.3, world.seed + 7);
+  if (inSite(world, x, z, 30)) return 0;
   return p * smoothstep(line, line - 90, col.h - BASE) * (1 - giantZone(world, x, z, col.h));
 }
 

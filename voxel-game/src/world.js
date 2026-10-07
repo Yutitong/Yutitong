@@ -11,6 +11,7 @@ import { HUMAN_SIZE, HUMAN_OFFSETS, PALETTES, createPose, humanColors } from './
 import { initCharacter, updateCharacter } from './character.js';
 import { CHUNK, HEIGHT, LAYER, floorDiv, chunkKey, cellIndex } from './grid.js';
 import { hash3, mulberry32 } from './rng.js';
+import { pyramidSite, flattenSite, structureBase, paintPyramidInto } from './pyramid.js';
 import { Terrain, groundColor, waterColor, fallColor, rockInside, boulderColor, fernAt, fernCells, WATER_LEVEL } from './terrain.js';
 import { paintTreesInto, updateWind, forgetTrees, packTree, adoptTree, treeByKey, refreshTreesIn } from './trees.js';
 import { chop, dropFalling } from './axe.js';
@@ -120,7 +121,8 @@ export class World {
     this.npcs = npcs;
     // 山と川のある地形。heightAt を渡したとき（テスト用）は、その高さと一定の水面だけの地形
     this.terrain = generate && !heightAt ? new Terrain(seed) : null;
-    this.heightAt = heightAt ?? (this.terrain ? (x, z) => this.terrain.height(x, z) : () => 1);
+    this.heightAt = heightAt ?? (this.terrain ? (x, z) => this.sample(x, z, this._hTmp).h : () => 1);
+    this._hTmp = {};
     this.waterLevel = waterLevel ?? (generate ? WATER_LEVEL : 0);
     this.chunks = new Map();
     this.dirty = new Set(); // 描画を更新すべきチャンクの key
@@ -165,10 +167,13 @@ export class World {
           lo = Math.min(lo, col.h);
         }
       }
-      // 一番低い地面より少し下から持つ（シャベルで掘った穴の底が見えるように）
-      c = new Chunk(cx, cz, Math.max(0, lo - 8));
+      // 一番低い地面より少し下から持つ（シャベルで掘った穴の底が見えるように）。
+      // ピラミッドの中は、表面の近くと中の空間のある所だけ持つ
+      const base = this.terrain ? structureBase(this, cx, cz, Math.max(0, lo - 8)) : Math.max(0, lo - 8);
+      c = new Chunk(cx, cz, base);
       this.chunks.set(key, c); // 中身を作る前に登録（生成中の spawn が自分自身を参照できるように）
       fillTerrain(this, c, cols);
+      if (this.terrain) paintPyramidInto(this, c);
       if (this.generate) {
         if (this.terrain) paintGiantsInto(this, c); // 巨大樹は先に塗る（ふつうの木や草は空いている所にだけ入る）
         paintTreesInto(this, c); // 木は隣の区画から枝を伸ばしてくることもあるので先に塗る
@@ -185,7 +190,7 @@ export class World {
 
   // 列 (x, z) の地形: { h: 地面の高さ, water: 水面（0 = なし）, channel: 川の中, bank: 川岸, f: 川の上流(0)〜下流(1), lowland }
   sample(x, z, out = {}) {
-    if (this.terrain) return this.terrain.sample(x, z, out);
+    if (this.terrain) return flattenSite(this, x, z, this.terrain.sample(x, z, out)); // ピラミッドの広場はならす
     const h = this.heightAt(x, z);
     out.h = h;
     out.water = h < this.waterLevel ? this.waterLevel : 0;
@@ -301,6 +306,11 @@ export class World {
       });
     }
     return e && initCharacter(e, rng);
+  }
+
+  // プレイヤーの体力を減らす（0 になると出発地点に戻る。そのときは出来事を返す）
+  hurt(amount) {
+    return hurtPlayer(this, amount);
   }
 
   // [[x, y, z, color], ...]（絶対座標）
@@ -512,6 +522,8 @@ export function step(world, playerInput, rng = Math.random, dt = TICK_SECONDS) {
     m.update(dt * 2, p);
     events.push(...m.events);
   }
+  // ピラミッドの住人（水晶・アヌビス像・骸骨・赤い骨の王）
+  if (p && world.temple) events.push(...world.temple.step(dt, p, rng, report));
   // 崩れる土砂と岩、水しぶき
   world.physics.step();
   world.splashes.update(dt);

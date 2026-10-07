@@ -11,6 +11,7 @@ import { noise2, shade } from './rng.js';
 import { groundColor, waterColor } from './terrain.js';
 import { forestDensity, regionSpec, REGION } from './trees.js';
 import { giantSpec, giantBoxes, GIANT_CELL } from './giant.js';
+import { farStructure } from './pyramid.js';
 
 const LEVELS = [
   { cell: 4, tile: 64, reach: 7 }, // 4 ボクセル四方の柱を、まわり 7 タイル（≈ 480 ボクセル ≈ 70m）
@@ -172,7 +173,15 @@ export class FarTerrain {
             top += Math.round(48 * forest * (0.35 + crown));
           }
         }
-        const bottom = Math.max(0, Math.min(lo, col.top) - 4);
+        // ピラミッドや門は、地形の上に石の柱として描く
+        const st = w.terrain ? farStructure(w, x, z) : null;
+        if (st) {
+          top = Math.max(top, st.top);
+          color = st.color;
+        }
+        let bottom = Math.max(0, Math.min(lo, col.top) - 4);
+        // ピラミッドは表面の近くだけの殻にする（中の部屋に遠景の柱が入り込まないように）
+        if (st) bottom = Math.max(bottom, st.bottom ?? st.top - (L.cell * 1.3 + 10));
         boxes.push(x, bottom, z, L.cell, top - bottom, color, 0);
       }
     }

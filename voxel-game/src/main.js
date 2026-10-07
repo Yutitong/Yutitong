@@ -10,6 +10,7 @@ import { ChunkGenerator, LodGenerator } from './genclient.js';
 import { LodRings } from './lodview.js';
 import { FarBody } from './farbody.js';
 import { spawnFish } from './fish.js';
+import { spawnTemple } from './temple.js';
 import { FarTerrain } from './far.js';
 import { SOIL_MAX } from './shovel.js';
 import { LAYER } from './grid.js';
@@ -34,6 +35,9 @@ ensureAround(world, player.pos[0], player.pos[2], 2); // 足元だけ先に作�
 const dragon = spawnDragon(world, player.pos);
 spawnMonster(world, player.pos); // 黄色い球体（14m ほど先に浮かんでいる）
 spawnFish(world, player.pos); // 空を泳ぐ古代魚（出発地点のまわりを回遊する）
+spawnTemple(world); // ピラミッドの水晶・アヌビス像・骸骨・赤い骨の王
+// はじめは遠くのピラミッドの方を向いて立つ
+if (world.temple) player.pose.yaw = Math.atan2(world.temple.site.cx - player.pos[0], world.temple.site.cz - player.pos[2]);
 // チャンクは別のスレッドで作る（画面が止まらないように）。使えなければ、その場で少しずつ作る
 const generator = new ChunkGenerator(world);
 
@@ -200,6 +204,8 @@ const lod = new LodRings(scene, world, solidMaterial, new LodGenerator(world), V
 lod.hasView = (key) => views.has(key);
 const farDragon = new FarBody(scene, solidMaterial, VOXEL_SIZE);
 const farFish = new FarBody(scene, solidMaterial, VOXEL_SIZE);
+// ピラミッドの水晶と、門のアヌビス像（遠くからも見える）
+const farTemple = world.temple ? [world.temple.crystal, ...world.temple.statues].map((body) => ({ body, view: new FarBody(scene, solidMaterial, VOXEL_SIZE) })) : [];
 let highlight = new Set(); // 押し出された物体（一瞬明るくする）
 
 // 1つのメッシュ（不透明 / 水）。セル番号 → インスタンス番号の対応を持つ
@@ -425,6 +431,7 @@ function syncChunks() {
   // 正方形の外の龍
   farDragon.update(dragon, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
   farFish.update(world.fish, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
+  for (const t of farTemple) t.view.update(t.body, [world.drawCenter[0], world.drawCenter[2]], world.drawRadius, (lod.r1 + 0.5) * CHUNK, (lod.r2 + 0.5) * CHUNK);
   // チャンク（と粗いブロック）がそろったら、その範囲の遠景を隠す
   if (all) shown = { x: (pcx + 0.5) * CHUNK, z: (pcz + 0.5) * CHUNK, half: (Math.max(viewRadius, lod.ready) + 0.5) * CHUNK };
 }
@@ -667,6 +674,11 @@ function describe(ev) {
       case 'killed': return { cls: 'push', text: '黄色い球体が砕け散った！', rule: '撃破' };
       case 'severed': return { cls: 'push', text: '散弾で龍の尾がちぎれ落ちた！ 龍は怒っている', rule: '切断' };
       case 'wound': return { cls: 'push', text: '散弾で龍の鱗に穴があいた。龍が怒って向かってくる', rule: n };
+      case 'kingDown': return { cls: 'push', text: '散弾で赤い骨の王が崩れ落ちた！', rule: '撃破' };
+      case 'kingHurt': return { cls: 'push', text: '散弾が赤い骨の王に当たった', rule: `${ev.hits} 粒` };
+      case 'collapse': return { cls: 'push', text: '散弾で骸骨が崩れ落ちた', rule: '' };
+      case 'statueBreak': return { cls: 'push', text: '散弾でアヌビス像が割れた', rule: '' };
+      case 'statueChip': return { cls: 'push', text: '散弾でアヌビス像の石が欠けた', rule: `${ev.hits} 粒` };
       case 'burst': return { cls: 'push', text: '散弾で古代魚が一気に小魚の群れにほどけた', rule: `${ev.fish} 粒` };
       case 'fishKill': return { cls: 'push', text: '散弾がばらけた小魚に当たり、小魚が落ちた', rule: `${ev.fish} 匹` };
       case 'graze': return { cls: 'push', text: '散弾が龍の頭や足に当たった。龍が怒って向かってくる', rule: n };
@@ -674,6 +686,16 @@ function describe(ev) {
       default: return { cls: 'block', text: `${a.name} はショットガンを撃った（外れ）`, rule: '' };
     }
   }
+  if (ev.type === 'skeletonWake') return { cls: 'push', text: '倒れていた墓場泥棒の骸骨が、骨を鳴らして起き上がった', rule: '' };
+  if (ev.type === 'skeletonHit') return { cls: 'push', text: `骸骨の錆びた剣に斬られた`, rule: `体力 -${ev.damage}` };
+  if (ev.type === 'skeletonDown') return { cls: 'push', text: '骸骨が崩れ落ちた', rule: '' };
+  if (ev.type === 'kingWake') return { cls: 'push', text: '赤い骨の王の目が赤く光り、玉座から立ち上がる……', rule: '' };
+  if (ev.type === 'kingHit') return { cls: 'push', text: '赤い骨の王の大剣に斬られた', rule: `体力 -${ev.damage}` };
+  if (ev.type === 'kingDown') return { cls: 'push', text: '赤い骨の王が崩れ落ちた！', rule: '撃破' };
+  if (ev.type === 'statueWindup') return { cls: 'push', text: `${a.name}が杖を大きく振りかぶった！`, rule: '' };
+  if (ev.type === 'statueSlam') return { cls: 'push', text: `${a.name}が杖を参道に叩きつけた`, rule: '' };
+  if (ev.type === 'statueHit') return { cls: 'push', text: `${a.name}の杖に打たれた`, rule: `体力 -${ev.damage}` };
+  if (ev.type === 'statueBreak') return { cls: 'push', text: `${a.name}の${{ head: '頭', armL: '左腕', arm: '杖を持つ腕', staff: '杖' }[ev.part] ?? '一部'}が割れて落ちた`, rule: '' };
   if (ev.type === 'fishSplit') return { cls: 'push', text: '古代魚が 2 匹に分かれて、木の両側を回り込んだ', rule: '' };
   if (ev.type === 'fishMerge') return { cls: 'push', text: '2 匹の古代魚が、また 1 匹に融け合った', rule: '' };
   if (ev.type === 'fishBurst') return { cls: 'push', text: '撃たれた古代魚が、一気に小魚の群れにほどけた', rule: `小魚 ${ev.left} 匹` };
@@ -703,6 +725,9 @@ function describe(ev) {
     const how = ev.cut === 'h' ? '横に薙いだ' : '斬り下ろした';
     switch (ev.result) {
       case 'wound': return { cls: 'push', text: `${a.name} が ${t.name} を太刀で${how}`, rule: `傷の深さ ${Math.round(ev.progress * 100)}%` };
+      case 'collapse': return { cls: 'push', text: `太刀で骸骨を${how}。骨が崩れ落ちた`, rule: '' };
+      case 'kingHurt': return { cls: 'push', text: `太刀で赤い骨の王を${how}`, rule: '' };
+      case 'kingDown': return { cls: 'push', text: '太刀で赤い骨の王を斬り倒した！', rule: '撃破' };
       case 'severed': return { cls: 'push', text: `太刀で ${t.name} の尾を斬り落とした！`, rule: '切断' };
       case 'glance': return { cls: 'block', text: `太刀が ${t.name} の足やひれをかすめた`, rule: '' };
       case 'blocked': return { cls: 'block', text: '太刀が弾かれた（龍しか斬れない）', rule: '' };

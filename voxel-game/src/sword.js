@@ -4,7 +4,7 @@
 // - 振り下ろし: 体の前の縦の面を上から下へ。龍の胴のいちばん上に当たった所から、上から斬り込む
 // - 横薙ぎ: 体の前を右から左へ大きく薙ぐ。いちばん近い所に当たった所から、こちら側から斬り込む
 // - 一太刀で胴の太さの半分まで裂ける（肉と骨の断面が見える）。同じ所を 2 回斬ると切り落とせる（首は切り落とせない）
-// - 斬れるのは龍だけ。木や岩・地面に当たると弾かれる
+// - 斬れるのは龍と、ピラミッドの骸骨・赤い骨の王。木や岩・地面に当たると弾かれる
 
 import { GROUND_ID, ROCK_ID } from './ids.js';
 
@@ -20,12 +20,15 @@ export function slash(world, e, horizontal) {
   const m = [e.pos[0] + 4.5, e.pos[2] + 4.5]; // 体の中心
   const feet = e.pos[1];
   const hits = [];
+  const bodyHits = []; // 骸骨・赤い骨の王
   let blocked = false;
   // 刃の通り道を点で調べる
   const probe = (x, y, z, score) => {
     const o = world.ownerAt(Math.floor(x), Math.floor(y), Math.floor(z));
     if (o <= 0 || o === e.id || o === e.toolId) return;
+    const body = world.entities.get(o)?.body;
     if (dragon && o === dragon.id) hits.push({ p: [x, y, z], score });
+    else if (body?.slash) bodyHits.push({ p: [x, y, z], score, body, target: world.entities.get(o) });
     else if (o === GROUND_ID || o === ROCK_ID || world.entities.get(o)?.tree || world.entities.get(o)?.giant) {
       blocked = true;
     }
@@ -46,6 +49,14 @@ export function slash(world, e, horizontal) {
         for (let h = 22; h >= 1; h -= 0.5) probe(m[0] + fx * d + sx * l, feet + h, m[1] + fz * d + sz * l, h - Math.abs(l) * 3 - d * 0.1);
       }
     }
+  }
+  if (bodyHits.length && !hits.length) {
+    // 骸骨・赤い骨の王を斬る（いちばん優先する所）
+    bodyHits.sort((a, b) => b.score - a.score);
+    const h = bodyHits[0];
+    ev.target = h.target;
+    ev.result = h.body.slash(h.p) ?? 'glance';
+    return ev;
   }
   if (hits.length) {
     ev.target = dragon.entity;

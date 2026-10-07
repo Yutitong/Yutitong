@@ -14,6 +14,7 @@ import { BASE } from './terrain.js';
 import { redrawBody } from './body.js';
 import { splashAlong } from './axe.js';
 import { EMPTY, GROUND_ID } from './ids.js';
+import { inSite } from './pyramid.js';
 
 export const GIANT_CELL = 210; // この区画ごとに最大 1 本（≈ 30m おき）
 const MARGIN = 50; // 区画の端からの距離（となりの木と幹がくっつかないように）
@@ -75,6 +76,7 @@ function grove(world) {
 // (x, z) が巨大樹の森である度合い 0..1（h: 地面の高さ）。山の上にはない
 export function giantZone(world, x, z, h = world.heightAt(x, z)) {
   if (!world.terrain) return 0;
+  if (inSite(world, x, z, 120)) return 0; // ピラミッドの広場のまわりには生えない
   const g = grove(world);
   const near = g ? smoothstep(520, 340, Math.hypot(x - g[0], z - g[1])) : 0;
   const far = smoothstep(0.64, 0.72, noise2(x / 1500, z / 1500, world.seed + 0x77));
