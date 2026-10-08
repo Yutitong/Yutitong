@@ -1,0 +1,1537 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ボクセルの雲海と龍</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+<style>
+  /* 夜の部屋に置かれた水槽。キャンバスが主役で、文字は脇に小さく控える */
+  :root {
+    --room: #14171c;
+    --room-2: #1c2027;
+    --ink: #d9dccf;
+    --ink-dim: #8c93a0;
+    --line: #2c323b;
+    --koi: #e0452f;
+    --font-pixel: "DotGothic16", "MS Gothic", ui-monospace, monospace;
+    --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--room);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap {
+    min-height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding-inline: 16px;
+    padding-block: 24px;
+  }
+  canvas:active { cursor: grabbing; }
+  canvas:focus-visible { outline: 2px solid var(--koi); outline-offset: 4px; }
+  canvas {
+    display: block;
+    max-width: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+  .panel {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 24px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  h1 {
+    margin: 0;
+    font-family: var(--font-pixel);
+    font-weight: 400;
+    font-size: 22px;
+    letter-spacing: 0.06em;
+    text-wrap: balance;
+  }
+  .spec {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-family: var(--font-pixel);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--room-2);
+    border: 1px solid var(--line);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--ink-dim); }
+  button:focus-visible { outline: 2px solid var(--koi); outline-offset: 2px; }
+  .legend {
+    width: 100%;
+    max-width: 720px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    color: var(--ink-dim);
+    font-size: 12px;
+  }
+  .legend li { display: flex; align-items: center; gap: 6px; }
+  .sw { width: 18px; height: 8px; display: inline-block; image-rendering: pixelated; }
+  .hint { color: var(--ink-dim); font-size: 12px; margin: 0; max-width: 720px; width: 100%; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="tank" tabindex="0" aria-label="龍が飛び錦鯉が泳ぐボクセルの水槽。ドラッグか矢印キーで回転"></canvas>
+  <div class="panel">
+    <div class="title">
+      <h1>ボクセルの雲海と龍</h1>
+      <p class="spec">64 × 64 × 64 voxel ・ 透視図法 ・ ドラッグで回転 ・ スクロールでズーム</p>
+    </div>
+    <div class="controls">
+      <button id="front" type="button">正面に戻す</button>
+      <button id="unzoom" type="button">ズームを戻す</button>
+      <button id="feed" type="button">餌をやる</button>
+      <button id="pause" type="button">一時停止</button>
+    </div>
+  </div>
+  <ul class="legend" id="legend"><li><span class="sw" style="background:linear-gradient(90deg,#348c52 0 34%,#deb450 34% 67%,#d03e28 67% 100%)"></span>龍</li><li><span class="sw" style="background:linear-gradient(90deg,#f6f4ee 0 50%,#c8c4bc 50% 100%)"></span>雲海</li></ul>
+  <p class="hint">水槽の底には白い雲海がゆったり流れています。鯉や龍が潜ったり浮かび上がったりすると、雲が盛り上がって流れ、通った跡には霞が残ってゆっくり消えていきます。緑の龍が水槽の中をうねりながら飛び、近づかれた鯉は驚いて逃げます。鯉・龍・雲は毎フレーム 1 辺 2 単位の立方体（ボクセル）に組み直して、透視図法で描いています。ドラッグ（または矢印キー）で水槽のまわりを回り、スクロール（またはピンチ、＋／－キー）で近づけます。クリックするとその位置の水面から餌が落ちます。</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+// ============================================================
+//  ボクセル空間  x: 左→右, y: 上→下, z: 手前(0)→奥(D-1)
+// ============================================================
+const W = 128, H = 128, D = 128;   // 龍がのびのび飛べる立方体の水槽
+const WATER_TOP = 3;               // 鯉が上がってこられる上限の行
+
+// 表示キャンバス。どの向きに回しても水槽の箱が収まる大きさ（立方体の対角線は約 222 voxel）
+const CW = 228, CH = 228;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const c255 = v => v < 0 ? 0 : v > 255 ? 255 : v | 0;
+const pack = (r, g, b, a) => ((a << 24) | (c255(r) << 16) | (c255(g) << 8) | c255(b)) >>> 0;
+const mix = (a, b, t) => a + (b - a) * t;
+
+// 鯉・龍・雲・霞・餌は、これまでどおり細かい「点」の集まりとして毎フレーム書き出す。
+// その点を 1 辺 VS 単位の立方体の格子（ボクセル）にまとめ、外から見える立方体だけを描く。
+//   level と owner は以前の描き方の名残で、ここでは使わない（色だけを使う）
+const VS = 2, VN = W / VS;                      // ボクセルの大きさと、1 辺のボクセル数（64）
+const vox = new Uint32Array(VN * VN * VN);       // 0 = 空, それ以外 = 色
+const OPAQUE = 200;
+let castShadow = true;                           // 雲の計算の名残（ここでは使わない）
+function put(x, y, z, c) {
+  if (!(x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D)) return;
+  vox[((x / VS) | 0) + VN * (((y / VS) | 0) + VN * ((z / VS) | 0))] = c;
+}
+
+// ------------------------------------------------------------
+//  乱数とノイズ
+// ------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash(x, y, z, s) {
+  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(z | 0, 0x9e3779b1) ^ Math.imul(s | 0, 0x85ebca77);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
+function noise3(x, y, z, s) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let fx = x - xi, fy = y - yi, fz = z - zi;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+  const a = mix(hash(xi, yi, zi, s), hash(xi + 1, yi, zi, s), fx);
+  const b = mix(hash(xi, yi + 1, zi, s), hash(xi + 1, yi + 1, zi, s), fx);
+  const c = mix(hash(xi, yi, zi + 1, s), hash(xi + 1, yi, zi + 1, s), fx);
+  const d = mix(hash(xi, yi + 1, zi + 1, s), hash(xi + 1, yi + 1, zi + 1, s), fx);
+  return mix(mix(a, b, fy), mix(c, d, fy), fz);
+}
+
+// ============================================================
+//  餌
+// ============================================================
+const foods = [];
+function dropFood(x, z) {
+  for (let i = 0; i < 5; i++) {
+    foods.push({
+      x: clamp(x + (Math.random() - 0.5) * 8, 2, W - 3), y: WATER_TOP,
+      z: z === undefined ? 4 + Math.random() * (D - 14) : clamp(z + (Math.random() - 0.5) * 8, 2, D - 3),
+      float: 1.5 + Math.random() * 2.5, rest: 0,
+    });
+  }
+}
+function updateFood(dt) {
+  for (let i = foods.length - 1; i >= 0; i--) {
+    const f = foods[i];
+    if (f.float > 0) { f.float -= dt; continue; }
+    const fl = H - 1;
+    if (f.y < fl) f.y = Math.min(fl, f.y + 3.5 * dt);
+    else if ((f.rest += dt) > 12) foods.splice(i, 1);
+  }
+}
+function drawFood() {
+  const c = pack(128, 74, 34, 255);
+  for (const f of foods) put(f.x, f.y, f.z, c);
+}
+
+// ============================================================
+//  錦鯉
+// ============================================================
+const WHITE = [242, 238, 228], RED = [212, 40, 30], BLACK = [30, 28, 32], GOLD = [236, 176, 38];
+const A_BLUE = [88, 118, 146], A_LIGHT = [188, 206, 216], ORANGE = [214, 90, 44], A_HEAD = [214, 220, 212];
+const EYE = pack(26, 22, 20, 255);
+
+const VARIETIES = [
+  { kind: "kohaku", name: "紅白", L: 30, sw: [WHITE, RED] },
+  { kind: "sanke", name: "大正三色", L: 27, sw: [WHITE, RED, BLACK] },
+  { kind: "showa", name: "昭和三色", L: 29, sw: [BLACK, RED, WHITE] },
+  { kind: "tancho", name: "丹頂", L: 25, sw: [WHITE, RED, WHITE] },
+  { kind: "ogon", name: "山吹黄金", L: 28, sw: [GOLD, [250, 214, 110]] },
+  { kind: "asagi", name: "浅黄", L: 26, sw: [A_BLUE, A_LIGHT, ORANGE] },
+];
+
+// 胴の太さの輪郭（t=0 が鼻先、t=0.8 が尾柄）
+function prof(t) {
+  if (t < 0 || t > 0.8) return 0;
+  if (t < 0.3) { const q = (0.3 - t) / 0.32; return Math.sqrt(1 - q * q); }
+  return 1 - 0.8 * Math.pow((t - 0.3) / 0.5, 1.5);
+}
+
+function bodyColor(F, t, l, v, rw, rh) {
+  const X = t * F.L, s = F.seed;
+  const vn = v / rh, ln = l / rw;
+  const ex = (t - 0.095) * F.L, ey = v - rh * 0.18;
+  if (ex * ex + ey * ey < 0.85 && Math.abs(ln) > 0.45) return EYE;
+
+  const n1 = noise3(X * 0.2, l * 0.32, v * 0.32, s);
+  let c;
+  switch (F.kind) {
+    case "kohaku":
+      c = (n1 + (t < 0.22 ? 0.12 : 0) > 0.44 && vn > -0.4 && t < 0.74) ? RED : WHITE;
+      break;
+    case "sanke": {
+      c = (n1 > 0.47 && vn > -0.35 && t < 0.74) ? RED : WHITE;
+      const n2 = noise3(X * 0.45, l * 0.6, v * 0.6, s + 5);
+      if (t > 0.2 && vn > -0.25 && n2 > 0.66) c = BLACK;
+      break;
+    }
+    case "showa": {
+      const n3 = noise3(X * 0.16, l * 0.25, v * 0.25, s + 9);
+      c = (n3 > 0.47 || vn < -0.75) ? BLACK : WHITE;
+      if (n1 > 0.56 && vn > -0.45 && t < 0.74) c = RED;
+      if (t < 0.18 && vn > 0 && n3 > 0.35) c = BLACK;
+      break;
+    }
+    case "tancho": {
+      const hx = (t - 0.11) * F.L;
+      c = (hx * hx / 6.8 + l * l / 4.8 < 1 && vn > 0.3) ? RED : WHITE;
+      break;
+    }
+    case "ogon":
+      c = GOLD;
+      break;
+    case "asagi": {
+      if (vn < -0.15 || (t < 0.25 && vn < 0.15 && Math.abs(ln) > 0.5)) c = ORANGE;
+      else if (t < 0.2) c = A_HEAD;
+      else {
+        const rv = v / 1.3 + 20, row = Math.floor(rv);
+        const fa = (X / 1.7 + (row & 1) * 0.5) % 1, fb = rv - row;
+        c = (fa < 0.3 || fb < 0.25) ? A_LIGHT : A_BLUE;
+      }
+      break;
+    }
+  }
+  // 鱗の列
+  const row = Math.floor(v / 1.2 + 50);
+  const sc = (X / 1.6 + (row & 1) * 0.5) % 1;
+  let m = sc < 0.2 ? 0.9 : 1;
+  if (F.kind === "ogon" && sc > 0.5 && sc < 0.72) m = 1.14;
+  let r = c[0] * m, g = c[1] * m, b = c[2] * m;
+  if (t < 0.04) { r = mix(r, 228, 0.4); g = mix(g, 176, 0.4); b = mix(b, 158, 0.4); }
+  return pack(r, g, b, 255);
+}
+
+// 鰭の色。u: 付け根(0)→先端(1)
+function finColor(F, kind, u, w) {
+  let c = [236, 238, 230], a = 215;
+  switch (F.kind) {
+    case "showa": if ((kind === "pec" || kind === "pel") && u < 0.5) c = BLACK; break;
+    case "sanke": if (kind === "tail" && Math.floor(w * 7) % 3 === 0 && u < 0.6) c = BLACK; break;
+    case "ogon": c = [248, 204, 86]; break;
+    case "asagi": if (u < 0.5 && kind !== "tail") c = ORANGE; else c = [222, 214, 198]; break;
+  }
+  const ray = Math.floor(w * 9) & 1 ? 0.93 : 1;
+  if (u > 0.82) a = 165;
+  return pack(c[0] * ray, c[1] * ray, c[2] * ray, a);
+}
+
+// ------------------------------------------------------------
+//  鯉の形は「まっすぐな体」の局所座標で一度だけ細かくサンプリングしておき、
+//  毎フレーム背骨のしなりに沿って曲げてからボクセル空間へ書き込む。
+//  局所座標: t = 鼻先(0)→尾端(1), l = 右方向, v = 背中方向
+// ------------------------------------------------------------
+const SAMPLE = 0.5;   // 0.5 ボクセル間隔なら、どう回転・変形しても穴が空かない
+
+function bodyAt(F, t, l, v) {
+  const p = prof(t);
+  if (p <= 0) return 0;
+  const rw = F.Rw * p, rhT = F.Rh * p, rv = v >= 0 ? rhT : rhT * 0.85;
+  return (l / rw) ** 2 + (v / rv) ** 2 <= 1 ? bodyColor(F, t, l, v, rw, rhT) : 0;
+}
+
+// 背鰭・尻鰭・尾鰭（体の中心面にある鰭）
+function medianFinAt(F, t, l, v) {
+  const Rh = F.Rh, p = prof(t), al = Math.abs(l);
+  if (t > 0.27 && t < 0.62 && al < 0.75) {
+    const base = Rh * p - 0.6, u = (t - 0.27) / 0.35;
+    const fh = Rh * 0.7 * Math.min(1, u / 0.08) * (1 - 0.55 * u);
+    if (v > base && v < base + fh) return finColor(F, "dorsal", (v - base) / fh, u);
+  }
+  if (t > 0.6 && t < 0.72 && al < 0.75) {
+    const base = -Rh * p * 0.85 + 0.6, u = (t - 0.6) / 0.12;
+    const fh = Rh * 0.55 * (1 - u) * Math.min(1, u / 0.15);
+    if (v < base && v > base - fh) return finColor(F, "anal", (base - v) / fh, u);
+  }
+  if (t > 0.74 && t <= 1 && al < 0.8) {
+    const u = (t - 0.74) / 0.26, hh = Rh * (0.22 + 0.95 * u), av = Math.abs(v);
+    if (av < hh && t < 1 - 0.1 * (1 - av / hh)) return finColor(F, "tail", u, av / hh);
+  }
+  return 0;
+}
+
+function buildFishModel(F) {
+  const L = F.L, fins = [], body = [], eyes = [];
+  const lMax = F.Rw + 1, vMax = F.Rh * 1.9 + 1;
+  for (let s = SAMPLE / 2; s < L; s += SAMPLE) {
+    const t = s / L;
+    for (let l = -lMax; l <= lMax; l += SAMPLE) {
+      for (let v = -vMax; v <= vMax; v += SAMPLE) {
+        let c = bodyAt(F, t, l, v);
+        if (c) {
+          // 胴の断面（楕円）の法線。横方向 nl・背中方向 nv
+          const p = prof(t), rw = F.Rw * p, rv = v >= 0 ? F.Rh * p : F.Rh * p * 0.85;
+          (c === EYE ? eyes : body).push(t, l, v, c, l / (rw * rw), v / (rv * rv));
+          continue;
+        }
+        c = medianFinAt(F, t, l, v);
+        if (c) fins.push(t, l, v, c, 0, 0);
+      }
+    }
+  }
+  // 後から書いたものが勝つので 鰭 → 胴 → 目 の順に並べる
+  F.model = fins.concat(body, eyes);
+
+  // 胸鰭・腹鰭は鰭の平面上の座標（a: 付け根から後ろへ, q: 外へ, d: 厚み）で持ち、開き具合は毎フレーム決める
+  F.paired = [];
+  for (const [kind, t0, aFrac, qFrac, open] of [["pec", 0.24, 0.13, 0.15, 0], ["pel", 0.5, 0.08, 0.08, 0.5]]) {
+    const aMax = aFrac * L, qMax = qFrac * L, p0 = prof(t0), pts = [];
+    for (let a = -0.5; a <= aMax; a += SAMPLE)
+      for (let q = -0.25; q <= qMax; q += SAMPLE)
+        for (let d = -0.75; d <= 0.75; d += SAMPLE) {
+          const ea = (a - aMax * 0.5) / (aMax * 0.5 + 0.6), eq = (q - qMax * 0.5) / (qMax * 0.5);
+          if (ea * ea + eq * eq <= 1) pts.push(a, q, d, finColor(F, kind, q / qMax, a / aMax));
+        }
+    F.paired.push({ t0, open, la: F.Rw * p0 * 0.7, va: -F.Rh * p0 * 0.45, pts });
+  }
+}
+
+// 背骨：頭の向きの「少し前の履歴」をたどる曲がり + 頭から尾へ伝わる波。
+// 体の各点は、頭が (鼻先からの距離 / 体長) × F.lag 秒前に向いていた方向を向く。
+// そのため向きを変えると頭が先に曲がり、曲がりが尾へ伝わって、旋回後は尾に向かってほどける。
+// 角度を積分して位置を出すので、尾は向きを変えながら振れ、体長も伸び縮みしない。
+// 光の向き（光源へ向かう単位ベクトル）。上から、少し左手前から当たる
+const LIGHT = (() => { const v = [-0.35, -1, -0.5], n = Math.hypot(...v); return v.map(c => c / n); })();
+
+const BEND_N = 64;
+const TURN_LAG = 0.9;     // 曲がりが鼻先から尾まで伝わる時間 [秒]（速く泳ぐほど短くなる）
+const TURN_FOLLOW = 0.92; // 体が頭の軌跡にどれだけ忠実に従うか
+const MAX_BEND = 1.7;     // 頭と体の各点の向きの差の上限 [rad]
+const HIST = 256;
+const spAlong = new Float32Array(BEND_N + 1), spLat = new Float32Array(BEND_N + 1);
+const spCos = new Float32Array(BEND_N + 1), spSin = new Float32Array(BEND_N + 1);
+
+function recordHeading(F, time) {
+  F.hI = (F.hI + 1) % HIST;
+  F.hT[F.hI] = time;
+  F.hY[F.hI] = F.yawU;
+  if (F.hN < HIST) F.hN++;
+}
+
+function computeSpine(F, time) {
+  const L = F.L, ds = L / BEND_N, K = 2 * Math.PI / (L * 1.05);
+  let along = 0, lat = 0, pc = 1, ps = 0;
+  let j = F.hI, back = 0;
+  for (let k = 0; k <= BEND_N; k++) {
+    const s = k * ds, x = s / L;
+    // 頭の向きの履歴から、この点が向くべき過去の向きを補間して求める
+    const td = time - x * F.lag;
+    while (back < F.hN - 1 && F.hT[j] > td) { j = (j - 1 + HIST) % HIST; back++; }
+    let past = F.hY[j];
+    if (back > 0 && F.hT[j] <= td) {
+      const j2 = (j + 1) % HIST, t1 = F.hT[j], t2 = F.hT[j2];
+      past += (F.hY[j2] - past) * (t2 > t1 ? (td - t1) / (t2 - t1) : 0);
+    }
+    const turn = clamp((F.yawU - past) * TURN_FOLLOW, -MAX_BEND, MAX_BEND);
+
+    const env = 0.1 - 0.25 * x + 1.15 * x * x, denv = (-0.25 + 2.3 * x) / L;
+    const ph = K * s - F.phase;
+    const wave = Math.atan(F.amp * (denv * Math.sin(ph) + env * K * Math.cos(ph)));
+    const c = Math.cos(turn + wave), sn = Math.sin(turn + wave);
+    if (k > 0) { along += ds * (c + pc) / 2; lat += ds * (sn + ps) / 2; }
+    spAlong[k] = along; spLat[k] = lat; spCos[k] = c; spSin[k] = sn;
+    pc = c; ps = sn;
+  }
+}
+
+function drawFish(F, time) {
+  computeSpine(F, time);
+  const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
+  const fx = cp * cyw, fy = -sp, fz = cp * syw;   // 前
+  const rx = -syw, rz = cyw;                        // 右（ヨーが増える向き）
+  const ux = -sp * cyw, uy = -cp, uz = -sp * syw;   // 背中側
+  // 体の中央を位置の基準に、重心あたり（鼻先から 35%）が泳ぐ軌跡に乗るよう横方向をそろえる
+  const aC = spAlong[BEND_N >> 1], latC = spLat[Math.round(BEND_N * 0.35)];
+  // 尾びれの先の位置（雲をかき乱す計算に使う）
+  { const a = aC - spAlong[BEND_N], b = spLat[BEND_N] - latC; F.tail = [F.x + fx * a + rx * b, F.y + fy * a, F.z + fz * a + rz * b]; }
+
+  const plot = (t, l, v, c, nl = 0, nv = 0) => {
+    const k = clamp((t * BEND_N + 0.5) | 0, 0, BEND_N);
+    const sn = spSin[k], cs = spCos[k];
+    const a = aC - spAlong[k] + l * sn;
+    const b = spLat[k] - latC + l * cs;
+    // 明るさの段階：胴は法線と光の向きから 3 段階、鰭はいつも「中」
+    let level = 2;
+    if (nl !== 0 || nv !== 0) {
+      // 体のしなりで横方向の軸も回る
+      const nx = (sn * fx + cs * rx) * nl + ux * nv, ny = sn * fy * nl + uy * nv, nz = (sn * fz + cs * rz) * nl + uz * nv;
+      const lam = (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / (Math.hypot(nx, ny, nz) || 1);
+      level = lam > 0.42 ? 3 : lam > -0.2 ? 2 : 1;
+    }
+    put(F.x + fx * a + rx * b + ux * v, F.y + fy * a + uy * v, F.z + fz * a + rz * b + uz * v, c, level, F.id);
+  };
+
+  for (const P of F.paired) {
+    const ang = F.finAng + P.open, ca = Math.cos(ang), sa = Math.sin(ang), pts = P.pts;
+    for (let i = 0; i < pts.length; i += 4) {
+      const q = pts[i + 1], d = pts[i + 2];
+      const b = q * ca + d * sa, c = -q * sa + d * ca, t = P.t0 + pts[i] / F.L;
+      plot(t, P.la + b, P.va + c, pts[i + 3]);
+      plot(t, -P.la - b, P.va + c, pts[i + 3]);
+    }
+  }
+  const m = F.model;
+  for (let i = 0; i < m.length; i += 6) plot(m[i], m[i + 1], m[i + 2], m[i + 3], m[i + 4], m[i + 5]);
+}
+
+const fish = [];
+function spawnFish() {
+  const rng = mulberry32(99);
+  VARIETIES.forEach((V, i) => {
+    const F = {
+      kind: V.kind, name: V.name, L: V.L, Rh: V.L * 0.155, Rw: V.L * 0.135,
+      id: i + 1, seed: 1000 + i * 37,
+      x: 20 + (i % 3) * 40 + rng() * 10,
+      y: 20 + rng() * (H - 50),
+      z: 20 + rng() * (D - 40),
+      yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
+      speed: 2 + rng() * 2, amp: 0, phase: rng() * 6, finAng: 0.5,
+      lag: TURN_LAG, dart: null,
+      beating: rng() < 0.5, modeT: rng() * 2, drive: 0, freq: 0.65 + rng() * 0.15,
+      ty: 25, yTimer: 0,
+    };
+    F.yawU = F.yaw;  // 折り返さない向き（履歴用）
+    F.hT = new Float64Array(HIST); F.hY = new Float64Array(HIST);
+    F.hI = 0; F.hN = 1; F.hT[0] = -1; F.hY[0] = F.yawU;
+    buildFishModel(F);
+    fish.push(F);
+  });
+}
+
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+const floorAt = () => H - 1;   // 装飾が無いので底は水槽の底面
+
+// ------------------------------------------------------------
+//  ダッシュ：体を C の字にためてから一気に反対側まで泳ぎ切る。近くの鯉は驚いて逃げる
+//    phase: wait（驚くまでの反応時間）→ coil（ため）→ burst（突進）→ recover（減速）
+// ------------------------------------------------------------
+const DART = {
+  // vmax: 最高速度 [voxel/秒], accel/decel: 加速・減速の速さ [1/秒], brake: 行き先の何 voxel 手前で減速に入るか（速さ × brake + 6）
+  dash:   { coil: 0.22, burst: 1.6, recover: 1.4, vmax: 54, accel: 9, decel: 3.2, brake: 0.3, freq: 4.6, amp: 0.11 },
+  flinch: { coil: 0.12, burst: 0.55, recover: 1.1, vmax: 13, accel: 3.5, decel: 1.6, brake: 0, freq: 2.6, amp: 0.09 },
+};
+let nextDart = 9 + Math.random() * 6;
+
+function scheduleDart(time) {
+  if (time < nextDart) return;
+  nextDart = time + 20 + Math.random() * 20;
+  if (foods.length) return;
+  // 端から端へ泳ぎ切れるよう、壁際にいる鯉ほど選ばれやすくする
+  const idle = fish.filter(F => !F.dart).sort((a, b) => Math.abs(b.x - W / 2) - Math.abs(a.x - W / 2));
+  if (!idle.length) return;
+  const F = idle[Math.floor(Math.random() * Math.min(2, idle.length))];
+  F.dart = {
+    kind: "dash", phase: "coil", t: 0,
+    tx: (F.x < W / 2 ? W - 24 : 24) + (Math.random() - 0.5) * 10,
+    ty: WATER_TOP + F.Rh + 6 + Math.random() * (H - WATER_TOP - F.Rh * 3 - 14),
+    tz: 10 + Math.random() * (D - 20),
+  };
+  startle(F, 36);
+}
+
+// 近くにいる鯉を驚かせる（反応までの時間は距離と個体で少しずつ違う）
+function startle(F, radius) {
+  for (const o of fish) {
+    if (o === F || o.dart) continue;
+    const d = Math.hypot(o.x - F.x, o.y - F.y, o.z - F.z);
+    if (d < radius) o.dart = { kind: "flinch", phase: "wait", t: -(0.08 + Math.random() * 0.22) - d * 0.004, from: F };
+  }
+}
+
+function advanceDart(F, dt) {
+  const A = F.dart, P = DART[A.kind];
+  A.t += dt;
+  if (A.phase === "wait" && A.t >= 0) {
+    // 驚いた瞬間の相手の位置から離れる方向へ
+    const ex = F.x - A.from.x, ey = F.y - A.from.y, ez = F.z - A.from.z, n = Math.hypot(ex, ey, ez) || 1;
+    A.ax = ex / n + (Math.random() - 0.5) * 0.6; A.ay = ey / n * 0.4; A.az = ez / n + (Math.random() - 0.5) * 0.6;
+    A.phase = "coil"; A.t = 0;
+  } else if (A.phase === "coil" && A.t >= P.coil) {
+    A.phase = "burst"; A.t = 0;
+  } else if (A.phase === "burst") {
+    if (A.kind === "dash") startle(F, F.L * 0.9);   // 突進の途中ですれ違った鯉も驚く
+    const near = A.kind === "dash" && Math.hypot(A.tx - F.x, A.tz - F.z) < F.speed * P.brake + 6;
+    if (A.t >= P.burst || near) { A.phase = "recover"; A.t = 0; }
+  } else if (A.phase === "recover" && A.t >= P.recover) {
+    F.dart = null;
+    F.beating = false;
+    F.modeT = 1.5 + Math.random() * 2;
+  }
+}
+
+function updateFish(F, dt, time) {
+  if (F.dart) advanceDart(F, dt);
+  const A = F.dart && F.dart.phase !== "wait" ? F.dart : null;
+  const P = A ? DART[A.kind] : null;
+  const rushing = A && (A.phase === "coil" || A.phase === "burst");
+
+  const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
+  const fx = cp * cyw, fy = -sp, fz = cp * syw;
+  let dx = fx, dy = fy * 0.5, dz = fz;
+  const half = F.L / 2;
+
+  let target = null;
+  if (rushing) {
+    // ダッシュ中は行き先（または逃げる方向）だけを強く目指す
+    let vx, vy, vz;
+    if (A.kind === "dash") { vx = A.tx - F.x; vy = A.ty - F.y; vz = A.tz - F.z; }
+    else { vx = A.ax; vy = A.ay; vz = A.az; }
+    const n = Math.hypot(vx, vy, vz) || 1;
+    dx += vx / n * 5; dy += vy / n * 3; dz += vz / n * 5;
+  } else {
+    // ゆったりした寄り道
+    const wa = F.yaw + (noise3(time * 0.12, F.seed, 0, 99) - 0.5) * 3.2;
+    dx += Math.cos(wa) * 0.7; dz += Math.sin(wa) * 0.7;
+
+    // 泳ぐ深さを時々変える
+    F.yTimer -= dt;
+    if (F.yTimer < 0) {
+      const lo = WATER_TOP + F.Rh + 5, hi = floorAt(F.x, F.z) - F.Rh * 2 - 4;
+      F.ty = lo + Math.random() * Math.max(1, hi - lo);
+      F.yTimer = 6 + Math.random() * 9;
+    }
+    dy += clamp((F.ty - F.y) * 0.04, -0.4, 0.4);
+
+    // 餌
+    if (!A) {
+      let best = 1e9;
+      for (const f of foods) {
+        const d = Math.hypot(f.x - F.x, f.y - F.y, f.z - F.z);
+        if (d < best) { best = d; target = f; }
+      }
+    }
+    const mx = F.x + fx * half, my = F.y + fy * half, mz = F.z + fz * half;
+    if (target) {
+      const vx = target.x - mx, vy = target.y - my, vz = target.z - mz, n = Math.hypot(vx, vy, vz) || 1;
+      dx += vx / n * 2.5; dy += vy / n * 2; dz += vz / n * 2.5;
+      if (n < 2.4) foods.splice(foods.indexOf(target), 1);
+    }
+  }
+
+  // 壁・水面・底を先読みして避ける（速いほど遠くを見る）
+  const look = half + 9 + Math.min(F.speed, 12) * 0.5;
+  const px = F.x + fx * look, py = F.y + fy * look, pz = F.z + fz * look;
+  const MX = 7, MZ = 3;
+  if (px < MX) dx += (MX - px) * 0.4;
+  if (px > W - MX) dx -= (px - (W - MX)) * 0.4;
+  if (pz < MZ) dz += (MZ - pz) * 0.35;
+  if (pz > D - MZ) dz -= (pz - (D - MZ)) * 0.35;
+  const ceil = WATER_TOP + (target ? 1 : F.Rh + 3);
+  if (py < ceil) dy += (ceil - py) * 0.2;
+  const fl = Math.min(floorAt(px, pz), floorAt(F.x, F.z)) - F.Rh * 1.6 - 3;
+  if (py > fl) dy -= (py - fl) * 0.25;
+
+  // 龍の胴をよける
+  for (let i = 0; i < SPINE; i += 8) {
+    const ex = F.x - spX[i], ey = F.y - spY[i], ez = F.z - spZ[i], d = Math.hypot(ex, ey, ez);
+    const R = dragonRadius(i * SEG) + F.Rh + 5;
+    if (d < R && d > 0.01) {
+      const w = (1 - d / R) * 3;
+      dx += ex / d * w; dy += ey / d * w * 0.8; dz += ez / d * w;
+    }
+  }
+
+  // 他の鯉と距離をとる
+  for (const o of fish) {
+    if (o === F) continue;
+    const ex = F.x - o.x, ey = F.y - o.y, ez = F.z - o.z, d = Math.hypot(ex, ey, ez), R = (F.L + o.L) * 0.5;
+    if (d < R && d > 0.01) {
+      const w = (1 - d / R) * 1.6;
+      dx += ex / d * w; dy += ey / d * w * 0.8; dz += ez / d * w;
+    }
+  }
+
+  // 旋回（向きの変化に慣性を持たせる）。ためる瞬間は一気に向きを変えて体を C の字に曲げる
+  let diff = wrapAngle(Math.atan2(dz, dx) - F.yaw);
+  // 行きたい方向がほぼ真後ろのときは、いま回っている向きのまま回り切る（左右に首を振らない）
+  if (Math.abs(diff) > 2.6 && diff * F.yawRate < 0) diff -= Math.sign(diff) * 2 * Math.PI;
+  const maxTurn = rushing ? (A.phase === "coil" ? 7 : 3) : 1.6;
+  const tr = clamp(diff * (rushing ? 6 : 1.8), -maxTurn, maxTurn);
+  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * (rushing ? 14 : 4));
+  F.yaw = wrapAngle(F.yaw + F.yawRate * dt);
+  F.yawU += F.yawRate * dt;
+  recordHeading(F, time);
+  const wp = clamp(Math.atan2(-dy, Math.hypot(dx, dz)), -0.45, 0.45);
+  F.pitch += (wp - F.pitch) * Math.min(1, dt * (rushing ? 3 : 1.2));
+
+  // 泳ぎのリズム
+  let freq, ampK;
+  if (A) {
+    freq = P.freq;
+    if (A.phase === "coil") {
+      // ため：尾は振らず、少し減速しながら体を丸める
+      F.drive = 1;
+      ampK = 0.2;
+      F.speed = Math.max(0.8, F.speed * Math.exp(-3 * dt));
+    } else if (A.phase === "burst") {
+      // 突進：速く大きく尾を振って一気に加速
+      F.drive = 1;
+      ampK = P.amp / 0.075;
+      F.speed += (P.vmax - F.speed) * Math.min(1, dt * P.accel);
+    } else {
+      // 減速：尾を止めて惰性で滑り、いつもの速さに戻る
+      F.drive += (0 - F.drive) * Math.min(1, dt * 3);
+      freq = mix(F.freq, P.freq, F.drive);
+      ampK = 0.12 + 0.88 * F.drive;
+      F.speed = Math.max(0.8, F.speed - (F.speed - 3) * Math.min(1, dt * P.decel));
+    }
+  } else {
+    // 尾を数回ゆったり振って加速し、尾を止めて惰性で滑る
+    F.modeT -= dt;
+    if (target) {
+      F.beating = true;
+    } else if (F.modeT <= 0 || (!F.beating && Math.abs(diff) > 1.1)) {
+      F.beating = !F.beating;
+      F.modeT = F.beating ? (2 + Math.floor(Math.random() * 3)) / F.freq : 1.5 + Math.random() * 2.5;
+    }
+    F.drive += ((F.beating ? 1 : 0) - F.drive) * Math.min(1, dt * (F.beating ? 2.5 : 1.4));
+    freq = target ? 1.2 : F.freq;                       // 尾を振る回数 [回/秒]
+    ampK = 0.12 + 0.88 * F.drive;
+    const vmax = target ? 9 : 4.5 + noise3(time * 0.1, F.seed, 5, 98) * 2;
+    const DRAG = 0.3;
+    F.speed = Math.max(0.8, F.speed + (F.drive * vmax * DRAG - F.speed * DRAG) * dt);
+  }
+
+  const ncy = Math.cos(F.yaw), nsy = Math.sin(F.yaw), ncp = Math.cos(F.pitch), nsp = Math.sin(F.pitch);
+  F.x += ncp * ncy * F.speed * dt;
+  F.y += -nsp * F.speed * dt;
+  F.z += ncp * nsy * F.speed * dt;
+  // 鼻先と尾がガラスを突き抜けないよう、体の向きに応じて中心を制限
+  const hx = Math.abs(ncp * ncy) * half + 2, hz = Math.abs(ncp * nsy) * half + 1.5;
+  F.x = clamp(F.x, hx + 1, W - 1 - hx);
+  F.z = clamp(F.z, hz, D - hz);
+  F.y = clamp(F.y, WATER_TOP + F.Rh * 0.8, floorAt(F.x, F.z) - F.Rh - 1);
+
+  F.amp = F.L * 0.075 * ampK;
+  F.phase += dt * 2 * Math.PI * freq * (0.35 + 0.65 * F.drive);
+  // 速く泳ぐほど体はすぐ頭の向きに追いつく（ため中は遅らせて C の字を深くする）
+  const lagT = A && A.phase === "coil" ? TURN_LAG : clamp(F.L * 0.4 / Math.max(F.speed, 1), 0.3, TURN_LAG);
+  F.lag += (lagT - F.lag) * Math.min(1, dt * 5);
+  // 胸鰭は滑っている間は広げ、こいでいる間はたたむ
+  F.finAng = 0.3 + 0.4 * (1 - F.drive) + 0.06 * Math.sin(time * 1.3 + F.seed);
+}
+
+// ============================================================
+//  龍：頭が水槽の中を飛び回り、長い胴は頭が通った軌跡をそのままたどる
+//  胴は背骨の各点に「輪」の形で点を並べて作り、頭・角・鬣・髭・脚・尾の房を付ける
+// ============================================================
+const DRAGON_LEN = 170;                    // 体長 [voxel]
+const SEG = 0.5;                           // 背骨の点の間隔
+const SPINE = Math.round(DRAGON_LEN / SEG) + 1;
+const TRAIL = SPINE + 8;
+const DRAGON_OWNER_HEAD = 9;               // 影の計算で使う持ち主番号（胴は 10 番から 24 voxel ごと）
+const D_GREEN = [52, 140, 82], D_GREEN_D = [34, 104, 62], D_BELLY = [222, 180, 80], D_BELLY_D = [176, 132, 52];
+const D_RIDGE = [208, 62, 40], D_BONE = [236, 218, 172], D_HAIR = [240, 236, 222], D_WHISKER = [244, 226, 150];
+const D_EYE = [250, 214, 70], D_PUPIL = [20, 18, 16], D_MOUTH = [150, 40, 40], D_TOOTH = [250, 248, 240];
+
+const dragon = {
+  x: W / 2, y: H / 2, z: D / 2, dir: [1, 0, 0], speed: 14, mouth: 0,
+  trail: new Float32Array(TRAIL * 3), head: 0, count: 1,
+};
+dragon.trail.set([dragon.x, dragon.y, dragon.z], 0);
+// 背骨（毎フレーム計算）：位置 P、前向き T、背中向き N、横向き B
+const spX = new Float32Array(SPINE), spY = new Float32Array(SPINE), spZ = new Float32Array(SPINE);
+const dT = new Float32Array(SPINE * 3), dN = new Float32Array(SPINE * 3), dB = new Float32Array(SPINE * 3);
+
+// 胴の太さ：首から太くなり、胴の前半で最大、尾へ向かって細くなる
+const BODY_K = 1.3;                        // 胴と頭の太さの倍率
+function dragonRadius(s) {
+  if (s < 6) return 3.2 * BODY_K;
+  if (s < 40) return mix(3.0, 4.2, (s - 6) / 34) * BODY_K;
+  if (s < 120) return mix(4.2, 3.0, (s - 40) / 80) * BODY_K;
+  return Math.max(0.6, mix(3.0, 0.8, (s - 120) / 50) * BODY_K);
+}
+function trailPoint(i) {
+  const n = Math.min(i, dragon.count - 1);
+  const k = ((dragon.head - n) % TRAIL + TRAIL) % TRAIL * 3;
+  return [dragon.trail[k], dragon.trail[k + 1], dragon.trail[k + 2]];
+}
+
+function updateDragon(dt, time) {
+  const Dg = dragon, dir = Dg.dir;
+  let d = [dir[0], dir[1], dir[2]];
+  // ゆったりと向きを変える（水平方向と上下方向の気まぐれ）
+  const yaw = Math.atan2(dir[2], dir[0]);
+  const wy = yaw + (noise3(time * 0.08, 0, 0, 501) - 0.5) * 2.2;
+  d[0] += Math.cos(wy) * 0.8; d[2] += Math.sin(wy) * 0.8;
+  // 数秒ごとに立方体の中の行き先を選び直し、水槽を大きく横切って飛ぶ
+  Dg.goalT = (Dg.goalT || 0) - dt;
+  const gx = Dg.gx - Dg.x, gy = Dg.gy - Dg.y, gz = Dg.gz - Dg.z, gd = Math.hypot(gx, gy, gz);
+  if (Dg.goalT <= 0 || gd < 20) {
+    Dg.gx = 26 + Math.random() * (W - 52); Dg.gz = 26 + Math.random() * (D - 52);
+    // 3 回に 1 回くらいは雲海の中へ潜る
+    Dg.gy = Math.random() < 0.35 ? CLOUD_Y + 4 + Math.random() * 8 : 26 + Math.random() * (CLOUD_Y - 40);
+    Dg.goalT = 5 + Math.random() * 4;
+  } else {
+    d[0] += gx / gd * 0.7; d[1] += gy / gd * 0.5; d[2] += gz / gd * 0.7;
+  }
+  // 壁を先読みしてよける
+  const L = 34, px = Dg.x + dir[0] * L, py = Dg.y + dir[1] * L, pz = Dg.z + dir[2] * L;
+  const M = 22;
+  if (px < M) d[0] += (M - px) * 0.08; if (px > W - M) d[0] -= (px - (W - M)) * 0.08;
+  if (py < M) d[1] += (M - py) * 0.08; if (py > H - M) d[1] -= (py - (H - M)) * 0.08;
+  if (pz < M) d[2] += (M - pz) * 0.08; if (pz > D - M) d[2] -= (pz - (D - M)) * 0.08;
+  // 自分の胴にぶつからないよう、先読みの位置の近くにある胴から離れる
+  for (let i = 60; i < SPINE; i += 16) {
+    const [bx, by, bz] = trailPoint(i);
+    const ex = px - bx, ey = py - by, ez = pz - bz, dd = Math.hypot(ex, ey, ez);
+    if (dd < 12 && dd > 0.01) { const w = (12 - dd) * 0.08; d[0] += ex / dd * w; d[1] += ey / dd * w; d[2] += ez / dd * w; }
+  }
+  // 1 秒に 0.75 rad までしか曲がれない（大きな弧を描いて飛ぶ）
+  let n = Math.hypot(d[0], d[1], d[2]) || 1;
+  d = d.map(c => c / n);
+  const dot = clamp(d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2], -1, 1), ang = Math.acos(dot);
+  const turn = Math.min(ang, 0.75 * dt);
+  if (turn > 1e-6) {
+    // dir を d の方へ、2 つの向きに垂直な軸のまわりに turn だけ回す（真逆を向いていても水平に回り始める）
+    let ax = dir[1] * d[2] - dir[2] * d[1], ay = dir[2] * d[0] - dir[0] * d[2], az = dir[0] * d[1] - dir[1] * d[0];
+    let an = Math.hypot(ax, ay, az);
+    if (an < 1e-4) { ax = 0; ay = 1; az = 0; an = 1; }
+    ax /= an; ay /= an; az /= an;
+    const c = Math.cos(turn), sn = Math.sin(turn), kd = ax * dir[0] + ay * dir[1] + az * dir[2];
+    const cx = ay * dir[2] - az * dir[1], cy = az * dir[0] - ax * dir[2], cz = ax * dir[1] - ay * dir[0];
+    dir[0] = dir[0] * c + cx * sn + ax * kd * (1 - c);
+    dir[1] = dir[1] * c + cy * sn + ay * kd * (1 - c);
+    dir[2] = dir[2] * c + cz * sn + az * kd * (1 - c);
+  }
+  dir[1] = clamp(dir[1], -0.6, 0.6);
+  n = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+  for (let a = 0; a < 3; a++) dir[a] /= n;
+
+  Dg.speed = 10 + noise3(time * 0.1, 2, 0, 503) * 8;
+  // 胴の太さ・うねり・脚の分だけ内側を飛ぶ（体がガラスを突き抜けないように）
+  Dg.x = clamp(Dg.x + dir[0] * Dg.speed * dt, 13, W - 13);
+  Dg.y = clamp(Dg.y + dir[1] * Dg.speed * dt, 11, H - 16);
+  Dg.z = clamp(Dg.z + dir[2] * Dg.speed * dt, 12, D - 12);
+  // ときどき口を開けて吠える
+  Dg.mouth += ((noise3(time * 0.25, 3, 0, 504) > 0.62 ? 0.45 : 0.05) - Dg.mouth) * Math.min(1, dt * 4);
+
+  // 軌跡を 0.5 voxel 間隔で記録する
+  let k = Dg.head * 3;
+  let lx = Dg.trail[k], ly = Dg.trail[k + 1], lz = Dg.trail[k + 2];
+  let dist = Math.hypot(Dg.x - lx, Dg.y - ly, Dg.z - lz);
+  while (dist >= SEG) {
+    lx += (Dg.x - lx) / dist * SEG; ly += (Dg.y - ly) / dist * SEG; lz += (Dg.z - lz) / dist * SEG;
+    Dg.head = (Dg.head + 1) % TRAIL; k = Dg.head * 3;
+    Dg.trail[k] = lx; Dg.trail[k + 1] = ly; Dg.trail[k + 2] = lz;
+    if (Dg.count < TRAIL) Dg.count++;
+    dist = Math.hypot(Dg.x - lx, Dg.y - ly, Dg.z - lz);
+  }
+}
+
+// 背骨の位置と向きを求める。向きは頭から尾へ「ねじれない」ように順に送る（平行移動フレーム）
+function computeDragonSpine(time) {
+  const Dg = dragon;
+  for (let i = 0; i < SPINE; i++) {
+    const [x, y, z] = i === 0 ? [Dg.x, Dg.y, Dg.z] : trailPoint(i);
+    spX[i] = x; spY[i] = y; spZ[i] = z;
+  }
+  for (let i = 0; i < SPINE; i++) {
+    let tx, ty, tz;
+    if (i === 0) [tx, ty, tz] = Dg.dir;
+    else {
+      const a = i - 1, b = Math.min(SPINE - 1, i + 1);
+      tx = spX[a] - spX[b]; ty = spY[a] - spY[b]; tz = spZ[a] - spZ[b];
+      const n = Math.hypot(tx, ty, tz);
+      if (n < 1e-6) { tx = dT[a * 3]; ty = dT[a * 3 + 1]; tz = dT[a * 3 + 2]; } else { tx /= n; ty /= n; tz /= n; }
+    }
+    let nx, ny, nz;
+    if (i === 0) { nx = 0; ny = -1; nz = 0; } else { nx = dN[i * 3 - 3]; ny = dN[i * 3 - 2]; nz = dN[i * 3 - 1]; }
+    const dp = nx * tx + ny * ty + nz * tz;
+    nx -= tx * dp; ny -= ty * dp; nz -= tz * dp;
+    const nn = Math.hypot(nx, ny, nz) || 1;
+    nx /= nn; ny /= nn; nz /= nn;
+    dT[i * 3] = tx; dT[i * 3 + 1] = ty; dT[i * 3 + 2] = tz;
+    dN[i * 3] = nx; dN[i * 3 + 1] = ny; dN[i * 3 + 2] = nz;
+    dB[i * 3] = ty * nz - tz * ny; dB[i * 3 + 1] = tz * nx - tx * nz; dB[i * 3 + 2] = tx * ny - ty * nx;
+  }
+  // 空を泳ぐようなうねり（頭の近くは小さく）
+  for (let i = 0; i < SPINE; i++) {
+    const s = i * SEG, env = clamp((s - 8) / 25, 0, 1);
+    const ua = 2.4 * env * Math.sin(2 * Math.PI * s / 55 - time * 2.2);
+    const ub = 1.2 * env * Math.sin(2 * Math.PI * s / 70 - time * 1.7 + 1);
+    spX[i] += dN[i * 3] * ua + dB[i * 3] * ub;
+    spY[i] += dN[i * 3 + 1] * ua + dB[i * 3 + 1] * ub;
+    spZ[i] += dN[i * 3 + 2] * ua + dB[i * 3 + 2] * ub;
+  }
+}
+
+const levelOf = (nx, ny, nz) => {
+  const lam = (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / (Math.hypot(nx, ny, nz) || 1);
+  return lam > 0.42 ? 3 : lam > -0.2 ? 2 : 1;
+};
+const pc = c => pack(c[0], c[1], c[2], 255);
+
+// 細い管（角・脚）：p0 から p1 まで、太さ r0 → r1
+function tube(p0, p1, r0, r1, col, owner) {
+  const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2], len = Math.hypot(ax, ay, az) || 1;
+  const tx = ax / len, ty = ay / len, tz = az / len;
+  // 管に垂直な 2 方向
+  let ux = -ty, uy = tx, uz = 0;
+  if (Math.abs(tz) > 0.9) { ux = 0; uy = -tz; uz = ty; }
+  let un = Math.hypot(ux, uy, uz); ux /= un; uy /= un; uz /= un;
+  const vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+  const c = pc(col);
+  for (let t = 0; t <= len; t += SEG) {
+    const r = mix(r0, r1, t / len), cx = p0[0] + tx * t, cy = p0[1] + ty * t, cz = p0[2] + tz * t;
+    const m = Math.max(4, Math.ceil(2 * Math.PI * r / SEG));
+    for (let k = 0; k < m; k++) {
+      const a = 2 * Math.PI * k / m, ca = Math.cos(a), sa = Math.sin(a);
+      const nx = ux * ca + vx * sa, ny = uy * ca + vy * sa, nz = uz * ca + vz * sa;
+      put(cx + nx * r, cy + ny * r, cz + nz * r, c, levelOf(nx, ny, nz), owner);
+    }
+    put(cx, cy, cz, c, 2, owner);
+  }
+}
+// 毛の束（鬣・髭・尾の房）：点を並べた線。少し太く見えるよう 2 本並べる
+function strand(p, dir, len, wave, wx, wy, wz, col, owner, side) {
+  const c = pc(col);
+  for (let u = 0; u <= len; u += SEG) {
+    const k = u / len, w = Math.sin(k * 4 + wave) * 1.6 * k;
+    const x = p[0] + dir[0] * u + wx * w, y = p[1] + dir[1] * u + wy * w, z = p[2] + dir[2] * u + wz * w;
+    put(x, y, z, c, 2, owner);
+    put(x + side[0] * 0.5, y + side[1] * 0.5, z + side[2] * 0.5, c, 2, owner);
+  }
+}
+// 頭の部品（楕円体）。中心 c、頭の向き (T, N, B) に沿った半径 (a, b, w)
+function headBlob(c, T, N, B, a, b, w, colorFn) {
+  const R = Math.max(a, b, w) + 0.5;
+  for (let i = -R; i <= R; i += SEG) for (let j = -R; j <= R; j += SEG) for (let k = -R; k <= R; k += SEG) {
+    const e = (i / a) ** 2 + (j / b) ** 2 + (k / w) ** 2;
+    if (e > 1 || e < 0.55) continue;   // 中身は見えないので殻だけ
+    const x = c[0] + T[0] * i + N[0] * j + B[0] * k, y = c[1] + T[1] * i + N[1] * j + B[1] * k, z = c[2] + T[2] * i + N[2] * j + B[2] * k;
+    const gi = i / (a * a), gj = j / (b * b), gk = k / (w * w);
+    const nx = T[0] * gi + N[0] * gj + B[0] * gk, ny = T[1] * gi + N[1] * gj + B[1] * gk, nz = T[2] * gi + N[2] * gj + B[2] * gk;
+    put(x, y, z, pc(colorFn(i, j, k)), levelOf(nx, ny, nz), DRAGON_OWNER_HEAD);
+  }
+}
+const at = (p, T, N, B, t, n, b) => [p[0] + T[0] * t + N[0] * n + B[0] * b, p[1] + T[1] * t + N[1] * n + B[1] * b, p[2] + T[2] * t + N[2] * n + B[2] * b];
+const vecAt = (T, N, B, t, n, b) => { const v = at([0, 0, 0], T, N, B, t, n, b), l = Math.hypot(...v) || 1; return v.map(c => c / l); };
+
+function emitDragon(time) {
+  computeDragonSpine(time);
+  // --- 胴：鱗の緑、腹は金の蛇腹、背には赤い背びれ
+  for (let i = 0; i < SPINE; i++) {
+    const s = i * SEG, r = dragonRadius(s), owner = 10 + Math.floor(s / 24);
+    const Nx = dN[i * 3], Ny = dN[i * 3 + 1], Nz = dN[i * 3 + 2], Bx = dB[i * 3], By = dB[i * 3 + 1], Bz = dB[i * 3 + 2];
+    const m = Math.max(6, Math.ceil(2 * Math.PI * r / SEG));
+    for (let k = 0; k < m; k++) {
+      const a = 2 * Math.PI * k / m, ca = Math.cos(a), sa = Math.sin(a);
+      const nx = Nx * ca + Bx * sa, ny = Ny * ca + By * sa, nz = Nz * ca + Bz * sa;
+      let col;
+      if (ca < -0.45) col = (s / 1.6) % 1 < 0.22 ? D_BELLY_D : D_BELLY;
+      else {
+        const v = a * r / 1.4, row = Math.floor(v);
+        col = ((s / 1.4 + (row & 1) * 0.5) % 1 < 0.25 || v - row < 0.18) ? D_GREEN_D : D_GREEN;
+      }
+      const c = pc(col), lv = levelOf(nx, ny, nz);
+      put(spX[i] + nx * r, spY[i] + ny * r, spZ[i] + nz * r, c, lv, owner);
+      if (r > 1) put(spX[i] + nx * (r - 0.6), spY[i] + ny * (r - 0.6), spZ[i] + nz * (r - 0.6), c, lv, owner);
+    }
+    // 背びれ：3 voxel ごとにのこぎり状の棘
+    if (s > 12 && s < 158) {
+      const h = 2.6 * (1 - (s / 3) % 1) * Math.min(1, r / 2.5), c = pc(D_RIDGE);
+      for (let u = 0; u <= h; u += SEG)
+        put(spX[i] + Nx * (r + u) - dT[i * 3] * u * 0.5, spY[i] + Ny * (r + u) - dT[i * 3 + 1] * u * 0.5,
+            spZ[i] + Nz * (r + u) - dT[i * 3 + 2] * u * 0.5, c, 2, owner);
+    }
+  }
+
+  // --- 頭
+  const H0 = [spX[0], spY[0], spZ[0]];
+  const T = [dT[0], dT[1], dT[2]], N = [dN[0], dN[1], dN[2]], B = [dB[0], dB[1], dB[2]];
+  const back = [-T[0], -T[1], -T[2]];
+  const atH = (t, n, b) => at(H0, T, N, B, t * BODY_K, n * BODY_K, b * BODY_K);
+  const scaleCol = (i, j, k) => (j < -0.55 * 3.4 * BODY_K ? D_BELLY : ((Math.floor(i * 0.8) + Math.floor(k * 0.8)) & 1 ? D_GREEN : D_GREEN_D));
+  headBlob(atH(2, 0, 0), T, N, B, 5 * BODY_K, 3.4 * BODY_K, 3.8 * BODY_K, scaleCol);                      // 頭
+  headBlob(atH(8, -0.6, 0), T, N, B, 4.5 * BODY_K, 2.2 * BODY_K, 2.8 * BODY_K, (i, j) => (j < -1.2 * BODY_K ? D_BELLY : D_GREEN));  // 鼻先
+  // 下あご：口の開きに合わせて回す
+  const ma = Dragon_mouth(), cm = Math.cos(ma), sm = Math.sin(ma);
+  const JT = [T[0] * cm - N[0] * sm, T[1] * cm - N[1] * sm, T[2] * cm - N[2] * sm];
+  const JN = [N[0] * cm + T[0] * sm, N[1] * cm + T[1] * sm, N[2] * cm + T[2] * sm];
+  const hinge = atH(3, -1.8, 0);
+  const atJ = (t, n, b) => at(hinge, JT, JN, B, t * BODY_K, n * BODY_K, b * BODY_K);
+  headBlob(atJ(4.2, -0.6, 0), JT, JN, B, 4.2 * BODY_K, 1.2 * BODY_K, 2.4 * BODY_K, (i, j) => (j > 0.3 ? D_MOUTH : D_BELLY));
+  // 牙（口を開けたときに見える）
+  if (ma > 0.15) for (const sd of [-1, 1]) for (let t = 6; t <= 11; t += 2.5)
+    put(...atH(t, -2.2, sd * 2.1), pc(D_TOOTH), 2, DRAGON_OWNER_HEAD);
+  for (const sd of [-1, 1]) {
+    // 眉のこぶ・目・瞳
+    headBlob(atH(4, 2.6, sd * 2.2), T, N, B, 2 * BODY_K, 1 * BODY_K, 1.2 * BODY_K, () => D_GREEN_D);
+    headBlob(atH(4.2, 1.5, sd * 3.0), T, N, B, 1.1 * BODY_K, 1.1 * BODY_K, 1.1 * BODY_K, () => D_EYE);
+    put(...atH(4.6, 1.5, sd * 4.0), pc(D_PUPIL), 2, DRAGON_OWNER_HEAD);
+    put(...atH(4.6, 1.0, sd * 4.0), pc(D_PUPIL), 2, DRAGON_OWNER_HEAD);
+    // 角：後ろ上へ伸び、途中で枝分かれ
+    const h0 = atH(0.5, 2.8, sd * 1.6), hd = vecAt(T, N, B, -1, 0.75, sd * 0.35);
+    const h1 = [h0[0] + hd[0] * 6, h0[1] + hd[1] * 6, h0[2] + hd[2] * 6];
+    const h2d = vecAt(T, N, B, -1, 0.25, sd * 0.2);
+    const h2 = [h1[0] + h2d[0] * 4, h1[1] + h2d[1] * 4, h1[2] + h2d[2] * 4];
+    tube(h0, h1, 0.9, 0.6, D_BONE, DRAGON_OWNER_HEAD);
+    tube(h1, h2, 0.6, 0.3, D_BONE, DRAGON_OWNER_HEAD);
+    const t2d = vecAt(T, N, B, 0.2, 1, sd * 0.2);
+    tube(h1, [h1[0] + t2d[0] * 2.5, h1[1] + t2d[1] * 2.5, h1[2] + t2d[2] * 2.5], 0.5, 0.3, D_BONE, DRAGON_OWNER_HEAD);
+    // 髭：鼻先の両脇から後ろへ長くなびく
+    strand(atH(10.5, -0.5, sd * 2.4), vecAt(T, N, B, -1, -0.1, sd * 0.55), 22, time * 4 + sd, N[0], N[1], N[2], D_WHISKER, DRAGON_OWNER_HEAD, B);
+  }
+  // 鬣：首の周りから後ろへ流れる白い毛
+  for (let j = 0; j < 14; j++) {
+    const a = -1.9 + 3.8 * j / 13, s0 = 3 + (j % 3) * 3, i0 = Math.round(s0 / SEG);
+    const nn = [dN[i0 * 3] * Math.cos(a) + dB[i0 * 3] * Math.sin(a), dN[i0 * 3 + 1] * Math.cos(a) + dB[i0 * 3 + 1] * Math.sin(a), dN[i0 * 3 + 2] * Math.cos(a) + dB[i0 * 3 + 2] * Math.sin(a)];
+    const r = dragonRadius(s0), base = [spX[i0] + nn[0] * r, spY[i0] + nn[1] * r, spZ[i0] + nn[2] * r];
+    const dir = [back[0] + nn[0] * 0.45, back[1] + nn[1] * 0.45, back[2] + nn[2] * 0.45], dl = Math.hypot(...dir);
+    strand(base, dir.map(c => c / dl), 9 + (j % 4) * 1.5, time * 3 + j, nn[0], nn[1], nn[2], D_HAIR, 10, B);
+  }
+  // あごひげ
+  for (let j = 0; j < 3; j++)
+    strand(at(H0, T, N, B, 6 - j * 1.5, -3.2, (j - 1) * 0.8), vecAt(T, N, B, -0.8, -0.6, 0), 6, time * 3 + j, T[0], T[1], T[2], D_HAIR, DRAGON_OWNER_HEAD, B);
+
+  // --- 脚（前脚と後ろ脚が 1 対ずつ）。ゆっくり宙をかく
+  for (const [s0, ph] of [[34, 0], [100, 1.6]]) {
+    const i = Math.round(s0 / SEG), r = dragonRadius(s0), owner = 10 + Math.floor(s0 / 24);
+    const Ti = [dT[i * 3], dT[i * 3 + 1], dT[i * 3 + 2]], Ni = [dN[i * 3], dN[i * 3 + 1], dN[i * 3 + 2]], Bi = [dB[i * 3], dB[i * 3 + 1], dB[i * 3 + 2]];
+    const P = [spX[i], spY[i], spZ[i]];
+    for (const sd of [-1, 1]) {
+      const sw = Math.sin(time * 2 + ph + (sd > 0 ? 0 : Math.PI)) * 0.6;
+      const hip = at(P, Ti, Ni, Bi, 0, -r * 0.3, sd * r * 0.75);
+      const kd = vecAt(Ti, Ni, Bi, sw - 0.3, -0.6, sd * 0.7);
+      const knee = [hip[0] + kd[0] * 6, hip[1] + kd[1] * 6, hip[2] + kd[2] * 6];
+      const fd = vecAt(Ti, Ni, Bi, 0.6 + sw * 0.5, -0.8, sd * 0.1);
+      const foot = [knee[0] + fd[0] * 5, knee[1] + fd[1] * 5, knee[2] + fd[2] * 5];
+      tube(hip, knee, 1.7, 1.2, D_GREEN, owner);
+      tube(knee, foot, 1.2, 0.9, D_GREEN, owner);
+      for (const spread of [-0.6, 0, 0.6]) {           // 3 本の爪
+        const cd = vecAt(Ti, Ni, Bi, 1, -0.5, sd * 0.2 + spread);
+        tube(foot, [foot[0] + cd[0] * 2.4, foot[1] + cd[1] * 2.4, foot[2] + cd[2] * 2.4], 0.5, 0.25, D_BONE, owner);
+      }
+    }
+  }
+
+  // --- 尾の房
+  const ie = SPINE - 1;
+  const Te = [-dT[ie * 3], -dT[ie * 3 + 1], -dT[ie * 3 + 2]], Ne = [dN[ie * 3], dN[ie * 3 + 1], dN[ie * 3 + 2]], Be = [dB[ie * 3], dB[ie * 3 + 1], dB[ie * 3 + 2]];
+  for (let j = 0; j < 9; j++) {
+    const a = 2 * Math.PI * j / 9, i0 = ie - 6 - (j % 3) * 4;
+    const dir = vecAt(Te, Ne, Be, 1, Math.cos(a) * 0.5, Math.sin(a) * 0.5);
+    strand([spX[i0], spY[i0], spZ[i0]], dir, 8 + (j % 3) * 2, time * 3 + j, Ne[0], Ne[1], Ne[2], D_HAIR, 10 + Math.floor(DRAGON_LEN / 24), Be);
+  }
+}
+const Dragon_mouth = () => dragon.mouth;
+
+// ============================================================
+//  雲海：水槽の下 1/4 を白い雲がゆったり流れる
+//  ・表面の高さは 2 voxel 間隔の格子で持つ。こもこもした起伏が流れに乗って動く
+//  ・表面には水平方向の「流れの場」があり、龍の胴や尾、鯉の尾びれが動くと押される（簡易的な流体計算）。
+//    雲の模様はその流れでねじられ、渦の強いところは細かく波立つ
+//  ・生き物が表面近くを通ると「盛り上がり」が足され、流れに運ばれながら広がって消えていく（尾を引く）
+//  ・雲から抜け出したり表面をかすめたりすると、通った跡に霞が残り、その場で広がりながら薄れて消える
+// ============================================================
+const CLOUD_Y = H - 30;              // 雲の表面の平均の高さ（y は下向き）
+const CLOUD_FLOW = 3;                // 流れる速さ [voxel/秒]（+x 向き）
+const CG = 2;                        // 格子の間隔 [voxel]
+const CNX = W / CG + 1, CNZ = D / CG + 1, CN = CNX * CNZ;
+const cloudH = new Float32Array(CN);  // 上面の y
+const cloudNx = new Float32Array(CN), cloudNy = new Float32Array(CN), cloudNz = new Float32Array(CN);
+const cloudB = new Float32Array(CN), cloudThick = new Float32Array(CN);   // 下面の y と、雲の厚み
+const cloudBx = new Float32Array(CN), cloudBy = new Float32Array(CN), cloudBz = new Float32Array(CN);
+const LAYER_MID = CLOUD_Y + 8;        // 雲の層の厚みの中心
+const smooth01 = t => t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
+let puff = new Float32Array(CN), puffTmp = new Float32Array(CN);   // 盛り上がりの量 [voxel]
+let velX = new Float32Array(CN), velZ = new Float32Array(CN);       // 流れの場（一定の流れからのずれ）[voxel/秒]
+let velTX = new Float32Array(CN), velTZ = new Float32Array(CN);
+const pres = new Float32Array(CN), presT = new Float32Array(CN), divg = new Float32Array(CN), curl = new Float32Array(CN);
+const dispX = new Float32Array(CN), dispZ = new Float32Array(CN);   // 流れで押し流された模様のずれ [voxel]
+const PUFF_MAX = 14, PUFF_LIFE = 2.2, VEL_LIFE = 2.2, DISP_LIFE = 5;
+const CLOUD_OWNER = 200, WISP_OWNER = 201;
+const CLOUD_TOP = [246, 244, 238], CLOUD_UNDER = [214, 212, 220];
+const cidx2 = (i, j) => i + CNX * j;
+
+// 格子の値を (fi, fj)（格子単位の位置）で補間して読む
+function sampleGrid(a, fi, fj) {
+  fi = clamp(fi, 0, CNX - 1.001); fj = clamp(fj, 0, CNZ - 1.001);
+  const i = Math.floor(fi), j = Math.floor(fj), u = fi - i, v = fj - j, k = cidx2(i, j);
+  return mix(mix(a[k], a[k + 1], u), mix(a[k + CNX], a[k + CNX + 1], u), v);
+}
+// (x, z) のまわりになだらかな山の形で fn(格子番号, 重み) を呼ぶ
+function splat(x, z, rad, fn) {
+  const ci = x / CG, cj = z / CG, R = Math.ceil(rad / CG) + 1;
+  for (let j = Math.max(0, Math.floor(cj - R)); j <= Math.min(CNZ - 1, Math.ceil(cj + R)); j++)
+    for (let i = Math.max(0, Math.floor(ci - R)); i <= Math.min(CNX - 1, Math.ceil(ci + R)); i++) {
+      const d2 = ((i - ci) ** 2 + (j - cj) ** 2) * CG * CG / (rad * rad);
+      if (d2 < 2.5) fn(cidx2(i, j), Math.exp(-d2));
+    }
+}
+const cloudSurfaceAt = (x, z) => sampleGrid(cloudH, x / CG, z / CG);
+
+// ---- 霞：雲から抜け出した直後や表面をかすめているあいだ、体が通った場所に雲の霞を少しずつ落としていく。
+//      霞は落ちたその場で、雲の流れに乗ってゆっくり漂いながら広がり、薄れて消える（体と雲を結ぶものは無い）
+const mists = [];
+const MAX_MISTS = 160;
+function depositMist(x, y, z, rad) {
+  if (mists.length >= MAX_MISTS) return;   // 多すぎるときは落とさない（古いものを急に消すと不自然なので）
+  mists.push({ x, y, z, r0: 1.2 + rad * 0.35, age: 0, life: 2.5 + Math.random() * 1.5, seed: (Math.random() * 1e6) | 0 });
+}
+function updateMist(dt) {
+  for (let n = mists.length - 1; n >= 0; n--) {
+    const m = mists[n];
+    m.age += dt;
+    if (m.age > m.life) { mists.splice(n, 1); continue; }
+    const fi = m.x / CG, fj = m.z / CG;
+    m.x += (CLOUD_FLOW * 0.7 + sampleGrid(velX, fi, fj) * 0.4) * dt;
+    m.z += sampleGrid(velZ, fi, fj) * 0.4 * dt;
+    m.y += 0.6 * dt;                                        // ゆっくり雲へ沈んでいく
+  }
+}
+function emitMist() {
+  const c = pack(...CLOUD_TOP, 255);
+  for (const m of mists) {
+    const a = m.age / m.life;
+    // 広がりながら、点がまばらになって消えていく（点ごとに決まった順番で抜けるのでチラつかない）
+    const r = m.r0 * (1 + 1.6 * a), dens = Math.pow(1 - a, 1.5) * 0.8;
+    const count = Math.ceil(r * r * 2.2);
+    for (let q = 0; q < count; q++) {
+      if (hash(q, m.seed, 0, 91) > dens) continue;
+      const u1 = hash(q, m.seed, 0, 92), u2 = hash(q, m.seed, 0, 93), u3 = hash(q, m.seed, 0, 94);
+      const rr = r * Math.cbrt(u1), th = u2 * Math.PI * 2, ph = Math.acos(u3 * 2 - 1);
+      const ox = Math.sin(ph) * Math.cos(th) * rr, oy = Math.cos(ph) * rr * 0.6, oz = Math.sin(ph) * Math.sin(th) * rr;
+      const k = 1 / (Math.hypot(ox, oy, oz) || 1);
+      cloudPut(m.x + ox, m.y + oy, m.z + oz, c, ox * k, oy * k - 0.4, oz * k);
+    }
+  }
+}
+
+// 生き物の一点が雲の表面近くを動いたときの影響：流れを押す・盛り上げる・ちぎれた雲を飛ばす
+function stirPoint(obj, key, x, y, z, rad, dt) {
+  obj.prevStir = obj.prevStir || {};
+  const prev = obj.prevStir[key];
+  obj.prevStir[key] = [x, y, z];
+  if (!prev || dt <= 0) return;
+  let vx = (x - prev[0]) / dt, vy = (y - prev[1]) / dt, vz = (z - prev[2]) / dt;
+  const sp = Math.hypot(vx, vy, vz);
+  if (sp > 80) return;                               // 一瞬で飛んだ（初期化など）ときは無視
+  const depth = y - cloudSurfaceAt(x, z);            // 正なら雲の中
+  // 霞：雲から抜け出した直後や表面をかすめているあいだ、動いた距離に応じて通った場所に落としていく
+  obj.mistDist = obj.mistDist || {};
+  if (depth < rad * 0.5 && depth > -rad - 10 && sp > 2) {
+    const moved = (obj.mistDist[key] || 0) + sp * dt;
+    if (moved > 1.8 + rad * 0.8) { obj.mistDist[key] = 0; depositMist(x, y, z, rad); } else obj.mistDist[key] = moved;   // 太い体ほど間隔をあける
+  }
+  if (depth < -rad - 6 || depth > rad + 14) return;
+  const w = Math.exp(-(((depth - 1) / (rad + 5)) ** 2));
+  // 流れを押す（動いている向きへ、雲を引きずる）
+  const a = Math.min(1, dt * 7) * w;
+  splat(x, z, rad + 4, (k, g) => { velX[k] = mix(velX[k], vx - CLOUD_FLOW, a * g); velZ[k] = mix(velZ[k], vz, a * g); });
+  // 盛り上げる（速いほど、また上下に動くほど大きく）。前の位置から今の位置までの線に沿って足し、途切れない筋にする
+  const amount = (sp * 0.12 + Math.abs(vy) * 0.6) * w * dt * 4;
+  const segs = Math.max(1, Math.ceil(Math.hypot(x - prev[0], z - prev[2]) / CG));
+  for (let q = 1; q <= segs; q++) {
+    const t = q / segs;
+    splat(mix(prev[0], x, t), mix(prev[2], z, t), rad + 3, (k, g) => { puff[k] = Math.min(PUFF_MAX, puff[k] + amount / segs * g); });
+  }
+}
+
+// 格子の値を流れに沿って運ぶ（上流側の値を補間して持ってくる）
+function advect(src, dst, dt) {
+  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+    const k = cidx2(i, j);
+    dst[k] = sampleGrid(src, i - (CLOUD_FLOW + velX[k]) * dt / CG, j - velZ[k] * dt / CG);
+  }
+}
+
+function updateClouds(dt, time) {
+  if (dt > 0) {
+    // 1) 生き物がかき混ぜる（鯉は体の中ほどと尾びれの先、龍は胴に沿って尾の先まで）
+    for (const F of fish) {
+      stirPoint(F, "c", F.x, F.y, F.z, F.Rh, dt);
+      if (F.tail) stirPoint(F, "t", F.tail[0], F.tail[1], F.tail[2], F.Rh * 0.9, dt);
+    }
+    for (let n = 0, i = 0; i < SPINE; i += 10, n++) stirPoint(dragon, n, spX[i], spY[i], spZ[i], dragonRadius(i * SEG), dt);
+    stirPoint(dragon, "tail", spX[SPINE - 1], spY[SPINE - 1], spZ[SPINE - 1], 3, dt);
+
+    // 2) 流れの場：自分自身に運ばれ、ゆっくり弱まり、渦を残して湧き出しを打ち消す（圧力の補正）
+    advect(velX, velTX, dt); advect(velZ, velTZ, dt);
+    [velX, velTX] = [velTX, velX]; [velZ, velTZ] = [velTZ, velZ];
+    const vd = Math.exp(-dt / VEL_LIFE);
+    for (let k = 0; k < CN; k++) { velX[k] *= vd; velZ[k] *= vd; }
+    for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+      const k = cidx2(i, j);
+      divg[k] = (velX[k + 1] - velX[k - 1] + velZ[k + CNX] - velZ[k - CNX]) * 0.5;
+    }
+    pres.fill(0);
+    for (let it = 0; it < 16; it++) {
+      for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+        const k = cidx2(i, j);
+        presT[k] = (pres[k - 1] + pres[k + 1] + pres[k - CNX] + pres[k + CNX] - divg[k]) * 0.25;
+      }
+      pres.set(presT);
+    }
+    for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+      const k = cidx2(i, j);
+      velX[k] -= (pres[k + 1] - pres[k - 1]) * 0.5;
+      velZ[k] -= (pres[k + CNX] - pres[k - CNX]) * 0.5;
+    }
+    for (let i = 0; i < CNX; i++) { velZ[cidx2(i, 0)] = 0; velZ[cidx2(i, CNZ - 1)] = 0; }   // ガラスを突き抜けない
+    for (let j = 0; j < CNZ; j++) { velX[cidx2(0, j)] = 0; velX[cidx2(CNX - 1, j)] = 0; }
+
+    // 3) 盛り上がりを流れで運び、少し広げ、ゆっくり消す
+    advect(puff, puffTmp, dt);
+    const decay = Math.exp(-dt / PUFF_LIFE);
+    for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+      const k = cidx2(i, j), c = puffTmp[k];
+      const n = (i > 0 ? puffTmp[k - 1] : c) + (i < CNX - 1 ? puffTmp[k + 1] : c) + (j > 0 ? puffTmp[k - CNX] : c) + (j < CNZ - 1 ? puffTmp[k + CNX] : c);
+      puff[k] = (c * 0.84 + n * 0.04) * decay;
+    }
+    // 4) 模様のずれ：流れの分だけ押し流され、ゆっくり元に戻る
+    const dd = Math.exp(-dt / DISP_LIFE);
+    for (let k = 0; k < CN; k++) {
+      dispX[k] = clamp((dispX[k] + velX[k] * dt) * dd, -24, 24);
+      dispZ[k] = clamp((dispZ[k] + velZ[k] * dt) * dd, -24, 24);
+    }
+    updateMist(dt);
+  }
+  // 渦の強さ
+  for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+    const k = cidx2(i, j);
+    curl[k] = ((velZ[k + 1] - velZ[k - 1]) - (velX[k + CNX] - velX[k - CNX])) / (2 * CG);
+  }
+
+  // 5) 雲の形：上面と下面の 2 枚で厚みのある層を作る。厚みが 0 に近づくところで上下の面が閉じ、切れ間になる
+  //    （離れて浮かぶ小さなちぎれ雲も同じ仕組みでできる。ガラスの近くでも丸く閉じるので、まっすぐな断面は無い）
+  const ox = time * CLOUD_FLOW;
+  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+    const k = cidx2(i, j);
+    const x = i * CG - ox - dispX[k], z = j * CG - dispZ[k];
+    // 雲のあるところ：大きなまだら模様。ガラスの近くでは薄れる。盛り上がった（かき混ぜられた）ところは雲が濃くなる
+    const wall = smooth01(Math.min(i * CG, W - i * CG, j * CG, D - j * CG) / 12);
+    const cv = noise3(x * 0.022, z * 0.022, time * 0.02, 711) * 0.65 + noise3(x * 0.06, z * 0.06, time * 0.04, 712) * 0.35;
+    const pf = puff[k];
+    const cover = clamp(smooth01((cv - 0.36) / 0.24) * wall + pf * 0.05, 0, 1);
+    // もこもこ：大・中・小のこぶを重ねる（|2n-1| にすると、こぶの頭が丸く谷が細く切れ込む積雲らしい形になる）
+    const b1 = Math.abs(noise3(x * 0.05, z * 0.05, time * 0.03, 701) * 2 - 1);
+    const b2 = Math.abs(noise3(x * 0.11, z * 0.11, time * 0.05, 702) * 2 - 1);
+    const b3 = Math.abs(noise3(x * 0.23, z * 0.23, time * 0.08, 705) * 2 - 1);
+    const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
+    const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 8 * turb : 0;
+    const thick = cover * 22 + pf * 0.9;
+    const billow = (b1 * 9 + b2 * 4.5 + b3 * 2.2) * Math.sqrt(cover);
+    cloudThick[k] = thick;
+    cloudH[k] = LAYER_MID - thick * 0.6 - billow - chop * cover;
+    cloudB[k] = LAYER_MID + thick * 0.4 + (noise3(x * 0.08, z * 0.08, time * 0.05, 706) - 0.5) * 5 * cover;
+  }
+  // 面の向き（隣の高さとの差から）。y は下向きなので、上面は (hx, -1, hz)、下面は (-bx, 1, -bz) を正規化したもの
+  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+    const k = cidx2(i, j), ip = cidx2(Math.min(CNX - 1, i + 1), j), im = cidx2(Math.max(0, i - 1), j);
+    const jp = cidx2(i, Math.min(CNZ - 1, j + 1)), jm = cidx2(i, Math.max(0, j - 1));
+    const hx = (cloudH[ip] - cloudH[im]) / (2 * CG), hz = (cloudH[jp] - cloudH[jm]) / (2 * CG);
+    const n = Math.hypot(hx, 1, hz);
+    cloudNx[k] = hx / n; cloudNy[k] = -1 / n; cloudNz[k] = hz / n;
+    const bx = (cloudB[ip] - cloudB[im]) / (2 * CG), bz = (cloudB[jp] - cloudB[jm]) / (2 * CG);
+    const m = Math.hypot(bx, 1, bz);
+    cloudBx[k] = -bx / m; cloudBy[k] = 1 / m; cloudBz[k] = -bz / m;
+  }
+}
+
+// 雲の点を書く（このページの光の当て方に合わせる）
+function cloudPut(x, y, z, c, nx, ny, nz) {
+  put(x, y, z, c, levelOf(nx, ny, nz), CLOUD_OWNER);
+}
+function emitClouds(time) {
+  const top = pack(...CLOUD_TOP, 255), under = pack(...CLOUD_UNDER, 255);
+  const SP = 0.6, ox = time * CLOUD_FLOW;
+  const lerp4 = (a, k00, u, v) => mix(mix(a[k00], a[k00 + 1], u), mix(a[k00 + CNX], a[k00 + CNX + 1], u), v);
+  let row = 0;
+  for (let z = 0.3; z < D; z += SP, row++) {
+    const fj = Math.min(z / CG, CNZ - 1.001), j = Math.floor(fj), v = fj - j;
+    let col = 0;
+    for (let x = 0.3; x < W; x += SP, col++) {
+      const fi = Math.min(x / CG, CNX - 1.001), i = Math.floor(fi), u = fi - i, k00 = cidx2(i, j);
+      const thick = lerp4(cloudThick, k00, u, v);
+      if (thick < 0.8) continue;                       // 切れ間
+      // ふわふわ：薄いところほど点を間引いて、縁をぼそぼそ崩す。間引く模様は雲と一緒に流れる
+      const hx = Math.round((x - ox) * 1.7), hz = Math.round(z * 1.7);
+      if (hash(hx, hz, 0, 77) < Math.min(1, thick / 4)) {
+        castShadow = ((row | col) & 1) === 0;
+        cloudPut(x, lerp4(cloudH, k00, u, v), z, top, lerp4(cloudNx, k00, u, v), lerp4(cloudNy, k00, u, v), lerp4(cloudNz, k00, u, v));
+      }
+      // 下面：底に向かってうっすら透ける
+      if (hash(hx, hz, 1, 78) < Math.min(1, thick / 6) * 0.72) {
+        castShadow = false;
+        cloudPut(x, lerp4(cloudB, k00, u, v), z, under, lerp4(cloudBx, k00, u, v), lerp4(cloudBy, k00, u, v), lerp4(cloudBz, k00, u, v));
+      }
+    }
+  }
+  castShadow = true;
+  emitMist();
+}
+
+// 鯉が龍に気づいて逃げる
+function scareFish(dt) {
+  for (const F of fish) {
+    F.scareCool = (F.scareCool || 0) - dt;
+    if (F.dart || F.scareCool > 0) continue;
+    if (Math.hypot(F.x - dragon.x, F.y - dragon.y, F.z - dragon.z) < 30) {
+      F.dart = { kind: "flinch", phase: "wait", t: -(0.05 + Math.random() * 0.15), from: { x: dragon.x, y: dragon.y, z: dragon.z } };
+      F.scareCool = 4;
+    }
+  }
+}
+
+// ============================================================
+//  描画：three.js で、外から見えるボクセルを立方体として透視図法で描く
+//  座標：three の X = x / VS, Y = VN - y / VS（上向き）, Z = VN - z / VS（手前が +Z）
+// ============================================================
+const canvas = document.getElementById("tank");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xc99a34);          // 落ち着いた山吹色の部屋
+const CENTER = new THREE.Vector3(VN / 2, VN / 2, VN / 2);
+const camera = new THREE.PerspectiveCamera(38, 1, 1, 1000);
+
+// 光：空からのやわらかい光 + 斜め上からの日差し（影を落とす）
+scene.add(new THREE.HemisphereLight(0xfff6e0, 0x8a6a3a, 0.62));
+const sun = new THREE.DirectionalLight(0xfff1d6, 0.78);
+sun.position.copy(CENTER).add(new THREE.Vector3(-0.35, 1, 0.5).normalize().multiplyScalar(140));
+sun.target.position.copy(CENTER);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -62, right: 62, top: 62, bottom: -62, near: 40, far: 260 });
+sun.shadow.bias = -0.0006;
+sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+
+// ボクセル：同じ立方体をたくさん並べる（InstancedMesh）。位置と色だけを毎フレーム書き換える
+const MAX_CUBES = 160000;
+const cubes = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), MAX_CUBES);
+cubes.castShadow = cubes.receiveShadow = true;
+cubes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+cubes.setColorAt(0, new THREE.Color());
+cubes.instanceColor.setUsage(THREE.DynamicDrawUsage);
+{
+  const m = new THREE.Matrix4();
+  for (let k = 0; k < MAX_CUBES; k++) cubes.setMatrixAt(k, m);
+}
+cubes.frustumCulled = false;
+scene.add(cubes);
+
+// 水槽：うっすら黄色い水と、黒い枠のガラスの箱。下に木の台と床
+const water = new THREE.Mesh(new THREE.BoxGeometry(VN, VN, VN),
+  new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true, opacity: 0.13, depthWrite: false }));
+water.position.copy(CENTER);
+water.renderOrder = 2;
+scene.add(water);
+const glassBack = new THREE.Mesh(new THREE.BoxGeometry(VN, VN, VN),
+  new THREE.MeshBasicMaterial({ color: 0xfff4cc, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.BackSide }));
+glassBack.position.copy(CENTER);
+glassBack.renderOrder = 1;
+scene.add(glassBack);
+{
+  const frameMat = new THREE.MeshLambertMaterial({ color: 0x1b1c20 }), T = 0.9;
+  for (let k = 0; k < 12; k++) {
+    const axis = k >> 2, a = (k & 1) ? VN : 0, b = (k & 2) ? VN : 0;
+    const size = [T, T, T]; size[axis] = VN + T;
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(...size), frameMat);
+    const pos = [a, b];
+    const p = axis === 0 ? [VN / 2, pos[0], pos[1]] : axis === 1 ? [pos[0], VN / 2, pos[1]] : [pos[0], pos[1], VN / 2];
+    bar.position.set(...p);
+    bar.castShadow = true;
+    scene.add(bar);
+  }
+  const stand = new THREE.Mesh(new THREE.BoxGeometry(VN + 6, 5, VN + 6), new THREE.MeshLambertMaterial({ color: 0x5a3a24 }));
+  stand.position.set(VN / 2, -2.5 - T / 2, VN / 2);
+  stand.castShadow = stand.receiveShadow = true;
+  scene.add(stand);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(800, 800), new THREE.MeshLambertMaterial({ color: 0xb8892c }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -5 - T / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+}
+
+// 点の集まり → 外から見えるボクセルだけを立方体にする
+const tmpColor = new THREE.Color();
+function buildCubes() {
+  const mat = cubes.instanceMatrix.array, col = cubes.instanceColor.array;
+  let n = 0;
+  for (let z = 0; z < VN; z++) for (let y = 0; y < VN; y++) {
+    let i = VN * (y + VN * z);
+    for (let x = 0; x < VN; x++, i++) {
+      const c = vox[i];
+      if (!c) continue;
+      // 6 方向すべてが埋まっていれば中に隠れていて見えない
+      if (x > 0 && x < VN - 1 && y > 0 && y < VN - 1 && z > 0 && z < VN - 1 &&
+          vox[i - 1] && vox[i + 1] && vox[i - VN] && vox[i + VN] && vox[i - VN * VN] && vox[i + VN * VN]) continue;
+      if (n >= MAX_CUBES) break;
+      const o = n * 16;
+      mat[o + 12] = x + 0.5; mat[o + 13] = VN - y - 0.5; mat[o + 14] = VN - z - 0.5;
+      const o3 = n * 3;
+      col[o3] = ((c >> 16) & 255) / 255; col[o3 + 1] = ((c >> 8) & 255) / 255; col[o3 + 2] = (c & 255) / 255;
+      n++;
+    }
+  }
+  cubes.count = n;
+  cubes.instanceMatrix.needsUpdate = true;
+  cubes.instanceColor.needsUpdate = true;
+  return n;
+}
+
+// カメラ：水槽のまわりを回る。yaw = 水平方向の角度（0 で正面）, pitch = 見下ろす角度, dist = 中心からの距離
+const cam = { yaw: -0.5, pitch: 0.35, dist: 165, vyaw: 0, vpitch: 0 };
+const DIST_DEFAULT = 165, DIST_MIN = 55, DIST_MAX = 320, PITCH_MIN = -0.25, PITCH_MAX = 1.45;
+function placeCamera() {
+  const cp = Math.cos(cam.pitch);
+  camera.position.set(CENTER.x - Math.sin(cam.yaw) * cp * cam.dist, CENTER.y + Math.sin(cam.pitch) * cam.dist, CENTER.z + Math.cos(cam.yaw) * cp * cam.dist);
+  camera.lookAt(CENTER);
+}
+
+// ============================================================
+//  ループ
+// ============================================================
+function buildFrame(time) {
+  vox.fill(0);
+  drawFood();
+  emitClouds(time);
+  emitDragon(time);
+  for (const F of fish) drawFish(F, time);
+  return buildCubes();
+}
+function step(dt, time) {
+  updateDragon(dt, time);
+  updateClouds(dt, time);
+  scareFish(dt);
+  scheduleDart(time);
+  for (const F of fish) updateFish(F, dt, time);
+  updateFood(dt);
+}
+
+spawnFish();
+// 龍の胴が伸びきるまで、見えないところで先に飛ばしておく
+for (let i = 0; i < 1200; i++) updateDragon(1 / 60, -20 + i / 60);
+computeDragonSpine(0);
+updateClouds(0, 0);   // 最初のフレームから雲の形が決まっているように
+
+let time = 0, last = performance.now(), paused = false, dragging = false, homing = false;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) {
+    time += dt;
+    step(dt, time);
+  }
+  // 手を離した後も少しだけ惰性で回る
+  if (!dragging) {
+    cam.yaw += cam.vyaw * dt; cam.pitch = clamp(cam.pitch + cam.vpitch * dt, PITCH_MIN, PITCH_MAX);
+    const k = Math.exp(-4 * dt); cam.vyaw *= k; cam.vpitch *= k;
+  }
+  if (homing) {
+    const k = Math.min(1, dt * 6);
+    cam.yaw += wrapAngle(0 - cam.yaw) * k; cam.pitch += (0.12 - cam.pitch) * k; cam.dist += (DIST_DEFAULT - cam.dist) * k;
+    if (Math.abs(wrapAngle(cam.yaw)) < 0.002 && Math.abs(cam.pitch - 0.12) < 0.002) homing = false;
+  }
+  buildFrame(time);
+  placeCamera();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// 画面サイズに合わせる
+function fit() {
+  const w = Math.min(window.innerWidth - 32, 1100);
+  const h = Math.max(260, Math.min(window.innerHeight - 230, w * 0.8));
+  canvas.style.width = w + "px"; canvas.style.height = h + "px";
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", fit);
+fit();
+requestAnimationFrame(frame);
+
+// ------------------------------------------------------------
+//  操作：ドラッグで回る、スクロール・ピンチで近づく、動かさずに離したらその位置の水面に餌
+// ------------------------------------------------------------
+const pointers = new Map();
+let lastX = 0, lastY = 0, lastT = 0, moved = 0, pinchDist = 0, pinchStart = 0;
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("pointerdown", e => {
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  canvas.setPointerCapture(e.pointerId);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a[0] - b[0], a[1] - b[1]); pinchStart = cam.dist;
+    dragging = false; moved = 99;
+    return;
+  }
+  dragging = true; homing = false;
+  lastX = e.clientX; lastY = e.clientY; lastT = performance.now(); moved = 0;
+  cam.vyaw = cam.vpitch = 0;
+});
+canvas.addEventListener("pointermove", e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (pinchDist > 0) cam.dist = clamp(pinchStart * pinchDist / d, DIST_MIN, DIST_MAX);
+    return;
+  }
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY, now = performance.now();
+  const k = 0.008;
+  cam.yaw += dx * k;
+  cam.pitch = clamp(cam.pitch + dy * k, PITCH_MIN, PITCH_MAX);
+  const dtm = Math.max(1, now - lastT) / 1000;
+  cam.vyaw = dx * k / dtm * 0.5; cam.vpitch = dy * k / dtm * 0.5;
+  moved += Math.abs(dx) + Math.abs(dy);
+  lastX = e.clientX; lastY = e.clientY; lastT = now;
+});
+function endDrag(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size > 0) return;
+  if (!dragging) return;
+  dragging = false;
+  if (performance.now() - lastT > 80) cam.vyaw = cam.vpitch = 0;   // 止めてから離したら惰性なし
+  if (moved < 5 && e.type === "pointerup") feedAt(e.clientX, e.clientY);
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  cam.dist = clamp(cam.dist * Math.exp(e.deltaY * (e.ctrlKey ? 0.01 : 0.0012)), DIST_MIN, DIST_MAX);
+  homing = false;
+}, { passive: false });
+
+// クリックした位置の視線が最初に水槽へ入る点の真上（水面）から餌を落とす
+const raycaster = new THREE.Raycaster();
+const tankBox = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(VN, VN, VN));
+function feedAt(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  raycaster.setFromCamera({ x: (clientX - r.left) / r.width * 2 - 1, y: -((clientY - r.top) / r.height * 2 - 1) }, camera);
+  const hit = raycaster.ray.intersectBox(tankBox, new THREE.Vector3());
+  if (hit) dropFood(hit.x * VS, (VN - hit.z) * VS);
+}
+
+canvas.addEventListener("keydown", e => {
+  const step = 0.08;
+  if (e.key === "ArrowLeft") cam.yaw -= step;
+  else if (e.key === "ArrowRight") cam.yaw += step;
+  else if (e.key === "ArrowUp") cam.pitch = clamp(cam.pitch - step, PITCH_MIN, PITCH_MAX);
+  else if (e.key === "ArrowDown") cam.pitch = clamp(cam.pitch + step, PITCH_MIN, PITCH_MAX);
+  else if (e.key === "+" || e.key === "=") cam.dist = clamp(cam.dist / 1.15, DIST_MIN, DIST_MAX);
+  else if (e.key === "-") cam.dist = clamp(cam.dist * 1.15, DIST_MIN, DIST_MAX);
+  else if (e.key === "0") cam.dist = DIST_DEFAULT;
+  else return;
+  homing = false;
+  e.preventDefault();
+});
+document.getElementById("front").addEventListener("click", () => { homing = true; cam.vyaw = cam.vpitch = 0; });
+document.getElementById("unzoom").addEventListener("click", () => { cam.dist = DIST_DEFAULT; });
+document.getElementById("feed").addEventListener("click", () => dropFood(10 + Math.random() * (W - 20)));
+const pauseBtn = document.getElementById("pause");
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "再開" : "一時停止";
+});
+if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  paused = true;
+  pauseBtn.textContent = "再開";
+}
+
+// 品種の凡例
+const legend = document.getElementById("legend");
+for (const V of VARIETIES) {
+  const li = document.createElement("li");
+  const sw = document.createElement("span");
+  sw.className = "sw";
+  const n = V.sw.length;
+  sw.style.background = "linear-gradient(90deg," + V.sw.map((c, i) =>
+    `rgb(${c}) ${i / n * 100}% ${(i + 1) / n * 100}%`).join(",") + ")";
+  li.append(sw, V.name);
+  legend.append(li);
+}
+</script>
+</body>
+</html>
