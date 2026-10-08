@@ -1102,12 +1102,31 @@ function drawFrameEdges() {
   for (let i = 0; i < frameX.length; i++) put(frameX[i], frameY[i], frameZ[i], FRAME_C);
 }
 
-const NEAR_LIGHT = 75;   // 電球からこれより遠いと 1 段暗くなる [voxel]
+// ------------------------------------------------------------
+//  水の明るさ：電球から離れるほど仄暗い。明るさは 5 段の帯に分け、帯の境目はドットの市松模様でなじませる
+// ------------------------------------------------------------
+const GLOW_K = 32;                                  // 光の届きやすさ [voxel]（大きいほど遠くまで明るい）
+const BAND_K = [0.36, 0.5, 0.65, 0.82, 1.0];        // 帯ごとの明るさ（いちばん明るい帯がもとの山吹色）
+const BAND_HOT = [255, 222, 112];                   // 電球のすぐそばだけ、ひときわ明るい色
+const DARK_WATER = [44, 34, 30];                    // 暗い帯ほどこの色に寄る（黄色が濁った茶色へ沈む）
+// 明るさ 0〜1 → 帯の番号。Bayer 行列でずらして境目をドットでにじませる
+function bandOf(bright, px, py) {
+  const dth = (BAYER[(px & 3) + ((py & 3) << 2)] / 16 - 0.47) * 0.9;
+  return clamp(Math.floor(bright * 5 + dth), 0, 5);
+}
+function applyBand(rgb, band) {
+  if (band >= 5) return [mix(rgb[0], BAND_HOT[0], 0.35), mix(rgb[1], BAND_HOT[1], 0.35), mix(rgb[2], BAND_HOT[2], 0.35)];
+  const k = BAND_K[band], t = 1 - k;
+  return [mix(rgb[0] * k, DARK_WATER[0], t * 0.5), mix(rgb[1] * k, DARK_WATER[1], t * 0.5), mix(rgb[2] * k, DARK_WATER[2], t * 0.5)];
+}
+// 物体のある点の明るさ（電球からの距離だけで決まる）
+const pointBright = dist => GLOW_K / Math.sqrt(GLOW_K * GLOW_K + dist * dist);
+let lastDist = 0;   // shadeSample が求めた電球までの距離（帯の計算に使う）
 const WARM = [255, 222, 150];
 function shadeSample(i) {
   const v = sC[i];
   let r = (v >> 16) & 255, g = (v >> 8) & 255, bl = v & 255;
-  if (!sL[i]) return [r, g, bl];   // 電球そのもの・枠・餌は光の影響を受けない
+  if (!sL[i]) { lastDist = -1; return [r, g, bl]; }   // 電球そのもの・枠・餌は光の影響を受けない
   const dx = BULB[0] - sX[i], dy = BULB[1] - sY[i], dz = BULB[2] - sZ[i], dist = Math.hypot(dx, dy, dz) || 1;
   // 電球の方を向いている面ほど明るい（3 段階）
   let level = 2;
@@ -1119,8 +1138,7 @@ function shadeSample(i) {
   // 電球との間に別の物体があれば影
   const k = smIndex(-dx, -dy, -dz, dist);
   if (smOwner[k] && smOwner[k] !== sO[i] && smDist[k] < dist - 1.5 - dist * 0.02) level = 1;
-  // 電球から遠いところは 1 段暗い
-  if (dist > NEAR_LIGHT) level = Math.max(1, level - 1);
+  lastDist = dist;
   if (level === 3) { r = mix(r, WARM[0], 0.32); g = mix(g, WARM[1], 0.32); bl = mix(bl, WARM[2], 0.32); }
   else if (level === 2) { r = mix(r, WARM[0], 0.07); g = mix(g, WARM[1], 0.07); bl = mix(bl, WARM[2], 0.07); }
   else { r = r * 0.56 + 6; g = g * 0.56 + 8; bl = bl * 0.66 + 26; }  // 影は少し青みに寄せる
@@ -1147,6 +1165,8 @@ function drawBulb() {
   for (let y = 0.25; y < by - R - 2.6; y += 0.5) { put(bx, y, bz, CORD); put(bx + 0.5, y, bz, CORD); }
 }
 
+const bgCache = new Uint32Array(CW * CH);
+let bgKey = "";
 function render() {
   basis = cameraBasis();
   const { F, R, Dn } = basis;
@@ -1161,21 +1181,33 @@ function render() {
     const d = qx * F[0] + qy * F[1] + qz * F[2], p = px + CW * py;
     if (d < zbuf[p]) { zbuf[p] = d; ibuf[p] = i; }
   }
-  // 2) 陰影・縁取りを付けて合成。何も無いピクセルは、水槽の中なら黄色、外なら部屋
+  // 何も無いピクセルの色（水か部屋）はカメラの向きだけで決まるので、向きが変わったときだけ計算し直す
+  const key = cam.yaw + "," + cam.pitch;
+  if (key !== bgKey) {
+    bgKey = key;
+    for (let py = 0; py < CH; py++) for (let px = 0; px < CW; px++) {
+      const u = px + 0.5 - hw, v = py + 0.5 - hh, seg = tankSpan(u, v);
+      const [r, g, b] = seg ? applyBand(BG, bandOf(waterBright(u, v, seg[0], seg[1]), px, py))
+                            : ROOM[(py / CH + BAYER[(px & 3) + ((py & 3) << 2)] / 16 * 0.15 > 0.55) ? 1 : 0];
+      bgCache[px + CW * py] = 0xff000000 | (c255(b) << 16) | (c255(g) << 8) | c255(r);
+    }
+  }
+  // 2) 陰影・縁取りを付けて合成。何も無いピクセルは、水槽の中なら水（電球からの光で明るさが変わる黄色）、外なら部屋
   for (let py = 0; py < CH; py++) {
     for (let px = 0; px < CW; px++) {
       const p = px + CW * py, d = zbuf[p];
       let r, g, b;
       if (d < Infinity) {
         [r, g, b] = shadeSample(ibuf[p]);
+        // 電球から遠い鯉や龍は、周りの水と同じように仄暗くなる（帯は 4 段目まで）
+        if (lastDist >= 0) [r, g, b] = applyBand([r, g, b], Math.min(4, bandOf(pointBright(lastDist), px, py)));
         // 隣のピクセルがずっと奥（または背景）なら、ここは手前の物体の輪郭
         const dl = px > 0 ? zbuf[p - 1] : Infinity, dr = px < CW - 1 ? zbuf[p + 1] : Infinity;
         const du = py > 0 ? zbuf[p - CW] : Infinity, dd = py < CH - 1 ? zbuf[p + CW] : Infinity;
         if (dl > d + 3 || dr > d + 3 || du > d + 3 || dd > d + 3) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
-      } else if (insideTank(px + 0.5 - hw, py + 0.5 - hh)) {
-        [r, g, b] = BG;
       } else {
-        [r, g, b] = ROOM[(py / CH + BAYER[(px & 3) + ((py & 3) << 2)] / 16 * 0.15 > 0.55) ? 1 : 0];
+        out[p] = bgCache[p];
+        continue;
       }
       out[p] = 0xff000000 | (c255(b) << 16) | (c255(g) << 8) | c255(r);
     }
@@ -1187,8 +1219,8 @@ function rayOrigin(u, v) {
   const { R, Dn } = basis;
   return [CX + R[0] * u + Dn[0] * v, CY + R[1] * u + Dn[1] * v, CZ + R[2] * u + Dn[2] * v];
 }
-// 視線が水槽に入る位置（視線上の距離）。通らなければ null
-function tankEntry(u, v) {
+// 視線が水槽の中を通る区間 [入る位置, 出る位置]（視線上の距離）。通らなければ null
+function tankSpan(u, v) {
   const o = rayOrigin(u, v), F = basis.F, size = [W, H, D];
   let t0 = -1e9, t1 = 1e9;
   for (let ax = 0; ax < 3; ax++) {
@@ -1198,9 +1230,20 @@ function tankEntry(u, v) {
     if (a > t0) t0 = a;
     if (b < t1) t1 = b;
   }
-  return t1 >= t0 ? t0 : null;
+  return t1 >= t0 ? [t0, t1] : null;
 }
-const insideTank = (u, v) => tankEntry(u, v) !== null;
+const tankEntry = (u, v) => { const sp = tankSpan(u, v); return sp ? sp[0] : null; };
+// 視線が水の中で浴びる電球の光の量（0〜1）。光の強さを 1 / (1 + (距離 / K)²) として、
+// 視線の線分 t0〜t1 に沿った積分を式で求め、電球を貫く視線が 1 になるよう割る
+function waterBright(u, v, t0, t1) {
+  const o = rayOrigin(u, v), F = basis.F;
+  const bx = BULB[0] - o[0], by = BULB[1] - o[1], bz = BULB[2] - o[2];
+  const tc = bx * F[0] + by * F[1] + bz * F[2];                 // 電球にいちばん近づく位置
+  const m2 = Math.max(0, bx * bx + by * by + bz * bz - tc * tc);  // そのときの距離の 2 乗
+  const sk = Math.sqrt(GLOW_K * GLOW_K + m2);
+  const integral = GLOW_K * GLOW_K / sk * (Math.atan((t1 - tc) / sk) - Math.atan((t0 - tc) / sk));
+  return clamp(integral / (GLOW_K * Math.PI) * 1.35, 0, 1);
+}
 
 // ============================================================
 //  ループ
