@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>錦鯉ボクセル水槽</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+<style>
+  /* 夜の部屋に置かれた水槽。キャンバスが主役で、文字は脇に小さく控える */
+  :root {
+    --room: #14171c;
+    --room-2: #1c2027;
+    --ink: #d9dccf;
+    --ink-dim: #8c93a0;
+    --line: #2c323b;
+    --koi: #e0452f;
+    --font-pixel: "DotGothic16", "MS Gothic", ui-monospace, monospace;
+    --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--room);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap {
+    min-height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding-inline: 16px;
+    padding-block: 24px;
+  }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100%;
+    cursor: crosshair;
+    touch-action: manipulation;
+  }
+  .panel {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 24px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  h1 {
+    margin: 0;
+    font-family: var(--font-pixel);
+    font-weight: 400;
+    font-size: 22px;
+    letter-spacing: 0.06em;
+    text-wrap: balance;
+  }
+  .spec {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-family: var(--font-pixel);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--room-2);
+    border: 1px solid var(--line);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--ink-dim); }
+  button:focus-visible { outline: 2px solid var(--koi); outline-offset: 2px; }
+  .legend {
+    width: 100%;
+    max-width: 720px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    color: var(--ink-dim);
+    font-size: 12px;
+  }
+  .legend li { display: flex; align-items: center; gap: 6px; }
+  .sw { width: 18px; height: 8px; display: inline-block; image-rendering: pixelated; }
+  .hint { color: var(--ink-dim); font-size: 12px; margin: 0; max-width: 720px; width: 100%; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="tank" aria-label="錦鯉が泳ぐボクセルの水槽"></canvas>
+  <div class="panel">
+    <div class="title">
+      <h1>錦鯉ボクセル水槽</h1>
+      <p class="spec">128 × 72 × 48 voxel ・ 正面平行投影</p>
+    </div>
+    <div class="controls">
+      <button id="feed" type="button">餌をやる</button>
+      <button id="pause" type="button">一時停止</button>
+    </div>
+  </div>
+  <ul class="legend" id="legend"></ul>
+  <p class="hint">水槽をクリックするとその位置に餌が落ちます（奥行きはランダム）。奥にいる鯉ほど青く霞み、上からの光で砂利に影が落ちます。</p>
+</div>
+
+<script>
+"use strict";
+// ============================================================
+//  ボクセル空間  x: 左→右, y: 上→下, z: 手前(0)→奥(D-1)
+// ============================================================
+const W = 128, H = 72, D = 48;
+const WATER_TOP = 6;               // 水面の行
+const N = W * H * D;
+const grid = new Uint32Array(N);   // 0 = 空, それ以外 = (alpha<<24 | rgb)
+const staticGrid = new Uint32Array(N);
+const topY = new Int16Array(W * D); // 各 (x,z) 列で最も上にある不透明ボクセルの y（影の計算用）
+const staticTop = new Int16Array(W * D);
+const floorMin = new Int16Array(W * D);
+const OPAQUE = 200;
+
+// 表示キャンバス（水槽の枠と台を含む）
+const TX = 6, TY = 7;              // 水槽内部の左上
+const CW = W + TX * 2, CH = 96;
+
+const idx = (x, y, z) => x + W * (z + D * y);
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const c255 = v => v < 0 ? 0 : v > 255 ? 255 : v | 0;
+const pack = (r, g, b, a) => ((a << 24) | (c255(r) << 16) | (c255(g) << 8) | c255(b)) >>> 0;
+const mix = (a, b, t) => a + (b - a) * t;
+
+function put(x, y, z, c) {
+  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) return;
+  grid[idx(x, y, z)] = c;
+  if ((c >>> 24) >= OPAQUE) {
+    const k = x + W * z;
+    if (y < topY[k]) topY[k] = y;
+  }
+}
+function putIfEmpty(x, y, z, c) {
+  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) return;
+  if (grid[idx(x, y, z)] === 0) put(x, y, z, c);
+}
+
+// ------------------------------------------------------------
+//  乱数とノイズ
+// ------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash(x, y, z, s) {
+  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(z | 0, 0x9e3779b1) ^ Math.imul(s | 0, 0x85ebca77);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
+function noise3(x, y, z, s) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let fx = x - xi, fy = y - yi, fz = z - zi;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+  const a = mix(hash(xi, yi, zi, s), hash(xi + 1, yi, zi, s), fx);
+  const b = mix(hash(xi, yi + 1, zi, s), hash(xi + 1, yi + 1, zi, s), fx);
+  const c = mix(hash(xi, yi, zi + 1, s), hash(xi + 1, yi, zi + 1, s), fx);
+  const d = mix(hash(xi, yi + 1, zi + 1, s), hash(xi + 1, yi + 1, zi + 1, s), fx);
+  return mix(mix(a, b, fy), mix(c, d, fy), fz);
+}
+
+// ============================================================
+//  静的な地形：砂利・岩・水草の茂み・エアストーン
+// ============================================================
+const PEBBLES = [
+  [200, 182, 146], [170, 146, 108], [140, 122, 98], [218, 208, 184],
+  [112, 102, 90], [182, 156, 118], [84, 78, 70], [196, 170, 128],
+];
+const rockVoxels = [];
+
+function buildStatic() {
+  grid.fill(0);
+  topY.fill(H);
+
+  // 砂利：奥に向かって盛り上がる斜面（正面からでも表面が見える）
+  for (let z = 0; z < D; z++) {
+    for (let x = 0; x < W; x++) {
+      const zf = z / (D - 1);
+      const h = 3.5 + 12 * Math.pow(zf, 1.3)
+        + (noise3(x * 0.07, z * 0.09, 0, 7) - 0.5) * 4
+        + (noise3(x * 0.25, z * 0.25, 1, 8) - 0.5) * 1.2;
+      const sy = Math.round(H - 1 - h);
+      for (let y = sy; y < H; y++) {
+        const cell = hash(Math.floor((x + (z & 1)) / 2), Math.floor((y + (x & 1)) / 2), Math.floor(z / 2), 3);
+        const p = PEBBLES[Math.floor(cell * PEBBLES.length)];
+        const g = hash(x, y, z, 4);
+        const k = g < 0.12 ? 0.62 : 0.82 + g * 0.14;
+        put(x, y, z, pack(p[0] * k, p[1] * k, p[2] * k, 255));
+      }
+    }
+  }
+
+  // 岩
+  const rocks = [
+    { x: 27, z: 37, rx: 10, ry: 8, rz: 7, s: 11 },
+    { x: 101, z: 33, rx: 13, ry: 10, rz: 9, s: 12 },
+    { x: 63, z: 42, rx: 6, ry: 5, rz: 4.5, s: 13 },
+    { x: 84, z: 11, rx: 5, ry: 3.5, rz: 4, s: 14 },
+    { x: 14, z: 8, rx: 3.5, ry: 2.5, rz: 3, s: 15 },
+  ];
+  for (const r of rocks) {
+    const surf = topY[Math.round(r.x) + W * Math.round(r.z)];
+    const cy = surf - r.ry * 0.55;
+    for (let y = Math.floor(cy - r.ry - 2); y <= Math.ceil(cy + r.ry + 2); y++)
+      for (let z = Math.floor(r.z - r.rz - 2); z <= Math.ceil(r.z + r.rz + 2); z++)
+        for (let x = Math.floor(r.x - r.rx - 2); x <= Math.ceil(r.x + r.rx + 2); x++) {
+          if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) continue;
+          const dx = (x + 0.5 - r.x) / r.rx, dy = (y + 0.5 - cy) / r.ry, dz = (z + 0.5 - r.z) / r.rz;
+          const rr = Math.sqrt(dx * dx + dy * dy * (dy < 0 ? 1 : 0.6) + dz * dz);
+          const thr = 1 + (noise3(x * 0.22, y * 0.22, z * 0.22, r.s) - 0.5) * 0.6;
+          if (rr < thr) {
+            const n = noise3(x * 0.4, y * 0.4, z * 0.4, r.s + 50);
+            const strata = (Math.floor(y * 0.6 + n * 2.5) % 3 === 0) ? 0.86 : 1;
+            const k = (0.82 + n * 0.3) * strata;
+            put(x, y, z, pack(118 * k, 113 * k, 104 * k, 255));
+            rockVoxels.push(x, y, z);
+          }
+        }
+  }
+  // 岩の上面に苔
+  for (let i = 0; i < rockVoxels.length; i += 3) {
+    const x = rockVoxels[i], y = rockVoxels[i + 1], z = rockVoxels[i + 2];
+    if (y > 0 && grid[idx(x, y - 1, z)] === 0 && noise3(x * 0.3, y * 0.3, z * 0.3, 77) > 0.42) {
+      const g = hash(x, y, z, 78);
+      put(x, y, z, g < 0.5 ? pack(74, 112, 48, 255) : pack(98, 138, 58, 255));
+    }
+  }
+
+  // 水草の茂み（アヌビアス風の葉）
+  const rng = mulberry32(2024);
+  const bushes = [[40, 33], [115, 24], [20, 20], [76, 38], [52, 14]];
+  for (const [bx, bz] of bushes) {
+    const base = topY[bx + W * bz];
+    const leaves = 7 + Math.floor(rng() * 5);
+    for (let i = 0; i < leaves; i++) {
+      const yaw = rng() * Math.PI * 2;
+      const tilt = 0.25 + rng() * 0.75;
+      const len = 2.6 + rng() * 1.6;
+      leaf(bx + (rng() - 0.5) * 2, base - rng() * 1.5, bz + (rng() - 0.5) * 2, len, 1.5 + rng() * 0.5, 0.7, yaw, tilt, rng());
+    }
+  }
+
+  // エアストーン（奥の左隅）
+  const ax = 9, az = D - 6, ay = topY[ax + W * az];
+  for (let dy = 0; dy < 2; dy++) for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++)
+    put(ax + dx, ay - 1 - dy, az + dz, pack(150, 150, 156, 255));
+  airStone.x = ax + 1.5; airStone.y = ay - 3; airStone.z = az + 1.5;
+
+  staticGrid.set(grid);
+  staticTop.set(topY);
+
+  // 魚がぶつからないよう、近傍の最も高い地形を求めておく
+  for (let z = 0; z < D; z++) for (let x = 0; x < W; x++) {
+    let m = H;
+    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
+      const xx = clamp(x + dx, 0, W - 1), zz = clamp(z + dz, 0, D - 1);
+      m = Math.min(m, staticTop[xx + W * zz]);
+    }
+    floorMin[x + W * z] = m;
+  }
+}
+
+function leaf(cx, cy, cz, a, c, b, yaw, tilt, shade) {
+  const ct = Math.cos(tilt), st = Math.sin(tilt), cyw = Math.cos(yaw), syw = Math.sin(yaw);
+  const dx = ct * cyw, dy = -st, dz = ct * syw;     // 葉の向き
+  const wx = -syw, wz = cyw;                         // 葉の幅方向
+  const nx = dy * wz, ny = dz * wx - dx * wz, nz = -dy * wx; // 法線
+  const ox = cx + dx * a, oy = cy + dy * a, oz = cz + dz * a;
+  const R = a + 1;
+  const base = 0.8 + shade * 0.3;
+  for (let y = Math.floor(oy - R); y <= Math.ceil(oy + R); y++)
+    for (let z = Math.floor(oz - R); z <= Math.ceil(oz + R); z++)
+      for (let x = Math.floor(ox - R); x <= Math.ceil(ox + R); x++) {
+        const px = x + 0.5 - ox, py = y + 0.5 - oy, pz = z + 0.5 - oz;
+        const pa = px * dx + py * dy + pz * dz;
+        const pw = px * wx + pz * wz;
+        const pn = px * nx + py * ny + pz * nz;
+        if ((pa / a) ** 2 + (pw / c) ** 2 + (pn / b) ** 2 < 1) {
+          const vein = Math.abs(pw) < 0.45;
+          const k = base * (vein ? 1.25 : 1);
+          putIfEmpty(x, y, z, pack(36 * k, 92 * k, 42 * k, 255));
+        }
+      }
+}
+
+// ============================================================
+//  動的なもの：水草（バリスネリア）・泡・餌
+// ============================================================
+const blades = [];
+function buildPlants() {
+  const rng = mulberry32(7);
+  const clumps = [];
+  for (let x = 4; x < W - 4; x += 13 + Math.floor(rng() * 10)) clumps.push([x, D - 3 - Math.floor(rng() * 5), 3 + Math.floor(rng() * 3)]);
+  clumps.push([3, 24, 4], [124, 18, 4], [5, 32, 3], [122, 40, 3], [90, 30, 3], [44, 40, 3]);
+  for (const [cx, cz, n] of clumps) {
+    for (let i = 0; i < n; i++) {
+      const x = clamp(cx + (rng() - 0.5) * 4, 0, W - 1), z = clamp(cz + (rng() - 0.5) * 3, 0, D - 1);
+      const by = staticTop[Math.floor(x) + W * Math.floor(z)] + 1;
+      const maxH = by - WATER_TOP - 3;
+      blades.push({
+        x, z, by,
+        h: maxH * (0.45 + rng() * 0.55),
+        ph: rng() * Math.PI * 2,
+        lean: (rng() - 0.5) * 0.25,
+        tw: rng() * Math.PI,
+        amp: 1.5 + rng() * 2.5,
+        tone: rng(),
+      });
+    }
+  }
+}
+function drawPlants(t) {
+  for (const b of blades) {
+    const r0 = mix(34, 52, b.tone), g0 = mix(88, 104, b.tone), b0 = mix(36, 30, b.tone);
+    for (let h = 0; h < b.h; h += 0.6) {
+      const k = h / b.h;
+      const sway = b.amp * k * k * Math.sin(t * 0.7 + b.ph + h * 0.06);
+      const px = b.x + b.lean * h + sway;
+      const pz = b.z + 0.8 * k * k * Math.cos(t * 0.5 + b.ph);
+      const py = Math.floor(b.by - h);
+      const tw = b.tw + h * 0.07 + Math.sin(t * 0.4 + b.ph) * 0.3;
+      const wdt = k < 0.85 ? 2 : 1;
+      const col = pack(mix(r0, 150, k * 0.55), mix(g0, 190, k * 0.5), mix(b0, 60, k * 0.5), 255);
+      for (let w = 0; w < wdt; w++)
+        putIfEmpty(Math.floor(px + Math.cos(tw) * w * 0.95), py, Math.floor(pz + Math.sin(tw) * w * 0.95), col);
+    }
+  }
+}
+
+const airStone = { x: 0, y: 0, z: 0, acc: 0 };
+const bubbles = [];
+function updateBubbles(dt, t) {
+  airStone.acc += dt;
+  while (airStone.acc > 0.09) {
+    airStone.acc -= 0.09;
+    bubbles.push({
+      x: airStone.x + (Math.random() - 0.5) * 2, y: airStone.y, z: airStone.z + (Math.random() - 0.5) * 2,
+      vy: 9 + Math.random() * 8, ph: Math.random() * 6.28, big: Math.random() < 0.25,
+    });
+  }
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    const b = bubbles[i];
+    b.y -= b.vy * dt;
+    b.x += Math.sin(t * 6 + b.ph) * dt * 2;
+    if (b.y < WATER_TOP + 1) bubbles.splice(i, 1);
+  }
+}
+function drawBubbles() {
+  const rim = pack(214, 244, 250, 120), shine = pack(255, 255, 255, 190);
+  for (const b of bubbles) {
+    const x = Math.floor(b.x), y = Math.floor(b.y), z = Math.floor(b.z);
+    if (b.big) {
+      putIfEmpty(x, y, z, shine);
+      putIfEmpty(x + 1, y, z, rim); putIfEmpty(x, y + 1, z, rim); putIfEmpty(x + 1, y + 1, z, rim);
+    } else putIfEmpty(x, y, z, rim);
+  }
+}
+
+const foods = [];
+function dropFood(x) {
+  for (let i = 0; i < 5; i++) {
+    foods.push({
+      x: clamp(x + (Math.random() - 0.5) * 8, 2, W - 3), y: WATER_TOP,
+      z: 4 + Math.random() * (D - 14), float: 1.5 + Math.random() * 2.5, rest: 0,
+    });
+  }
+}
+function updateFood(dt) {
+  for (let i = foods.length - 1; i >= 0; i--) {
+    const f = foods[i];
+    if (f.float > 0) { f.float -= dt; continue; }
+    const fl = staticTop[Math.floor(f.x) + W * Math.floor(f.z)] - 1;
+    if (f.y < fl) f.y = Math.min(fl, f.y + 3.5 * dt);
+    else if ((f.rest += dt) > 12) foods.splice(i, 1);
+  }
+}
+function drawFood() {
+  const c = pack(128, 74, 34, 255);
+  for (const f of foods) put(Math.floor(f.x), Math.floor(f.y), Math.floor(f.z), c);
+}
+
+// ============================================================
+//  錦鯉
+// ============================================================
+const WHITE = [242, 238, 228], RED = [212, 40, 30], BLACK = [30, 28, 32], GOLD = [236, 176, 38];
+const A_BLUE = [88, 118, 146], A_LIGHT = [188, 206, 216], ORANGE = [214, 90, 44], A_HEAD = [214, 220, 212];
+const EYE = pack(26, 22, 20, 255);
+
+const VARIETIES = [
+  { kind: "kohaku", name: "紅白", L: 30, sw: [WHITE, RED] },
+  { kind: "sanke", name: "大正三色", L: 27, sw: [WHITE, RED, BLACK] },
+  { kind: "showa", name: "昭和三色", L: 29, sw: [BLACK, RED, WHITE] },
+  { kind: "tancho", name: "丹頂", L: 25, sw: [WHITE, RED, WHITE] },
+  { kind: "ogon", name: "山吹黄金", L: 28, sw: [GOLD, [250, 214, 110]] },
+  { kind: "asagi", name: "浅黄", L: 26, sw: [A_BLUE, A_LIGHT, ORANGE] },
+];
+
+// 胴の太さの輪郭（t=0 が鼻先、t=0.8 が尾柄）
+function prof(t) {
+  if (t < 0 || t > 0.8) return 0;
+  if (t < 0.3) { const q = (0.3 - t) / 0.32; return Math.sqrt(1 - q * q); }
+  return 1 - 0.8 * Math.pow((t - 0.3) / 0.5, 1.5);
+}
+
+function bodyColor(F, t, l, v, rw, rh) {
+  const X = t * F.L, s = F.seed;
+  const vn = v / rh, ln = l / rw;
+  const ex = (t - 0.095) * F.L, ey = v - rh * 0.18;
+  if (ex * ex + ey * ey < 0.85 && Math.abs(ln) > 0.45) return EYE;
+
+  const n1 = noise3(X * 0.2, l * 0.32, v * 0.32, s);
+  let c;
+  switch (F.kind) {
+    case "kohaku":
+      c = (n1 + (t < 0.22 ? 0.12 : 0) > 0.44 && vn > -0.4 && t < 0.74) ? RED : WHITE;
+      break;
+    case "sanke": {
+      c = (n1 > 0.47 && vn > -0.35 && t < 0.74) ? RED : WHITE;
+      const n2 = noise3(X * 0.45, l * 0.6, v * 0.6, s + 5);
+      if (t > 0.2 && vn > -0.25 && n2 > 0.66) c = BLACK;
+      break;
+    }
+    case "showa": {
+      const n3 = noise3(X * 0.16, l * 0.25, v * 0.25, s + 9);
+      c = (n3 > 0.47 || vn < -0.75) ? BLACK : WHITE;
+      if (n1 > 0.56 && vn > -0.45 && t < 0.74) c = RED;
+      if (t < 0.18 && vn > 0 && n3 > 0.35) c = BLACK;
+      break;
+    }
+    case "tancho": {
+      const hx = (t - 0.11) * F.L;
+      c = (hx * hx / 6.8 + l * l / 4.8 < 1 && vn > 0.3) ? RED : WHITE;
+      break;
+    }
+    case "ogon":
+      c = GOLD;
+      break;
+    case "asagi": {
+      if (vn < -0.15 || (t < 0.25 && vn < 0.15 && Math.abs(ln) > 0.5)) c = ORANGE;
+      else if (t < 0.2) c = A_HEAD;
+      else {
+        const rv = v / 1.3 + 20, row = Math.floor(rv);
+        const fa = (X / 1.7 + (row & 1) * 0.5) % 1, fb = rv - row;
+        c = (fa < 0.3 || fb < 0.25) ? A_LIGHT : A_BLUE;
+      }
+      break;
+    }
+  }
+  // 鱗の列
+  const row = Math.floor(v / 1.2 + 50);
+  const sc = (X / 1.6 + (row & 1) * 0.5) % 1;
+  let m = sc < 0.2 ? 0.9 : 1;
+  if (F.kind === "ogon" && sc > 0.5 && sc < 0.72) m = 1.14;
+  let r = c[0] * m, g = c[1] * m, b = c[2] * m;
+  if (t < 0.04) { r = mix(r, 228, 0.4); g = mix(g, 176, 0.4); b = mix(b, 158, 0.4); }
+  return pack(r, g, b, 255);
+}
+
+// 鰭の色。u: 付け根(0)→先端(1)
+function finColor(F, kind, u, w) {
+  let c = [236, 238, 230], a = 215;
+  switch (F.kind) {
+    case "showa": if ((kind === "pec" || kind === "pel") && u < 0.5) c = BLACK; break;
+    case "sanke": if (kind === "tail" && Math.floor(w * 7) % 3 === 0 && u < 0.6) c = BLACK; break;
+    case "ogon": c = [248, 204, 86]; break;
+    case "asagi": if (u < 0.5 && kind !== "tail") c = ORANGE; else c = [222, 214, 198]; break;
+  }
+  const ray = Math.floor(w * 9) & 1 ? 0.93 : 1;
+  if (u > 0.82) a = 165;
+  return pack(c[0] * ray, c[1] * ray, c[2] * ray, a);
+}
+
+function pairedFin(F, t, l, v, t0, aFrac, qFrac, ang, kind) {
+  const L = F.L;
+  const a = (t - t0) * L, aMax = aFrac * L;
+  if (a < -0.6 || a > aMax) return 0;
+  const p0 = prof(t0);
+  const b = Math.abs(l) - F.Rw * p0 * 0.7, c = v + F.Rh * p0 * 0.45;
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const dist = b * sa + c * ca;
+  if (Math.abs(dist) > 0.8) return 0;
+  const q = b * ca - c * sa, qMax = qFrac * L;
+  if (q < -0.3) return 0;
+  const ea = (a - aMax * 0.5) / (aMax * 0.5 + 0.6), eq = (q - qMax * 0.5) / (qMax * 0.5);
+  if (ea * ea + eq * eq > 1) return 0;
+  return finColor(F, kind, q / qMax, a / aMax);
+}
+
+function fishVoxel(F, t, l, v, pfa) {
+  const Rh = F.Rh, Rw = F.Rw;
+  const p = prof(t);
+  if (p > 0) {
+    const rw = Rw * p, rhT = Rh * p, rv = v >= 0 ? rhT : rhT * 0.85;
+    if ((l / rw) ** 2 + (v / rv) ** 2 <= 1) return bodyColor(F, t, l, v, rw, rhT);
+  }
+  const al = Math.abs(l);
+  // 背鰭
+  if (t > 0.27 && t < 0.62 && al < 0.75) {
+    const base = Rh * p - 0.6, u = (t - 0.27) / 0.35;
+    const fh = Rh * 0.7 * Math.min(1, u / 0.08) * (1 - 0.55 * u);
+    if (v > base && v < base + fh) return finColor(F, "dorsal", (v - base) / fh, u);
+  }
+  // 尻鰭
+  if (t > 0.6 && t < 0.72 && al < 0.75) {
+    const base = -Rh * p * 0.85 + 0.6, u = (t - 0.6) / 0.12;
+    const fh = Rh * 0.55 * (1 - u) * Math.min(1, u / 0.15);
+    if (v < base && v > base - fh) return finColor(F, "anal", (base - v) / fh, u);
+  }
+  // 尾鰭（二股）
+  if (t > 0.74 && t <= 1 && al < 0.8) {
+    const u = (t - 0.74) / 0.26, hh = Rh * (0.22 + 0.95 * u), av = Math.abs(v);
+    if (av < hh && t < 1 - 0.1 * (1 - av / hh)) return finColor(F, "tail", u, av / hh);
+  }
+  // 胸鰭・腹鰭
+  return pairedFin(F, t, l, v, 0.24, 0.13, 0.15, pfa, "pec")
+      || pairedFin(F, t, l, v, 0.5, 0.08, 0.08, pfa + 0.5, "pel");
+}
+
+const BEND_N = 64;
+const bendTab = new Float32Array(BEND_N + 1);
+
+function drawFish(F, time) {
+  const L = F.L, half = L / 2;
+  const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
+  const fx = cp * cyw, fy = -sp, fz = cp * syw;   // 前
+  const rx = -syw, rz = cyw;                        // 右（ヨーが増える向き）
+  const ux = -sp * cyw, uy = -cp, uz = -sp * syw;   // 背中側
+
+  // 体のしなり：旋回による弧 + 尾へ向かう波
+  let maxOff = 0;
+  for (let k = 0; k <= BEND_N; k++) {
+    const t = k / BEND_N, s = t * L;
+    const o = F.kappa * s * s / 2 + F.amp * t * t * Math.sin(5.3 * t - F.phase);
+    bendTab[k] = o;
+    if (Math.abs(o) > maxOff) maxOff = Math.abs(o);
+  }
+  const ext = F.Rh * 1.9 + 2 + maxOff;
+  const nx = F.x + fx * half, ny = F.y + fy * half, nz = F.z + fz * half;
+  const tx = F.x - fx * half, ty = F.y - fy * half, tz = F.z - fz * half;
+  const x0 = Math.max(0, Math.floor(Math.min(nx, tx) - ext)), x1 = Math.min(W - 1, Math.ceil(Math.max(nx, tx) + ext));
+  const y0 = Math.max(0, Math.floor(Math.min(ny, ty) - ext)), y1 = Math.min(H - 1, Math.ceil(Math.max(ny, ty) + ext));
+  const z0 = Math.max(0, Math.floor(Math.min(nz, tz) - ext)), z1 = Math.min(D - 1, Math.ceil(Math.max(nz, tz) + ext));
+  const pfa = 0.45 + 0.3 * Math.sin(time * 2.2 + F.seed);
+
+  for (let y = y0; y <= y1; y++) {
+    const dy = y + 0.5 - F.y;
+    for (let z = z0; z <= z1; z++) {
+      const dz = z + 0.5 - F.z;
+      for (let x = x0; x <= x1; x++) {
+        const dx = x + 0.5 - F.x;
+        const s = dx * fx + dy * fy + dz * fz;
+        const t = 0.5 - s / L;
+        if (t < -0.02 || t > 1.02) continue;
+        const k = clamp(Math.round(t * BEND_N), 0, BEND_N);
+        const l = dx * rx + dz * rz - bendTab[k];
+        const v = dx * ux + dy * uy + dz * uz;
+        const c = fishVoxel(F, t, l, v, pfa);
+        if (c) put(x, y, z, c);
+      }
+    }
+  }
+}
+
+const fish = [];
+function spawnFish() {
+  const rng = mulberry32(99);
+  VARIETIES.forEach((V, i) => {
+    fish.push({
+      kind: V.kind, name: V.name, L: V.L, Rh: V.L * 0.155, Rw: V.L * 0.135,
+      seed: 1000 + i * 37,
+      x: 20 + (i % 3) * 40 + rng() * 10,
+      y: 16 + Math.floor(i / 3) * 14 + rng() * 6,
+      z: 14 + rng() * 18,
+      yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
+      speed: 4, kappa: 0, amp: 1.2, phase: rng() * 6,
+      ty: 25, yTimer: 0,
+    });
+  });
+}
+
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+const floorAt = (x, z) => floorMin[clamp(Math.floor(x), 0, W - 1) + W * clamp(Math.floor(z), 0, D - 1)];
+
+function updateFish(F, dt, time) {
+  const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
+  const fx = cp * cyw, fy = -sp, fz = cp * syw;
+  let dx = fx, dy = fy * 0.5, dz = fz;
+
+  // ゆったりした寄り道
+  const wa = F.yaw + (noise3(time * 0.12, F.seed, 0, 99) - 0.5) * 3.2;
+  dx += Math.cos(wa) * 0.7; dz += Math.sin(wa) * 0.7;
+
+  // 泳ぐ深さを時々変える
+  F.yTimer -= dt;
+  if (F.yTimer < 0) {
+    const lo = WATER_TOP + F.Rh + 5, hi = floorAt(F.x, F.z) - F.Rh * 2 - 4;
+    F.ty = lo + Math.random() * Math.max(1, hi - lo);
+    F.yTimer = 6 + Math.random() * 9;
+  }
+  dy += clamp((F.ty - F.y) * 0.04, -0.4, 0.4);
+
+  // 餌
+  let target = null, best = 1e9;
+  for (const f of foods) {
+    const d = Math.hypot(f.x - F.x, f.y - F.y, f.z - F.z);
+    if (d < best) { best = d; target = f; }
+  }
+  const half = F.L / 2;
+  const mx = F.x + fx * half, my = F.y + fy * half, mz = F.z + fz * half;
+  if (target) {
+    const vx = target.x - mx, vy = target.y - my, vz = target.z - mz, n = Math.hypot(vx, vy, vz) || 1;
+    dx += vx / n * 2.5; dy += vy / n * 2; dz += vz / n * 2.5;
+    if (n < 2.4) foods.splice(foods.indexOf(target), 1);
+  }
+
+  // 壁・水面・底を先読みして避ける
+  const look = half + 9;
+  const px = F.x + fx * look, py = F.y + fy * look, pz = F.z + fz * look;
+  const MX = 7, MZ = 3;
+  if (px < MX) dx += (MX - px) * 0.4;
+  if (px > W - MX) dx -= (px - (W - MX)) * 0.4;
+  if (pz < MZ) dz += (MZ - pz) * 0.35;
+  if (pz > D - MZ) dz -= (pz - (D - MZ)) * 0.35;
+  const ceil = WATER_TOP + (target ? 1 : F.Rh + 3);
+  if (py < ceil) dy += (ceil - py) * 0.2;
+  const fl = Math.min(floorAt(px, pz), floorAt(F.x, F.z)) - F.Rh * 1.6 - 3;
+  if (py > fl) dy -= (py - fl) * 0.25;
+
+  // 他の鯉と距離をとる
+  for (const o of fish) {
+    if (o === F) continue;
+    const ex = F.x - o.x, ey = F.y - o.y, ez = F.z - o.z, d = Math.hypot(ex, ey, ez), R = (F.L + o.L) * 0.5;
+    if (d < R && d > 0.01) {
+      const w = (1 - d / R) * 1.6;
+      dx += ex / d * w; dy += ey / d * w * 0.8; dz += ez / d * w;
+    }
+  }
+
+  // 旋回（向きの変化に慣性を持たせる）
+  const diff = wrapAngle(Math.atan2(dz, dx) - F.yaw);
+  const tr = clamp(diff * 1.2, -0.95, 0.95);
+  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * 2.5);
+  F.yaw = wrapAngle(F.yaw + F.yawRate * dt);
+  const wp = clamp(Math.atan2(-dy, Math.hypot(dx, dz)), -0.45, 0.45);
+  F.pitch += (wp - F.pitch) * Math.min(1, dt * 1.2);
+
+  const cruise = 3 + noise3(time * 0.2, F.seed, 5, 98) * 3.5;
+  F.speed += ((target ? 8 : cruise) - F.speed) * Math.min(1, dt * 0.8);
+
+  const ncy = Math.cos(F.yaw), nsy = Math.sin(F.yaw), ncp = Math.cos(F.pitch), nsp = Math.sin(F.pitch);
+  F.x += ncp * ncy * F.speed * dt;
+  F.y += -nsp * F.speed * dt;
+  F.z += ncp * nsy * F.speed * dt;
+  // 鼻先と尾がガラスを突き抜けないよう、体の向きに応じて中心を制限
+  const hx = Math.abs(ncp * ncy) * half + 2, hz = Math.abs(ncp * nsy) * half + 1.5;
+  F.x = clamp(F.x, hx + 1, W - 1 - hx);
+  F.z = clamp(F.z, hz, D - hz);
+  F.y = clamp(F.y, WATER_TOP + F.Rh * 0.8, floorAt(F.x, F.z) - F.Rh - 1);
+
+  F.kappa = clamp(F.yawRate / Math.max(F.speed, 2.5), -0.022, 0.022);
+  F.amp = 0.8 + F.speed * 0.15;
+  F.phase += dt * (2.4 + F.speed * 0.6);
+}
+
+// ============================================================
+//  投影：正面からの平行投影（z=0 から奥へ走査）
+// ============================================================
+const canvas = document.getElementById("tank");
+canvas.width = CW; canvas.height = CH;
+const ctx = canvas.getContext("2d");
+const img = ctx.createImageData(CW, CH);
+const out = new Uint32Array(img.data.buffer);
+const zb = new Int16Array(W * H);
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const QSTEP = 7;
+const WATER_HI = [58, 152, 160], WATER_LO = [10, 48, 64], AIR = [26, 36, 44];
+const fogC = new Float32Array(3);
+
+function fog(x, y, time) {
+  if (y < WATER_TOP) { fogC[0] = AIR[0]; fogC[1] = AIR[1]; fogC[2] = AIR[2]; return; }
+  const fy = (y - WATER_TOP) / (H - WATER_TOP);
+  const k = Math.pow(fy, 0.9);
+  let r = mix(WATER_HI[0], WATER_LO[0], k), g = mix(WATER_HI[1], WATER_LO[1], k), b = mix(WATER_HI[2], WATER_LO[2], k);
+  const u = x + y * 0.5;
+  const s = Math.sin(u * 0.11 + time * 0.2) + 0.6 * Math.sin(u * 0.23 - time * 0.13);
+  if (s > 0.9) { const a = (s - 0.9) * 22 * (1 - fy); r += a * 0.8; g += a; b += a * 0.9; }
+  fogC[0] = r; fogC[1] = g; fogC[2] = b;
+}
+function caustic(x, z, t) {
+  const c = Math.sin(x * 0.35 + t * 1.1 + Math.sin(z * 0.31 - t * 0.6) * 2)
+          * Math.sin(z * 0.42 - t * 0.9 + Math.sin(x * 0.27 + t * 0.5) * 2);
+  return c > 0.5 ? (c - 0.5) * 2 : 0;
+}
+
+function render(time) {
+  // 1) 深度バッファ
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let i = x + W * D * y, z = 0;
+      for (; z < D; z++, i += W) if (grid[i]) break;
+      zb[x + W * y] = z;
+    }
+  }
+  // 2) 合成と陰影
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const p = x + W * y;
+      fog(x, y, time);
+      const fr = fogC[0], fgc = fogC[1], fbc = fogC[2];
+      let T = 1, R = 0, G = 0, B = 0, first = true;
+      let z = zb[p], i = x + W * (z + D * y);
+      for (; z < D; z++, i += W) {
+        const v = grid[i];
+        if (!v) continue;
+        const a = (v >>> 24) / 255;
+        let cr = (v >> 16) & 255, cg = (v >> 8) & 255, cb = v & 255;
+
+        const shadow = topY[x + W * z] < y;
+        const above = y > 0 ? grid[i - W * D] : 0;
+        const exposed = (above >>> 24) < OPAQUE;
+        let lt = shadow ? 0.68 : 1.0;
+        if (exposed && !shadow) lt += 0.1 + caustic(x, z, time) * 0.35;
+        if (first) {
+          first = false;
+          const zl = x > 0 ? zb[p - 1] : D, zr = x < W - 1 ? zb[p + 1] : D;
+          const zu = y > 0 ? zb[p - W] : D, zd = y < H - 1 ? zb[p + W] : D;
+          lt += 0.06 * clamp(zl - zr, -2, 2) + 0.07 * clamp(zu - zd, -2, 2);
+          if (zl > z + 3 || zr > z + 3 || zu > z + 3 || zd > z + 3) lt *= 0.8;
+        }
+        const fd = 0.03 + 0.55 * z / D;
+        cr = cr * lt * (1 - fd) + fr * fd;
+        cg = cg * lt * (1 - fd) + fgc * fd;
+        cb = cb * lt * (1 - fd) + fbc * fd;
+        R += T * a * cr; G += T * a * cg; B += T * a * cb;
+        T *= 1 - a;
+        if (T < 0.03) break;
+      }
+      // 奥のガラス（何も無ければ水の色）
+      R += T * fr * 0.9; G += T * fgc * 0.9; B += T * fbc * 0.9;
+
+      // 水面のきらめき
+      if (y === WATER_TOP || y === WATER_TOP + 1) {
+        const k = (y === WATER_TOP ? 0.42 : 0.14) + 0.12 * Math.sin(x * 0.5 + time * 2.1) * Math.sin(x * 0.13 - time);
+        R = mix(R, 196, k); G = mix(G, 240, k); B = mix(B, 238, k);
+      }
+      // 前面ガラスの映り込み
+      const gl = (x + y + 30) % 96;
+      if (gl < 3 || gl === 6) { R *= 1.1; G *= 1.1; B *= 1.12; }
+
+      const dth = (BAYER[(x & 3) + ((y & 3) << 2)] / 16 - 0.5) * QSTEP;
+      R = Math.round((R + dth) / QSTEP) * QSTEP;
+      G = Math.round((G + dth) / QSTEP) * QSTEP;
+      B = Math.round((B + dth) / QSTEP) * QSTEP;
+      out[(y + TY) * CW + x + TX] = 0xff000000 | (c255(B) << 16) | (c255(G) << 8) | c255(R);
+    }
+  }
+}
+
+// 枠・照明フード・台（一度だけ描く）
+function drawFrame() {
+  const px = (x, y, c) => { out[y * CW + x] = 0xff000000 | (c[2] << 16) | (c[1] << 8) | c[0]; };
+  for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
+    const d = BAYER[(x & 3) + ((y & 3) << 2)] / 16;
+    const k = y / CH;
+    px(x, y, k + d * 0.15 > 0.55 ? [24, 27, 33] : [20, 23, 28]);
+  }
+  // 照明フード
+  for (let x = 2; x < CW - 2; x++) {
+    px(x, 0, [62, 66, 74]);
+    for (let y = 1; y < 4; y++) px(x, y, [38, 41, 47]);
+    px(x, 4, x > 6 && x < CW - 7 ? [246, 232, 178] : [38, 41, 47]);
+  }
+  // 枠
+  for (let x = 4; x < CW - 4; x++) { px(x, 5, [58, 62, 68]); px(x, 6, [16, 17, 20]); px(x, 79, [16, 17, 20]); px(x, 80, [40, 43, 48]); }
+  for (let y = 5; y < 81; y++) { px(4, y, [16, 17, 20]); px(5, y, [34, 37, 42]); px(CW - 5, y, [16, 17, 20]); px(CW - 6, y, [34, 37, 42]); }
+  // 木の台
+  for (let y = 81; y < CH; y++) for (let x = 2; x < CW - 2; x++) {
+    const grain = noise3(x * 0.08, y * 0.9, 0, 5);
+    let c = grain > 0.55 ? [96, 62, 38] : [84, 54, 33];
+    if (y === 81) c = [124, 84, 52];
+    if (y === 82) c = [64, 40, 24];
+    if (x === CW / 2 || x === 2 || x === CW - 3 || y === CH - 1) c = [52, 32, 20];
+    if ((x === CW / 2 - 3 || x === CW / 2 + 2) && y >= 86 && y <= 88) c = [214, 180, 96];
+    px(x, y, c);
+  }
+}
+
+// ============================================================
+//  ループ
+// ============================================================
+function buildFrame(time) {
+  grid.set(staticGrid);
+  topY.set(staticTop);
+  drawPlants(time);
+  drawFood();
+  for (const F of fish) drawFish(F, time);
+  drawBubbles();
+}
+function step(dt, time) {
+  for (const F of fish) updateFish(F, dt, time);
+  updateBubbles(dt, time);
+  updateFood(dt);
+}
+
+buildStatic();
+buildPlants();
+spawnFish();
+drawFrame();
+
+let time = 0, last = performance.now(), paused = false;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) {
+    time += dt;
+    step(dt, time);
+  }
+  buildFrame(time);
+  render(time);
+  ctx.putImageData(img, 0, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// 画面サイズに合わせて整数倍で拡大
+function fit() {
+  const availW = Math.min(window.innerWidth - 32, 1400);
+  const availH = window.innerHeight - 190;
+  const s = Math.max(1, Math.floor(Math.min(availW / CW, availH / CH)));
+  canvas.style.width = CW * s + "px";
+  canvas.style.height = CH * s + "px";
+}
+window.addEventListener("resize", fit);
+fit();
+
+canvas.addEventListener("click", e => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * CW - TX;
+  if (x >= 0 && x < W) dropFood(x);
+});
+document.getElementById("feed").addEventListener("click", () => dropFood(10 + Math.random() * (W - 20)));
+const pauseBtn = document.getElementById("pause");
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "再開" : "一時停止";
+});
+if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  paused = true;
+  pauseBtn.textContent = "再開";
+}
+
+// 品種の凡例
+const legend = document.getElementById("legend");
+for (const V of VARIETIES) {
+  const li = document.createElement("li");
+  const sw = document.createElement("span");
+  sw.className = "sw";
+  const n = V.sw.length;
+  sw.style.background = "linear-gradient(90deg," + V.sw.map((c, i) =>
+    `rgb(${c}) ${i / n * 100}% ${(i + 1) / n * 100}%`).join(",") + ")";
+  li.append(sw, V.name);
+  legend.append(li);
+}
+</script>
+</body>
+</html>
