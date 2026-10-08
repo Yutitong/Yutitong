@@ -1105,7 +1105,7 @@ function drawFrameEdges() {
 // ------------------------------------------------------------
 //  水の明るさ：電球から離れるほど仄暗い。明るさは 5 段の帯に分け、帯の境目はドットの市松模様でなじませる
 // ------------------------------------------------------------
-const GLOW_K = 32;                                  // 光の届きやすさ [voxel]（大きいほど遠くまで明るい）
+const GLOW_K = 48;                                  // 光の届きやすさ [voxel]（大きいほど遠くまで明るい）
 const BAND_K = [0.36, 0.5, 0.65, 0.82, 1.0];        // 帯ごとの明るさ（いちばん明るい帯がもとの山吹色）
 const BAND_HOT = [255, 222, 112];                   // 電球のすぐそばだけ、ひときわ明るい色
 const DARK_WATER = [44, 34, 30];                    // 暗い帯ほどこの色に寄る（黄色が濁った茶色へ沈む）
@@ -1123,23 +1123,37 @@ function applyBand(rgb, band) {
 const pointBright = dist => GLOW_K / Math.sqrt(GLOW_K * GLOW_K + dist * dist);
 let lastDist = 0;   // shadeSample が求めた電球までの距離（帯の計算に使う）
 const WARM = [255, 222, 150];
+const GLINT = [255, 250, 236];   // 照り返しのツヤ
+const GLINT_COS = 0.965;         // 「電球の光が目に向かって照り返す向き」とのずれがこの範囲（約 15°）ならツヤ
+let lastGlint = false;           // shadeSample がツヤを付けたか（ツヤは遠くても暗くしない）
 function shadeSample(i) {
   const v = sC[i];
   let r = (v >> 16) & 255, g = (v >> 8) & 255, bl = v & 255;
+  lastGlint = false;
   if (!sL[i]) { lastDist = -1; return [r, g, bl]; }   // 電球そのもの・枠・餌は光の影響を受けない
   const dx = BULB[0] - sX[i], dy = BULB[1] - sY[i], dz = BULB[2] - sZ[i], dist = Math.hypot(dx, dy, dz) || 1;
   // 電球の方を向いている面ほど明るい（3 段階）
   let level = 2;
   const nx = sNx[i], ny = sNy[i], nz = sNz[i], nn = Math.hypot(nx, ny, nz);
+  let glint = false;
   if (nn > 0) {
     const lam = (nx * dx + ny * dy + nz * dz) / (nn * dist);
     level = lam > 0.42 ? 3 : lam > -0.2 ? 2 : 1;
+    // ツヤ：電球への向きと目への向き（平行投影なので画面の手前向き）のちょうど中間を面が向いているところ
+    if (lam > 0) {
+      const F = basis.F;
+      let hx = dx / dist - F[0], hy = dy / dist - F[1], hz = dz / dist - F[2];
+      const hn = Math.hypot(hx, hy, hz) || 1;
+      glint = (nx * hx + ny * hy + nz * hz) / (nn * hn) > GLINT_COS;
+    }
   }
   // 電球との間に別の物体があれば影
   const k = smIndex(-dx, -dy, -dz, dist);
-  if (smOwner[k] && smOwner[k] !== sO[i] && smDist[k] < dist - 1.5 - dist * 0.02) level = 1;
+  if (smOwner[k] && smOwner[k] !== sO[i] && smDist[k] < dist - 1.5 - dist * 0.02) { level = 1; glint = false; }
   lastDist = dist;
-  if (level === 3) { r = mix(r, WARM[0], 0.32); g = mix(g, WARM[1], 0.32); bl = mix(bl, WARM[2], 0.32); }
+  if (glint) { lastGlint = true; return [mix(r, GLINT[0], 0.78), mix(g, GLINT[1], 0.78), mix(bl, GLINT[2], 0.78)]; }
+  // 電球に向いた面は、もとの色を少し明るくしてから電球色に寄せる
+  if (level === 3) { r = mix(r * 1.12, WARM[0], 0.42); g = mix(g * 1.12, WARM[1], 0.42); bl = mix(bl * 1.12, WARM[2], 0.42); }
   else if (level === 2) { r = mix(r, WARM[0], 0.07); g = mix(g, WARM[1], 0.07); bl = mix(bl, WARM[2], 0.07); }
   else { r = r * 0.56 + 6; g = g * 0.56 + 8; bl = bl * 0.66 + 26; }  // 影は少し青みに寄せる
   return [r, g, bl];
@@ -1200,7 +1214,7 @@ function render() {
       if (d < Infinity) {
         [r, g, b] = shadeSample(ibuf[p]);
         // 電球から遠い鯉や龍は、周りの水と同じように仄暗くなる（帯は 4 段目まで）
-        if (lastDist >= 0) [r, g, b] = applyBand([r, g, b], Math.min(4, bandOf(pointBright(lastDist), px, py)));
+        if (lastDist >= 0 && !lastGlint) [r, g, b] = applyBand([r, g, b], Math.min(4, bandOf(pointBright(lastDist), px, py)));
         // 隣のピクセルがずっと奥（または背景）なら、ここは手前の物体の輪郭
         const dl = px > 0 ? zbuf[p - 1] : Infinity, dr = px < CW - 1 ? zbuf[p + 1] : Infinity;
         const du = py > 0 ? zbuf[p - CW] : Infinity, dd = py < CH - 1 ? zbuf[p + CW] : Infinity;
@@ -1233,16 +1247,12 @@ function tankSpan(u, v) {
   return t1 >= t0 ? [t0, t1] : null;
 }
 const tankEntry = (u, v) => { const sp = tankSpan(u, v); return sp ? sp[0] : null; };
-// 視線が水の中で浴びる電球の光の量（0〜1）。光の強さを 1 / (1 + (距離 / K)²) として、
-// 視線の線分 t0〜t1 に沿った積分を式で求め、電球を貫く視線が 1 になるよう割る
+// 水の明るさ（0〜1）：視線が水の中でいちばん電球に近づく点の明るさ。鯉や龍と同じ式なので、同じ距離なら同じ明るさになる
 function waterBright(u, v, t0, t1) {
   const o = rayOrigin(u, v), F = basis.F;
   const bx = BULB[0] - o[0], by = BULB[1] - o[1], bz = BULB[2] - o[2];
-  const tc = bx * F[0] + by * F[1] + bz * F[2];                 // 電球にいちばん近づく位置
-  const m2 = Math.max(0, bx * bx + by * by + bz * bz - tc * tc);  // そのときの距離の 2 乗
-  const sk = Math.sqrt(GLOW_K * GLOW_K + m2);
-  const integral = GLOW_K * GLOW_K / sk * (Math.atan((t1 - tc) / sk) - Math.atan((t0 - tc) / sk));
-  return clamp(integral / (GLOW_K * Math.PI) * 1.35, 0, 1);
+  const t = clamp(bx * F[0] + by * F[1] + bz * F[2], t0, t1);    // 水の中で電球にいちばん近づく位置
+  return pointBright(Math.hypot(bx - F[0] * t, by - F[1] * t, bz - F[2] * t));
 }
 
 // ============================================================
