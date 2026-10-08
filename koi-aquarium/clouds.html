@@ -145,7 +145,7 @@ const mix = (a, b, t) => a + (b - a) * t;
 // そのため水槽をどの向きに回しても、1 ボクセルが 1 ピクセルのドット絵になる。
 //   lit: 電球の光を受けるか（0 = 受けない＝電球・枠・餌）, owner: 影を落とす物体の番号（0 = 影を落とさない）
 //   (nx, ny, nz): 表面の向き。すべて 0 なら鰭や毛のような薄いもの（向きによらず「中」の明るさ）
-const MAXS = 420000;
+const MAXS = 480000;
 const sX = new Float32Array(MAXS), sY = new Float32Array(MAXS), sZ = new Float32Array(MAXS);
 const sC = new Uint32Array(MAXS), sL = new Uint8Array(MAXS), sO = new Uint8Array(MAXS);
 const sNx = new Float32Array(MAXS), sNy = new Float32Array(MAXS), sNz = new Float32Array(MAXS);
@@ -454,6 +454,8 @@ function drawFish(F, time) {
   const ux = -sp * cyw, uy = -cp, uz = -sp * syw;   // 背中側
   // 体の中央を位置の基準に、重心あたり（鼻先から 35%）が泳ぐ軌跡に乗るよう横方向をそろえる
   const aC = spAlong[BEND_N >> 1], latC = spLat[Math.round(BEND_N * 0.35)];
+  // 尾びれの先の位置（雲をかき乱す計算に使う）
+  { const a = aC - spAlong[BEND_N], b = spLat[BEND_N] - latC; F.tail = [F.x + fx * a + rx * b, F.y + fy * a, F.z + fz * a + rz * b]; }
 
   const plot = (t, l, v, c, nl = 0, nv = 0) => {
     const k = clamp((t * BEND_N + 0.5) | 0, 0, BEND_N);
@@ -1058,75 +1060,199 @@ const Dragon_mouth = () => dragon.mouth;
 
 // ============================================================
 //  雲海：水槽の下 1/4 を白い雲がゆったり流れる
-//  表面の高さは 2 voxel 間隔の格子で持つ。こもこもした起伏が流れに乗って動き、
-//  鯉や龍が表面近くを通ると「盛り上がり」が足され、流れに運ばれながら広がって消えていく（尾を引く）
+//  ・表面の高さは 2 voxel 間隔の格子で持つ。こもこもした起伏が流れに乗って動く
+//  ・表面には水平方向の「流れの場」があり、龍の胴や尾、鯉の尾びれが動くと押される（簡易的な流体計算）。
+//    雲の模様はその流れでねじられ、渦の強いところは細かく波立つ
+//  ・生き物が表面近くを通ると「盛り上がり」が足され、流れに運ばれながら広がって消えていく（尾を引く）
+//  ・勢いよく潜ったり浮かび上がったりすると、雲の塊がちぎれて舞い上がる
 // ============================================================
 const CLOUD_Y = H - 30;              // 雲の表面の平均の高さ（y は下向き）
 const CLOUD_FLOW = 3;                // 流れる速さ [voxel/秒]（+x 向き）
 const CG = 2;                        // 格子の間隔 [voxel]
-const CNX = W / CG + 1, CNZ = D / CG + 1;
-const cloudH = new Float32Array(CNX * CNZ);     // 表面の y
-const cloudNx = new Float32Array(CNX * CNZ), cloudNy = new Float32Array(CNX * CNZ), cloudNz = new Float32Array(CNX * CNZ);
-let puff = new Float32Array(CNX * CNZ), puffTmp = new Float32Array(CNX * CNZ);   // 盛り上がりの量 [voxel]
-const PUFF_MAX = 10, PUFF_LIFE = 2.6;
-const CLOUD_OWNER = 200;
+const CNX = W / CG + 1, CNZ = D / CG + 1, CN = CNX * CNZ;
+const cloudH = new Float32Array(CN);  // 表面の y
+const cloudNx = new Float32Array(CN), cloudNy = new Float32Array(CN), cloudNz = new Float32Array(CN);
+let puff = new Float32Array(CN), puffTmp = new Float32Array(CN);   // 盛り上がりの量 [voxel]
+let velX = new Float32Array(CN), velZ = new Float32Array(CN);       // 流れの場（一定の流れからのずれ）[voxel/秒]
+let velTX = new Float32Array(CN), velTZ = new Float32Array(CN);
+const pres = new Float32Array(CN), presT = new Float32Array(CN), divg = new Float32Array(CN), curl = new Float32Array(CN);
+const dispX = new Float32Array(CN), dispZ = new Float32Array(CN);   // 流れで押し流された模様のずれ [voxel]
+const PUFF_MAX = 22, PUFF_LIFE = 3.4, VEL_LIFE = 1.8, DISP_LIFE = 5;
+const CLOUD_OWNER = 200, WISP_OWNER = 201;
 const CLOUD_TOP = [246, 244, 238], CLOUD_SIDE = [222, 218, 210];
 const cidx2 = (i, j) => i + CNX * j;
 
-// 盛り上がりを (x, z) のまわりに足す（半径 rad voxel のなだらかな山）
-function addPuff(x, z, amount, rad) {
+// 格子の値を (fi, fj)（格子単位の位置）で補間して読む
+function sampleGrid(a, fi, fj) {
+  fi = clamp(fi, 0, CNX - 1.001); fj = clamp(fj, 0, CNZ - 1.001);
+  const i = Math.floor(fi), j = Math.floor(fj), u = fi - i, v = fj - j, k = cidx2(i, j);
+  return mix(mix(a[k], a[k + 1], u), mix(a[k + CNX], a[k + CNX + 1], u), v);
+}
+// (x, z) のまわりになだらかな山の形で fn(格子番号, 重み) を呼ぶ
+function splat(x, z, rad, fn) {
   const ci = x / CG, cj = z / CG, R = Math.ceil(rad / CG) + 1;
   for (let j = Math.max(0, Math.floor(cj - R)); j <= Math.min(CNZ - 1, Math.ceil(cj + R)); j++)
     for (let i = Math.max(0, Math.floor(ci - R)); i <= Math.min(CNX - 1, Math.ceil(ci + R)); i++) {
       const d2 = ((i - ci) ** 2 + (j - cj) ** 2) * CG * CG / (rad * rad);
-      if (d2 < 2.5) { const k = cidx2(i, j); puff[k] = Math.min(PUFF_MAX, puff[k] + amount * Math.exp(-d2)); }
+      if (d2 < 2.5) fn(cidx2(i, j), Math.exp(-d2));
     }
 }
-// 雲の表面の高さ（格子を補間）
-function cloudSurfaceAt(x, z) {
-  const fi = clamp(x / CG, 0, CNX - 1.001), fj = clamp(z / CG, 0, CNZ - 1.001);
-  const i = Math.floor(fi), j = Math.floor(fj), u = fi - i, v = fj - j;
-  return mix(mix(cloudH[cidx2(i, j)], cloudH[cidx2(i + 1, j)], u), mix(cloudH[cidx2(i, j + 1)], cloudH[cidx2(i + 1, j + 1)], u), v);
+const cloudSurfaceAt = (x, z) => sampleGrid(cloudH, x / CG, z / CG);
+
+// ---- ちぎれて舞い上がる雲
+const wisps = [];
+const MAX_WISPS = 45;
+// 球の表面に並べた点（フィボナッチ球）。半径ごとに点の数を変えて用意しておく
+const SPHERES = [1.5, 3, 4.5].map(r => {
+  const n = Math.ceil(4 * Math.PI * r * r / 0.32), pts = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    const yy = 1 - 2 * (k + 0.5) / n, rr = Math.sqrt(1 - yy * yy), a = k * 2.399963;
+    pts[k * 3] = Math.cos(a) * rr; pts[k * 3 + 1] = yy; pts[k * 3 + 2] = Math.sin(a) * rr;
+  }
+  return { r, pts };
+});
+function spawnWisp(x, y, z, vx, vy, vz, size) {
+  if (wisps.length >= MAX_WISPS) return;
+  const blobs = [];
+  for (let b = 0; b < 3; b++) blobs.push([(Math.random() - 0.5) * size, (Math.random() - 0.5) * size * 0.6, (Math.random() - 0.5) * size, size * (0.55 + Math.random() * 0.45)]);
+  wisps.push({ x, y, z, vx: vx * 0.45 + (Math.random() - 0.5) * 6, vy: Math.min(vy * 0.45, 0) - 7 - Math.random() * 9, vz: vz * 0.45 + (Math.random() - 0.5) * 6,
+               age: 0, life: 2.2 + Math.random() * 2.2, blobs });
 }
-// 生き物が雲の表面近くを通ると、その速さに応じて雲が盛り上がる
-function stirCloud(x, y, z, speed, rad, dt) {
-  const depth = y - cloudSurfaceAt(x, z);          // 正なら雲の中
-  if (depth < -rad - 4 || depth > rad + 12) return;
-  const w = Math.exp(-(((depth - 2) / (rad + 5)) ** 2));
-  addPuff(x, z, (1.0 + speed * 0.4) * w * dt * 3, rad + 2.5);
+function updateWisps(dt) {
+  for (let n = wisps.length - 1; n >= 0; n--) {
+    const w = wisps[n];
+    w.age += dt;
+    const fi = w.x / CG, fj = w.z / CG;
+    const k = Math.exp(-1.6 * dt);
+    // ゆっくり減速しながら、雲の流れに乗って漂う
+    w.vx = w.vx * k + (CLOUD_FLOW + sampleGrid(velX, fi, fj) * 0.5) * (1 - k);
+    w.vz = w.vz * k + sampleGrid(velZ, fi, fj) * 0.5 * (1 - k);
+    w.vy = w.vy * k + 0.8 * dt;   // 舞い上がった後、少しだけ沈みかける
+    w.x += w.vx * dt; w.y += w.vy * dt; w.z += w.vz * dt;
+    w.y = Math.min(w.y, cloudSurfaceAt(w.x, w.z) - 1);
+    if (w.age > w.life || w.x < 0 || w.x > W || w.z < 0 || w.z > D) wisps.splice(n, 1);
+  }
+}
+function emitWisps() {
+  const c = pack(...CLOUD_TOP, 255);
+  for (const w of wisps) {
+    const shrink = Math.pow(Math.max(0, 1 - w.age / w.life), 0.7);
+    for (const [ox, oy, oz, rs] of w.blobs) {
+      const r = rs * shrink;
+      if (r < 0.6) continue;
+      const S = SPHERES[r < 2 ? 0 : r < 3.6 ? 1 : 2], pts = S.pts;
+      const cx = w.x + ox * shrink, cy = w.y + oy * shrink, cz = w.z + oz * shrink;
+      for (let q = 0; q < pts.length; q += 3)
+        put(cx + pts[q] * r, cy + pts[q + 1] * r, cz + pts[q + 2] * r, c, 1, WISP_OWNER, pts[q], pts[q + 1], pts[q + 2]);
+    }
+  }
+}
+
+// 生き物の一点が雲の表面近くを動いたときの影響：流れを押す・盛り上げる・ちぎれた雲を飛ばす
+function stirPoint(obj, key, x, y, z, rad, dt) {
+  obj.prevStir = obj.prevStir || {};
+  const prev = obj.prevStir[key];
+  obj.prevStir[key] = [x, y, z];
+  if (!prev || dt <= 0) return;
+  let vx = (x - prev[0]) / dt, vy = (y - prev[1]) / dt, vz = (z - prev[2]) / dt;
+  const sp = Math.hypot(vx, vy, vz);
+  if (sp > 80) return;                               // 一瞬で飛んだ（初期化など）ときは無視
+  const depth = y - cloudSurfaceAt(x, z);            // 正なら雲の中
+  if (depth < -rad - 6 || depth > rad + 14) return;
+  const w = Math.exp(-(((depth - 1) / (rad + 5)) ** 2));
+  // 流れを押す（動いている向きへ、雲を引きずる）
+  const a = Math.min(1, dt * 7) * w;
+  splat(x, z, rad + 4, (k, g) => { velX[k] = mix(velX[k], vx - CLOUD_FLOW, a * g); velZ[k] = mix(velZ[k], vz, a * g); });
+  // 盛り上げる（速いほど、また上下に動くほど大きく）
+  const amount = (sp * 0.3 + Math.abs(vy) * 0.8) * w * dt * 4;
+  splat(x, z, rad + 3, (k, g) => { puff[k] = Math.min(PUFF_MAX, puff[k] + amount * g); });
+  // 勢いよく表面を突き抜けると、雲がちぎれて舞い上がる
+  if (w > 0.4 && (sp > 10 || Math.abs(vy) > 5)) {
+    let n = Math.max(0, sp - 10) * 0.1 * dt * (0.6 + rad / 4) + Math.max(0, Math.abs(vy) - 5) * 0.05 * dt * rad;
+    while (n > 0) {
+      if (Math.random() < n) spawnWisp(x + (Math.random() - 0.5) * rad * 2, cloudSurfaceAt(x, z) - 1, z + (Math.random() - 0.5) * rad * 2, vx, vy, vz, 2.2 + Math.random() * 2.3);
+      n -= 1;
+    }
+  }
+}
+
+// 格子の値を流れに沿って運ぶ（上流側の値を補間して持ってくる）
+function advect(src, dst, dt) {
+  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+    const k = cidx2(i, j);
+    dst[k] = sampleGrid(src, i - (CLOUD_FLOW + velX[k]) * dt / CG, j - velZ[k] * dt / CG);
+  }
 }
 
 function updateClouds(dt, time) {
-  // 生き物がかき混ぜる
-  for (const F of fish) {
-    const cp = Math.cos(F.pitch), half = F.L / 2;
-    stirCloud(F.x, F.y, F.z, F.speed, F.Rh, dt);
-    stirCloud(F.x - Math.cos(F.yaw) * cp * half * 0.8, F.y + Math.sin(F.pitch) * half * 0.8, F.z - Math.sin(F.yaw) * cp * half * 0.8, F.speed, F.Rh * 0.8, dt);
-  }
-  for (let i = 0; i < SPINE; i += 12) stirCloud(spX[i], spY[i], spZ[i], dragon.speed, dragonRadius(i * SEG), dt);
+  if (dt > 0) {
+    // 1) 生き物がかき混ぜる（鯉は体の中ほどと尾びれの先、龍は胴に沿って尾の先まで）
+    for (const F of fish) {
+      stirPoint(F, "c", F.x, F.y, F.z, F.Rh, dt);
+      if (F.tail) stirPoint(F, "t", F.tail[0], F.tail[1], F.tail[2], F.Rh * 0.9, dt);
+    }
+    for (let n = 0, i = 0; i < SPINE; i += 10, n++) stirPoint(dragon, n, spX[i], spY[i], spZ[i], dragonRadius(i * SEG), dt);
+    stirPoint(dragon, "tail", spX[SPINE - 1], spY[SPINE - 1], spZ[SPINE - 1], 3, dt);
 
-  // 流れに乗って下流へ運ぶ（上流側の値を補間して持ってくる）・少し広がる・ゆっくり消える
-  const shift = CLOUD_FLOW * dt / CG, decay = Math.exp(-dt / PUFF_LIFE);
-  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
-    const si = i - shift, i0 = Math.floor(si), f = si - i0;
-    const a = i0 >= 0 && i0 < CNX ? puff[cidx2(i0, j)] : 0, b = i0 + 1 >= 0 && i0 + 1 < CNX ? puff[cidx2(i0 + 1, j)] : 0;
-    puffTmp[cidx2(i, j)] = mix(a, b, f);
+    // 2) 流れの場：自分自身に運ばれ、ゆっくり弱まり、渦を残して湧き出しを打ち消す（圧力の補正）
+    advect(velX, velTX, dt); advect(velZ, velTZ, dt);
+    [velX, velTX] = [velTX, velX]; [velZ, velTZ] = [velTZ, velZ];
+    const vd = Math.exp(-dt / VEL_LIFE);
+    for (let k = 0; k < CN; k++) { velX[k] *= vd; velZ[k] *= vd; }
+    for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+      const k = cidx2(i, j);
+      divg[k] = (velX[k + 1] - velX[k - 1] + velZ[k + CNX] - velZ[k - CNX]) * 0.5;
+    }
+    pres.fill(0);
+    for (let it = 0; it < 16; it++) {
+      for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+        const k = cidx2(i, j);
+        presT[k] = (pres[k - 1] + pres[k + 1] + pres[k - CNX] + pres[k + CNX] - divg[k]) * 0.25;
+      }
+      pres.set(presT);
+    }
+    for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+      const k = cidx2(i, j);
+      velX[k] -= (pres[k + 1] - pres[k - 1]) * 0.5;
+      velZ[k] -= (pres[k + CNX] - pres[k - CNX]) * 0.5;
+    }
+    for (let i = 0; i < CNX; i++) { velZ[cidx2(i, 0)] = 0; velZ[cidx2(i, CNZ - 1)] = 0; }   // ガラスを突き抜けない
+    for (let j = 0; j < CNZ; j++) { velX[cidx2(0, j)] = 0; velX[cidx2(CNX - 1, j)] = 0; }
+
+    // 3) 盛り上がりを流れで運び、少し広げ、ゆっくり消す
+    advect(puff, puffTmp, dt);
+    const decay = Math.exp(-dt / PUFF_LIFE);
+    for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+      const k = cidx2(i, j), c = puffTmp[k];
+      const n = (i > 0 ? puffTmp[k - 1] : c) + (i < CNX - 1 ? puffTmp[k + 1] : c) + (j > 0 ? puffTmp[k - CNX] : c) + (j < CNZ - 1 ? puffTmp[k + CNX] : c);
+      puff[k] = (c * 0.84 + n * 0.04) * decay;
+    }
+    // 4) 模様のずれ：流れの分だけ押し流され、ゆっくり元に戻る
+    const dd = Math.exp(-dt / DISP_LIFE);
+    for (let k = 0; k < CN; k++) {
+      dispX[k] = clamp((dispX[k] + velX[k] * dt) * dd, -24, 24);
+      dispZ[k] = clamp((dispZ[k] + velZ[k] * dt) * dd, -24, 24);
+    }
+    updateWisps(dt);
   }
-  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
-    const k = cidx2(i, j), c = puffTmp[k];
-    const n = (i > 0 ? puffTmp[k - 1] : c) + (i < CNX - 1 ? puffTmp[k + 1] : c) + (j > 0 ? puffTmp[k - CNX] : c) + (j < CNZ - 1 ? puffTmp[k + CNX] : c);
-    puff[k] = (c * 0.84 + n * 0.04) * decay;
+  // 渦の強さ
+  for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
+    const k = cidx2(i, j);
+    curl[k] = ((velZ[k + 1] - velZ[k - 1]) - (velX[k + CNX] - velX[k - CNX])) / (2 * CG);
   }
 
-  // 表面の高さ：流れていく大小のこぶ + 盛り上がり（盛り上がりもでこぼこに）
+  // 5) 表面の高さ：流れていく大小のこぶ（流れの場でねじられる）+ 渦のところの細かい波立ち + 盛り上がり
   const ox = time * CLOUD_FLOW;
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
-    const x = i * CG - ox, z = j * CG;
+    const k = cidx2(i, j);
+    const x = i * CG - ox - dispX[k], z = j * CG - dispZ[k];
     const big = noise3(x * 0.045, z * 0.045, time * 0.03, 701), small = noise3(x * 0.13, z * 0.13, time * 0.06, 702);
+    const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
+    const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 9 * turb : 0;
     // こぶの頭が丸く、谷が細く切れ込むように（積雲らしく）
-    const bump = Math.pow(big, 1.6) * 13 + small * 4 - 6;
-    const pf = puff[cidx2(i, j)];
-    cloudH[cidx2(i, j)] = CLOUD_Y - bump - pf * (0.75 + 0.5 * noise3(i * 0.35, j * 0.35, time * 0.4, 703));
+    const bump = Math.pow(big, 1.6) * 13 + small * 4 - 6 + chop;
+    const pf = puff[k];
+    cloudH[k] = CLOUD_Y - bump - pf * (0.7 + 0.6 * noise3(i * 0.35, j * 0.35, time * 0.5, 703));
   }
   // 表面の向き（隣の高さとの差から）
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
@@ -1172,6 +1298,7 @@ function emitClouds() {
     }
   }
   castShadow = true;
+  emitWisps();
 }
 
 // 鯉が龍に気づいて逃げる
@@ -1302,7 +1429,7 @@ function shadeSample(i) {
   if (smOwner[k] && smOwner[k] !== sO[i] && smDist[k] < dist - 1.5 - dist * 0.02) { level = 1; glint = false; }
   lastDist = dist;
   // 雲は専用の 3 色（暖かい白・明るい灰・青みのある影）。ツヤは付けない
-  if (sO[i] === CLOUD_OWNER) { lastCloud = true; return CLOUD_TONE[level].slice(); }
+  if (sO[i] === CLOUD_OWNER || sO[i] === WISP_OWNER) { lastCloud = true; return CLOUD_TONE[level].slice(); }
   lastCloud = false;
   if (glint) { lastGlint = true; return [mix(r, GLINT[0], 0.78), mix(g, GLINT[1], 0.78), mix(bl, GLINT[2], 0.78)]; }
   // 電球に向いた面は、もとの色を少し明るくしてから電球色に寄せる
