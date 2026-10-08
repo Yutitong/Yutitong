@@ -357,30 +357,53 @@ function buildFishModel(F) {
   }
 }
 
-// 背骨：旋回による弧 + 頭から尾へ伝わる波。
-// 振れ幅は頭でわずか、尾で最大（コイ科の泳ぎ方）。角度を積分して位置を出すので、
-// 尾は横に平行移動するのではなく向きを変えながら振れ、体長も伸び縮みしない。
+// 背骨：頭の向きの「少し前の履歴」をたどる曲がり + 頭から尾へ伝わる波。
+// 体の各点は、頭が (鼻先からの距離 / 体長) × TURN_LAG 秒前に向いていた方向を向く。
+// そのため向きを変えると頭が先に曲がり、曲がりが尾へ伝わって、旋回後は尾に向かってほどける。
+// 角度を積分して位置を出すので、尾は向きを変えながら振れ、体長も伸び縮みしない。
 const BEND_N = 64;
+const TURN_LAG = 0.9;     // 曲がりが鼻先から尾まで伝わる時間 [秒]
+const TURN_FOLLOW = 0.92; // 体が頭の軌跡にどれだけ忠実に従うか
+const MAX_BEND = 1.7;     // 頭と体の各点の向きの差の上限 [rad]
+const HIST = 256;
 const spAlong = new Float32Array(BEND_N + 1), spLat = new Float32Array(BEND_N + 1);
 const spCos = new Float32Array(BEND_N + 1), spSin = new Float32Array(BEND_N + 1);
 
-function computeSpine(F) {
+function recordHeading(F, time) {
+  F.hI = (F.hI + 1) % HIST;
+  F.hT[F.hI] = time;
+  F.hY[F.hI] = F.yawU;
+  if (F.hN < HIST) F.hN++;
+}
+
+function computeSpine(F, time) {
   const L = F.L, ds = L / BEND_N, K = 2 * Math.PI / (L * 1.05);
   let along = 0, lat = 0, pc = 1, ps = 0;
+  let j = F.hI, back = 0;
   for (let k = 0; k <= BEND_N; k++) {
     const s = k * ds, x = s / L;
+    // 頭の向きの履歴から、この点が向くべき過去の向きを補間して求める
+    const td = time - x * TURN_LAG;
+    while (back < F.hN - 1 && F.hT[j] > td) { j = (j - 1 + HIST) % HIST; back++; }
+    let past = F.hY[j];
+    if (back > 0 && F.hT[j] <= td) {
+      const j2 = (j + 1) % HIST, t1 = F.hT[j], t2 = F.hT[j2];
+      past += (F.hY[j2] - past) * (t2 > t1 ? (td - t1) / (t2 - t1) : 0);
+    }
+    const turn = clamp((F.yawU - past) * TURN_FOLLOW, -MAX_BEND, MAX_BEND);
+
     const env = 0.1 - 0.25 * x + 1.15 * x * x, denv = (-0.25 + 2.3 * x) / L;
     const ph = K * s - F.phase;
-    const slope = F.kappa * s + F.amp * (denv * Math.sin(ph) + env * K * Math.cos(ph));
-    const c = 1 / Math.sqrt(1 + slope * slope), sn = slope * c;
+    const wave = Math.atan(F.amp * (denv * Math.sin(ph) + env * K * Math.cos(ph)));
+    const c = Math.cos(turn + wave), sn = Math.sin(turn + wave);
     if (k > 0) { along += ds * (c + pc) / 2; lat += ds * (sn + ps) / 2; }
     spAlong[k] = along; spLat[k] = lat; spCos[k] = c; spSin[k] = sn;
     pc = c; ps = sn;
   }
 }
 
-function drawFish(F) {
-  computeSpine(F);
+function drawFish(F, time) {
+  computeSpine(F, time);
   const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
   const fx = cp * cyw, fy = -sp, fz = cp * syw;   // 前
   const rx = -syw, rz = cyw;                        // 右（ヨーが増える向き）
@@ -421,10 +444,13 @@ function spawnFish() {
       y: 16 + Math.floor(i / 3) * 14 + rng() * 6,
       z: 14 + rng() * 18,
       yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
-      speed: 2 + rng() * 2, kappa: 0, amp: 0, phase: rng() * 6, finAng: 0.5,
+      speed: 2 + rng() * 2, amp: 0, phase: rng() * 6, finAng: 0.5,
       beating: rng() < 0.5, modeT: rng() * 2, drive: 0, freq: 0.65 + rng() * 0.15,
       ty: 25, yTimer: 0,
     };
+    F.yawU = F.yaw;  // 折り返さない向き（履歴用）
+    F.hT = new Float64Array(HIST); F.hY = new Float64Array(HIST);
+    F.hI = 0; F.hN = 1; F.hT[0] = -1; F.hY[0] = F.yawU;
     buildFishModel(F);
     fish.push(F);
   });
@@ -489,10 +515,14 @@ function updateFish(F, dt, time) {
   }
 
   // 旋回（向きの変化に慣性を持たせる）
-  const diff = wrapAngle(Math.atan2(dz, dx) - F.yaw);
-  const tr = clamp(diff * 1.2, -0.95, 0.95);
-  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * 2.5);
+  let diff = wrapAngle(Math.atan2(dz, dx) - F.yaw);
+  // 行きたい方向がほぼ真後ろのときは、いま回っている向きのまま回り切る（左右に首を振らない）
+  if (Math.abs(diff) > 2.6 && diff * F.yawRate < 0) diff -= Math.sign(diff) * 2 * Math.PI;
+  const tr = clamp(diff * 1.8, -1.6, 1.6);
+  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * 4);
   F.yaw = wrapAngle(F.yaw + F.yawRate * dt);
+  F.yawU += F.yawRate * dt;
+  recordHeading(F, time);
   const wp = clamp(Math.atan2(-dy, Math.hypot(dx, dz)), -0.45, 0.45);
   F.pitch += (wp - F.pitch) * Math.min(1, dt * 1.2);
 
@@ -520,8 +550,7 @@ function updateFish(F, dt, time) {
   F.z = clamp(F.z, hz, D - hz);
   F.y = clamp(F.y, WATER_TOP + F.Rh * 0.8, floorAt(F.x, F.z) - F.Rh - 1);
 
-  // 曲がるときは体を弓なりに、こいでいる間だけ尾を大きく振る
-  F.kappa = clamp(F.yawRate * 0.014, -0.02, 0.02);
+  // こいでいる間だけ尾を大きく振る
   F.amp = F.L * 0.075 * (0.12 + 0.88 * F.drive);
   F.phase += dt * 2 * Math.PI * freq * (0.35 + 0.65 * F.drive);
   // 胸鰭は滑っている間は広げ、こいでいる間はたたむ
@@ -615,7 +644,7 @@ function drawFrame() {
 function buildFrame(time) {
   grid.fill(0);
   drawFood();
-  for (const F of fish) drawFish(F);
+  for (const F of fish) drawFish(F, time);
 }
 function step(dt, time) {
   for (const F of fish) updateFish(F, dt, time);
