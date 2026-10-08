@@ -1070,8 +1070,12 @@ const CLOUD_Y = H - 30;              // 雲の表面の平均の高さ（y は�
 const CLOUD_FLOW = 3;                // 流れる速さ [voxel/秒]（+x 向き）
 const CG = 2;                        // 格子の間隔 [voxel]
 const CNX = W / CG + 1, CNZ = D / CG + 1, CN = CNX * CNZ;
-const cloudH = new Float32Array(CN);  // 表面の y
+const cloudH = new Float32Array(CN);  // 上面の y
 const cloudNx = new Float32Array(CN), cloudNy = new Float32Array(CN), cloudNz = new Float32Array(CN);
+const cloudB = new Float32Array(CN), cloudThick = new Float32Array(CN);   // 下面の y と、雲の厚み
+const cloudBx = new Float32Array(CN), cloudBy = new Float32Array(CN), cloudBz = new Float32Array(CN);
+const LAYER_MID = CLOUD_Y + 8;        // 雲の層の厚みの中心
+const smooth01 = t => t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
 let puff = new Float32Array(CN), puffTmp = new Float32Array(CN);   // 盛り上がりの量 [voxel]
 let velX = new Float32Array(CN), velZ = new Float32Array(CN);       // 流れの場（一定の流れからのずれ）[voxel/秒]
 let velTX = new Float32Array(CN), velTZ = new Float32Array(CN);
@@ -1079,7 +1083,7 @@ const pres = new Float32Array(CN), presT = new Float32Array(CN), divg = new Floa
 const dispX = new Float32Array(CN), dispZ = new Float32Array(CN);   // 流れで押し流された模様のずれ [voxel]
 const PUFF_MAX = 14, PUFF_LIFE = 2.2, VEL_LIFE = 2.2, DISP_LIFE = 5;
 const CLOUD_OWNER = 200, WISP_OWNER = 201;
-const CLOUD_TOP = [246, 244, 238], CLOUD_SIDE = [222, 218, 210];
+const CLOUD_TOP = [246, 244, 238], CLOUD_UNDER = [214, 212, 220];
 const cidx2 = (i, j) => i + CNX * j;
 
 // 格子の値を (fi, fj)（格子単位の位置）で補間して読む
@@ -1099,8 +1103,8 @@ function splat(x, z, rad, fn) {
 }
 const cloudSurfaceAt = (x, z) => sampleGrid(cloudH, x / CG, z / CG);
 
-// ---- 雲の筋：雲から引き出されたロープのように、根元は雲の表面、先は生き物の体にくっついて伸びる。
-//      目標の長さまで伸びると体から離れ、流れに乗ってたなびきながら雲へ沈み、細くなって消える
+// ---- 雲の筋：雲から引き出され、根元は雲の表面、先は生き物の体にくっついて伸びる（形は紐の計算で決める）。
+//      目標の長さまで伸びると体から離れ、細かい渦に乗ってばらばらに広がりながら、霧のように薄れて消える
 const streamers = [];
 const MAX_STREAMERS = 14, ROPE_N = 14;
 function attachedStreamer(obj, key) {
@@ -1146,11 +1150,20 @@ function updateStreamers(dt) {
       const vx = (p[0] - o[0]) * 0.9, vy = (p[1] - o[1]) * 0.9, vz = (p[2] - o[2]) * 0.9;
       o[0] = p[0]; o[1] = p[1]; o[2] = p[2];
       const fx = (CLOUD_FLOW + sampleGrid(velX, fi, fj) * 0.6) * dt, fz = sampleGrid(velZ, fi, fj) * 0.6 * dt;
-      p[0] += vx * 0.9 + fx * 0.25; p[1] += vy + sink * dt * dt * 10; p[2] += vz * 0.9 + fz * 0.25;
+      if (st.attached) {
+        p[0] += vx * 0.9 + fx * 0.25; p[1] += vy + sink * dt * dt * 10; p[2] += vz * 0.9 + fz * 0.25;
+      } else {
+        // 離れた後は紐ではなく、ひとつひとつが細かい渦に乗ってばらばらに漂う（だんだん広がっていく）
+        const sw = 2.2, ph = st.phase + q * 0.7, tt = st.age * 0.6;
+        const tx = (noise3(p[0] * 0.08 + ph, p[1] * 0.08, tt, 731) - 0.5) * sw;
+        const ty = (noise3(p[0] * 0.08, p[1] * 0.08 + ph, tt, 732) - 0.5) * sw * 0.6;
+        const tz = (noise3(p[2] * 0.08, tt, p[1] * 0.08 + ph, 733) - 0.5) * sw;
+        p[0] += vx * 0.6 + fx * 0.6 + tx * dt; p[1] += vy * 0.6 + ty * dt + 0.6 * dt; p[2] += vz * 0.6 + fz * 0.6 + tz * dt;
+      }
     }
     // 長さを保つ（根元と、くっついている先端は動かさない）
     const L = st.len / (ROPE_N - 1);
-    for (let it = 0; it < 5; it++) {
+    for (let it = 0; it < (st.attached ? 5 : 0); it++) {   // 長さを保つのは、くっついている間だけ
       for (let q = 0; q < ROPE_N - 1; q++) {
         const a = P[q], b = P[q + 1], dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], d = Math.hypot(dx, dy, dz) || 1e-6;
         const diff = (d - L) / d;
@@ -1166,18 +1179,35 @@ function updateStreamers(dt) {
   }
 }
 function emitStreamers(time) {
-  for (const st of streamers) {
-    const fade = st.attached ? 1 : Math.pow(Math.max(0, 1 - (st.age - st.detachAge) / st.life), 0.8);
-    if (fade <= 0.05) continue;
-    let prev = null, prevR = 0;
-    for (let q = 0; q < ROPE_N; q++) {
-      const u = q / (ROPE_N - 1);
-      // 根元は太く、先へ行くほど細い。先のほうほど大きくたなびく
-      const r = st.r0 * fade * (0.2 + 0.8 * Math.pow(1 - u, 0.6));
-      const wav = Math.sin(time * 2.4 + q * 0.6 + st.phase) * 0.8 * u;
-      const P = st.pts[q], cur = [P[0], P[1] + wav, P[2] + wav * 0.6];
-      if (prev) tube(prev, cur, Math.max(0.35, prevR), Math.max(0.35, r), CLOUD_TOP, WISP_OWNER);
-      prev = cur; prevR = r;
+  for (let sIdx = 0; sIdx < streamers.length; sIdx++) {
+    const st = streamers[sIdx];
+    const a = st.attached ? 0 : Math.min(1, (st.age - st.detachAge) / st.life);   // 離れてからの経過（0〜1）
+    if (a >= 1) continue;
+    // 時間とともに太く広がり、そのぶん点がまばらになって消えていく
+    const spread = 1 + a * 2.2, density = Math.pow(1 - a, 1.6);
+    const seed = (st.phase * 1000) | 0;
+    let n = 0;
+    for (let q = 0; q < ROPE_N - 1; q++) {
+      const A = st.pts[q], B = st.pts[q + 1];
+      const len = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+      const steps = Math.max(1, Math.ceil(len / 0.7));
+      for (let t = 0; t < steps; t++, n++) {
+        const f = (q + t / steps) / (ROPE_N - 1);                 // 根元 0 → 先 1
+        const cx = mix(A[0], B[0], t / steps), cy = mix(A[1], B[1], t / steps), cz = mix(A[2], B[2], t / steps);
+        // 根元は太く濃く、先は細く淡い
+        const r = st.r0 * spread * (0.3 + 0.7 * Math.pow(1 - f, 0.7));
+        const dens = density * (0.35 + 0.65 * (1 - f));
+        const count = Math.ceil(r * r * 2.2);
+        for (let m = 0; m < count; m++) {
+          // 点ごとに決まった乱数で位置と「消える順番」を決めるので、チラつかずにだんだん抜けていく
+          if (hash(n, m, seed, 91) > dens) continue;
+          const u1 = hash(n, m, seed, 92), u2 = hash(n, m, seed, 93), u3 = hash(n, m, seed, 94);
+          const rr = r * Math.sqrt(u1), th = u2 * Math.PI * 2, el = (u3 - 0.5) * 1.6;
+          const ox = Math.cos(th) * rr, oz = Math.sin(th) * rr, oy = el * rr * 0.6;
+          const k = 1 / (Math.hypot(ox, oy, oz) || 1);
+          cloudPut(cx + ox, cy + oy, cz + oz, pack(...CLOUD_TOP, 255), ox * k, oy * k - 0.4, oz * k);
+        }
+      }
     }
   }
 }
@@ -1287,60 +1317,69 @@ function updateClouds(dt, time) {
     curl[k] = ((velZ[k + 1] - velZ[k - 1]) - (velX[k + CNX] - velX[k - CNX])) / (2 * CG);
   }
 
-  // 5) 表面の高さ：流れていく大小のこぶ（流れの場でねじられる）+ 渦のところの細かい波立ち + 盛り上がり
+  // 5) 雲の形：上面と下面の 2 枚で厚みのある層を作る。厚みが 0 に近づくところで上下の面が閉じ、切れ間になる
+  //    （離れて浮かぶ小さなちぎれ雲も同じ仕組みでできる。ガラスの近くでも丸く閉じるので、まっすぐな断面は無い）
   const ox = time * CLOUD_FLOW;
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
     const k = cidx2(i, j);
     const x = i * CG - ox - dispX[k], z = j * CG - dispZ[k];
-    const big = noise3(x * 0.045, z * 0.045, time * 0.03, 701), small = noise3(x * 0.13, z * 0.13, time * 0.06, 702);
-    const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
-    const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 9 * turb : 0;
-    // こぶの頭が丸く、谷が細く切れ込むように（積雲らしく）
-    const bump = Math.pow(big, 1.6) * 13 + small * 4 - 6 + chop;
+    // 雲のあるところ：大きなまだら模様。ガラスの近くでは薄れる。盛り上がった（かき混ぜられた）ところは雲が濃くなる
+    const wall = smooth01(Math.min(i * CG, W - i * CG, j * CG, D - j * CG) / 12);
+    const cv = noise3(x * 0.022, z * 0.022, time * 0.02, 711) * 0.65 + noise3(x * 0.06, z * 0.06, time * 0.04, 712) * 0.35;
     const pf = puff[k];
-    cloudH[k] = CLOUD_Y - bump - pf;   // 盛り上がりはなめらかに（流れに沿って筋状に伸びる）
+    const cover = clamp(smooth01((cv - 0.36) / 0.24) * wall + pf * 0.05, 0, 1);
+    // もこもこ：大・中・小のこぶを重ねる（|2n-1| にすると、こぶの頭が丸く谷が細く切れ込む積雲らしい形になる）
+    const b1 = Math.abs(noise3(x * 0.05, z * 0.05, time * 0.03, 701) * 2 - 1);
+    const b2 = Math.abs(noise3(x * 0.11, z * 0.11, time * 0.05, 702) * 2 - 1);
+    const b3 = Math.abs(noise3(x * 0.23, z * 0.23, time * 0.08, 705) * 2 - 1);
+    const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
+    const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 8 * turb : 0;
+    const thick = cover * 22 + pf * 0.9;
+    const billow = (b1 * 9 + b2 * 4.5 + b3 * 2.2) * Math.sqrt(cover);
+    cloudThick[k] = thick;
+    cloudH[k] = LAYER_MID - thick * 0.6 - billow - chop * cover;
+    cloudB[k] = LAYER_MID + thick * 0.4 + (noise3(x * 0.08, z * 0.08, time * 0.05, 706) - 0.5) * 5 * cover;
   }
-  // 表面の向き（隣の高さとの差から）
+  // 面の向き（隣の高さとの差から）。y は下向きなので、上面は (hx, -1, hz)、下面は (-bx, 1, -bz) を正規化したもの
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
-    const k = cidx2(i, j);
-    const hx = (cloudH[cidx2(Math.min(CNX - 1, i + 1), j)] - cloudH[cidx2(Math.max(0, i - 1), j)]) / (2 * CG);
-    const hz = (cloudH[cidx2(i, Math.min(CNZ - 1, j + 1))] - cloudH[cidx2(i, Math.max(0, j - 1))]) / (2 * CG);
-    // y は下向きなので、上向きの面の法線は (hx, -1, hz) を正規化したもの
+    const k = cidx2(i, j), ip = cidx2(Math.min(CNX - 1, i + 1), j), im = cidx2(Math.max(0, i - 1), j);
+    const jp = cidx2(i, Math.min(CNZ - 1, j + 1)), jm = cidx2(i, Math.max(0, j - 1));
+    const hx = (cloudH[ip] - cloudH[im]) / (2 * CG), hz = (cloudH[jp] - cloudH[jm]) / (2 * CG);
     const n = Math.hypot(hx, 1, hz);
     cloudNx[k] = hx / n; cloudNy[k] = -1 / n; cloudNz[k] = hz / n;
+    const bx = (cloudB[ip] - cloudB[im]) / (2 * CG), bz = (cloudB[jp] - cloudB[jm]) / (2 * CG);
+    const m = Math.hypot(bx, 1, bz);
+    cloudBx[k] = -bx / m; cloudBy[k] = 1 / m; cloudBz[k] = -bz / m;
   }
 }
 
+// 雲の点を書く（このページの光の当て方に合わせる）
+function cloudPut(x, y, z, c, nx, ny, nz) {
+  put(x, y, z, c, 1, CLOUD_OWNER, nx, ny, nz);
+}
 function emitClouds(time) {
-  const top = pack(...CLOUD_TOP, 255), side = pack(...CLOUD_SIDE, 255);
-  // 表面（0.6 voxel 間隔）。影を落とす計算は 1 つおきの点だけで足りる
-  const SP = 0.6;
+  const top = pack(...CLOUD_TOP, 255), under = pack(...CLOUD_UNDER, 255);
+  const SP = 0.6, ox = time * CLOUD_FLOW;
+  const lerp4 = (a, k00, u, v) => mix(mix(a[k00], a[k00 + 1], u), mix(a[k00 + CNX], a[k00 + CNX + 1], u), v);
   let row = 0;
   for (let z = 0.3; z < D; z += SP, row++) {
     const fj = Math.min(z / CG, CNZ - 1.001), j = Math.floor(fj), v = fj - j;
     let col = 0;
     for (let x = 0.3; x < W; x += SP, col++) {
-      castShadow = ((row | col) & 1) === 0;
-      const fi = Math.min(x / CG, CNX - 1.001), i = Math.floor(fi), u = fi - i;
-      const k00 = cidx2(i, j), k10 = k00 + 1, k01 = k00 + CNX, k11 = k01 + 1;
-      const y = mix(mix(cloudH[k00], cloudH[k10], u), mix(cloudH[k01], cloudH[k11], u), v);
-      const nx = mix(mix(cloudNx[k00], cloudNx[k10], u), mix(cloudNx[k01], cloudNx[k11], u), v);
-      const ny = mix(mix(cloudNy[k00], cloudNy[k10], u), mix(cloudNy[k01], cloudNy[k11], u), v);
-      const nz = mix(mix(cloudNz[k00], cloudNz[k10], u), mix(cloudNz[k01], cloudNz[k11], u), v);
-      put(x, y, z, top, 1, CLOUD_OWNER, nx, ny, nz);
-    }
-  }
-  castShadow = false;
-  // ガラスに接する断面（雲の厚みが横から見えるように）
-  const STEP = 0.7;
-  for (let t = 0.25; t < W; t += STEP) {
-    for (const [z, nz] of [[0.05, -1], [D - 0.05, 1]]) {
-      for (let y = cloudSurfaceAt(t, z) + 0.6; y < H; y += STEP) put(t, y, z, side, 1, CLOUD_OWNER, 0, 0, nz);
-    }
-  }
-  for (let t = 0.25; t < D; t += STEP) {
-    for (const [x, nx] of [[0.05, -1], [W - 0.05, 1]]) {
-      for (let y = cloudSurfaceAt(x, t) + 0.6; y < H; y += STEP) put(x, y, t, side, 1, CLOUD_OWNER, nx, 0, 0);
+      const fi = Math.min(x / CG, CNX - 1.001), i = Math.floor(fi), u = fi - i, k00 = cidx2(i, j);
+      const thick = lerp4(cloudThick, k00, u, v);
+      if (thick < 0.8) continue;                       // 切れ間
+      // ふわふわ：薄いところほど点を間引いて、縁をぼそぼそ崩す。間引く模様は雲と一緒に流れる
+      const hx = Math.round((x - ox) * 1.7), hz = Math.round(z * 1.7);
+      if (hash(hx, hz, 0, 77) < Math.min(1, thick / 4)) {
+        castShadow = ((row | col) & 1) === 0;
+        cloudPut(x, lerp4(cloudH, k00, u, v), z, top, lerp4(cloudNx, k00, u, v), lerp4(cloudNy, k00, u, v), lerp4(cloudNz, k00, u, v));
+      }
+      // 下面：底に向かってうっすら透ける
+      if (hash(hx, hz, 1, 78) < Math.min(1, thick / 6) * 0.72) {
+        castShadow = false;
+        cloudPut(x, lerp4(cloudB, k00, u, v), z, under, lerp4(cloudBx, k00, u, v), lerp4(cloudBy, k00, u, v), lerp4(cloudBz, k00, u, v));
+      }
     }
   }
   castShadow = true;
@@ -1544,7 +1583,9 @@ function render() {
         // 隣のピクセルがずっと奥（または背景）なら、ここは手前の物体の輪郭
         const dl = px > 0 ? zbuf[p - 1] : Infinity, dr = px < CW - 1 ? zbuf[p + 1] : Infinity;
         const du = py > 0 ? zbuf[p - CW] : Infinity, dd = py < CH - 1 ? zbuf[p + CW] : Infinity;
-        if (dl > d + 3 || dr > d + 3 || du > d + 3 || dd > d + 3) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
+        // 雲は 2 方向以上が奥にあるところだけを輪郭にする（ふわふわの間引きの穴ごとに縁取りが付かないように）
+        const far = (dl > d + 3) + (dr > d + 3) + (du > d + 3) + (dd > d + 3), so = sO[ibuf[p]];
+        if (far >= (so === CLOUD_OWNER || so === WISP_OWNER ? 2 : 1)) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
       } else {
         out[p] = bgCache[p];
         continue;
