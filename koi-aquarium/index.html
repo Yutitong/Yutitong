@@ -358,11 +358,11 @@ function buildFishModel(F) {
 }
 
 // 背骨：頭の向きの「少し前の履歴」をたどる曲がり + 頭から尾へ伝わる波。
-// 体の各点は、頭が (鼻先からの距離 / 体長) × TURN_LAG 秒前に向いていた方向を向く。
+// 体の各点は、頭が (鼻先からの距離 / 体長) × F.lag 秒前に向いていた方向を向く。
 // そのため向きを変えると頭が先に曲がり、曲がりが尾へ伝わって、旋回後は尾に向かってほどける。
 // 角度を積分して位置を出すので、尾は向きを変えながら振れ、体長も伸び縮みしない。
 const BEND_N = 64;
-const TURN_LAG = 0.9;     // 曲がりが鼻先から尾まで伝わる時間 [秒]
+const TURN_LAG = 0.9;     // 曲がりが鼻先から尾まで伝わる時間 [秒]（速く泳ぐほど短くなる）
 const TURN_FOLLOW = 0.92; // 体が頭の軌跡にどれだけ忠実に従うか
 const MAX_BEND = 1.7;     // 頭と体の各点の向きの差の上限 [rad]
 const HIST = 256;
@@ -383,7 +383,7 @@ function computeSpine(F, time) {
   for (let k = 0; k <= BEND_N; k++) {
     const s = k * ds, x = s / L;
     // 頭の向きの履歴から、この点が向くべき過去の向きを補間して求める
-    const td = time - x * TURN_LAG;
+    const td = time - x * F.lag;
     while (back < F.hN - 1 && F.hT[j] > td) { j = (j - 1 + HIST) % HIST; back++; }
     let past = F.hY[j];
     if (back > 0 && F.hT[j] <= td) {
@@ -445,6 +445,7 @@ function spawnFish() {
       z: 14 + rng() * 18,
       yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
       speed: 2 + rng() * 2, amp: 0, phase: rng() * 6, finAng: 0.5,
+      lag: TURN_LAG, dart: null,
       beating: rng() < 0.5, modeT: rng() * 2, drive: 0, freq: 0.65 + rng() * 0.15,
       ty: 25, yTimer: 0,
     };
@@ -459,40 +460,114 @@ function spawnFish() {
 const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
 const floorAt = () => H - 1;   // 装飾が無いので底は水槽の底面
 
+// ------------------------------------------------------------
+//  ダッシュ：体を C の字にためてから一気に反対側まで泳ぎ切る。近くの鯉は驚いて逃げる
+//    phase: wait（驚くまでの反応時間）→ coil（ため）→ burst（突進）→ recover（減速）
+// ------------------------------------------------------------
+const DART = {
+  dash:   { coil: 0.22, burst: 2.6, recover: 1.6, vmax: 27, freq: 3.4, amp: 0.11 },
+  flinch: { coil: 0.12, burst: 0.55, recover: 1.1, vmax: 13, freq: 2.6, amp: 0.09 },
+};
+let nextDart = 9 + Math.random() * 6;
+
+function scheduleDart(time) {
+  if (time < nextDart) return;
+  nextDart = time + 20 + Math.random() * 20;
+  if (foods.length) return;
+  // 端から端へ泳ぎ切れるよう、壁際にいる鯉ほど選ばれやすくする
+  const idle = fish.filter(F => !F.dart).sort((a, b) => Math.abs(b.x - W / 2) - Math.abs(a.x - W / 2));
+  if (!idle.length) return;
+  const F = idle[Math.floor(Math.random() * Math.min(2, idle.length))];
+  F.dart = {
+    kind: "dash", phase: "coil", t: 0,
+    tx: (F.x < W / 2 ? W - 24 : 24) + (Math.random() - 0.5) * 10,
+    ty: WATER_TOP + F.Rh + 6 + Math.random() * (H - WATER_TOP - F.Rh * 3 - 14),
+    tz: 10 + Math.random() * (D - 20),
+  };
+  startle(F, 36);
+}
+
+// 近くにいる鯉を驚かせる（反応までの時間は距離と個体で少しずつ違う）
+function startle(F, radius) {
+  for (const o of fish) {
+    if (o === F || o.dart) continue;
+    const d = Math.hypot(o.x - F.x, o.y - F.y, o.z - F.z);
+    if (d < radius) o.dart = { kind: "flinch", phase: "wait", t: -(0.08 + Math.random() * 0.22) - d * 0.004, from: F };
+  }
+}
+
+function advanceDart(F, dt) {
+  const A = F.dart, P = DART[A.kind];
+  A.t += dt;
+  if (A.phase === "wait" && A.t >= 0) {
+    // 驚いた瞬間の相手の位置から離れる方向へ
+    const ex = F.x - A.from.x, ey = F.y - A.from.y, ez = F.z - A.from.z, n = Math.hypot(ex, ey, ez) || 1;
+    A.ax = ex / n + (Math.random() - 0.5) * 0.6; A.ay = ey / n * 0.4; A.az = ez / n + (Math.random() - 0.5) * 0.6;
+    A.phase = "coil"; A.t = 0;
+  } else if (A.phase === "coil" && A.t >= P.coil) {
+    A.phase = "burst"; A.t = 0;
+  } else if (A.phase === "burst") {
+    if (A.kind === "dash") startle(F, F.L * 0.9);   // 突進の途中ですれ違った鯉も驚く
+    const near = A.kind === "dash" && Math.hypot(A.tx - F.x, A.tz - F.z) < F.speed * 0.6 + 6;
+    if (A.t >= P.burst || near) { A.phase = "recover"; A.t = 0; }
+  } else if (A.phase === "recover" && A.t >= P.recover) {
+    F.dart = null;
+    F.beating = false;
+    F.modeT = 1.5 + Math.random() * 2;
+  }
+}
+
 function updateFish(F, dt, time) {
+  if (F.dart) advanceDart(F, dt);
+  const A = F.dart && F.dart.phase !== "wait" ? F.dart : null;
+  const P = A ? DART[A.kind] : null;
+  const rushing = A && (A.phase === "coil" || A.phase === "burst");
+
   const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
   const fx = cp * cyw, fy = -sp, fz = cp * syw;
   let dx = fx, dy = fy * 0.5, dz = fz;
-
-  // ゆったりした寄り道
-  const wa = F.yaw + (noise3(time * 0.12, F.seed, 0, 99) - 0.5) * 3.2;
-  dx += Math.cos(wa) * 0.7; dz += Math.sin(wa) * 0.7;
-
-  // 泳ぐ深さを時々変える
-  F.yTimer -= dt;
-  if (F.yTimer < 0) {
-    const lo = WATER_TOP + F.Rh + 5, hi = floorAt(F.x, F.z) - F.Rh * 2 - 4;
-    F.ty = lo + Math.random() * Math.max(1, hi - lo);
-    F.yTimer = 6 + Math.random() * 9;
-  }
-  dy += clamp((F.ty - F.y) * 0.04, -0.4, 0.4);
-
-  // 餌
-  let target = null, best = 1e9;
-  for (const f of foods) {
-    const d = Math.hypot(f.x - F.x, f.y - F.y, f.z - F.z);
-    if (d < best) { best = d; target = f; }
-  }
   const half = F.L / 2;
-  const mx = F.x + fx * half, my = F.y + fy * half, mz = F.z + fz * half;
-  if (target) {
-    const vx = target.x - mx, vy = target.y - my, vz = target.z - mz, n = Math.hypot(vx, vy, vz) || 1;
-    dx += vx / n * 2.5; dy += vy / n * 2; dz += vz / n * 2.5;
-    if (n < 2.4) foods.splice(foods.indexOf(target), 1);
+
+  let target = null;
+  if (rushing) {
+    // ダッシュ中は行き先（または逃げる方向）だけを強く目指す
+    let vx, vy, vz;
+    if (A.kind === "dash") { vx = A.tx - F.x; vy = A.ty - F.y; vz = A.tz - F.z; }
+    else { vx = A.ax; vy = A.ay; vz = A.az; }
+    const n = Math.hypot(vx, vy, vz) || 1;
+    dx += vx / n * 5; dy += vy / n * 3; dz += vz / n * 5;
+  } else {
+    // ゆったりした寄り道
+    const wa = F.yaw + (noise3(time * 0.12, F.seed, 0, 99) - 0.5) * 3.2;
+    dx += Math.cos(wa) * 0.7; dz += Math.sin(wa) * 0.7;
+
+    // 泳ぐ深さを時々変える
+    F.yTimer -= dt;
+    if (F.yTimer < 0) {
+      const lo = WATER_TOP + F.Rh + 5, hi = floorAt(F.x, F.z) - F.Rh * 2 - 4;
+      F.ty = lo + Math.random() * Math.max(1, hi - lo);
+      F.yTimer = 6 + Math.random() * 9;
+    }
+    dy += clamp((F.ty - F.y) * 0.04, -0.4, 0.4);
+
+    // 餌
+    if (!A) {
+      let best = 1e9;
+      for (const f of foods) {
+        const d = Math.hypot(f.x - F.x, f.y - F.y, f.z - F.z);
+        if (d < best) { best = d; target = f; }
+      }
+    }
+    const mx = F.x + fx * half, my = F.y + fy * half, mz = F.z + fz * half;
+    if (target) {
+      const vx = target.x - mx, vy = target.y - my, vz = target.z - mz, n = Math.hypot(vx, vy, vz) || 1;
+      dx += vx / n * 2.5; dy += vy / n * 2; dz += vz / n * 2.5;
+      if (n < 2.4) foods.splice(foods.indexOf(target), 1);
+    }
   }
 
-  // 壁・水面・底を先読みして避ける
-  const look = half + 9;
+  // 壁・水面・底を先読みして避ける（速いほど遠くを見る）
+  const look = half + 9 + F.speed * 0.5;
   const px = F.x + fx * look, py = F.y + fy * look, pz = F.z + fz * look;
   const MX = 7, MZ = 3;
   if (px < MX) dx += (MX - px) * 0.4;
@@ -514,31 +589,56 @@ function updateFish(F, dt, time) {
     }
   }
 
-  // 旋回（向きの変化に慣性を持たせる）
+  // 旋回（向きの変化に慣性を持たせる）。ためる瞬間は一気に向きを変えて体を C の字に曲げる
   let diff = wrapAngle(Math.atan2(dz, dx) - F.yaw);
   // 行きたい方向がほぼ真後ろのときは、いま回っている向きのまま回り切る（左右に首を振らない）
   if (Math.abs(diff) > 2.6 && diff * F.yawRate < 0) diff -= Math.sign(diff) * 2 * Math.PI;
-  const tr = clamp(diff * 1.8, -1.6, 1.6);
-  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * 4);
+  const maxTurn = rushing ? (A.phase === "coil" ? 7 : 3) : 1.6;
+  const tr = clamp(diff * (rushing ? 6 : 1.8), -maxTurn, maxTurn);
+  F.yawRate += (tr - F.yawRate) * Math.min(1, dt * (rushing ? 14 : 4));
   F.yaw = wrapAngle(F.yaw + F.yawRate * dt);
   F.yawU += F.yawRate * dt;
   recordHeading(F, time);
   const wp = clamp(Math.atan2(-dy, Math.hypot(dx, dz)), -0.45, 0.45);
-  F.pitch += (wp - F.pitch) * Math.min(1, dt * 1.2);
+  F.pitch += (wp - F.pitch) * Math.min(1, dt * (rushing ? 3 : 1.2));
 
-  // 泳ぎのリズム：尾を数回ゆったり振って加速し、尾を止めて惰性で滑る
-  F.modeT -= dt;
-  if (target) {
-    F.beating = true;
-  } else if (F.modeT <= 0 || (!F.beating && Math.abs(diff) > 1.1)) {
-    F.beating = !F.beating;
-    F.modeT = F.beating ? (2 + Math.floor(Math.random() * 3)) / F.freq : 1.5 + Math.random() * 2.5;
+  // 泳ぎのリズム
+  let freq, ampK;
+  if (A) {
+    freq = P.freq;
+    if (A.phase === "coil") {
+      // ため：尾は振らず、少し減速しながら体を丸める
+      F.drive = 1;
+      ampK = 0.2;
+      F.speed = Math.max(0.8, F.speed * Math.exp(-3 * dt));
+    } else if (A.phase === "burst") {
+      // 突進：速く大きく尾を振って一気に加速
+      F.drive = 1;
+      ampK = P.amp / 0.075;
+      F.speed += (P.vmax - F.speed) * Math.min(1, dt * 3.5);
+    } else {
+      // 減速：尾を止めて惰性で滑り、いつもの速さに戻る
+      F.drive += (0 - F.drive) * Math.min(1, dt * 3);
+      freq = mix(F.freq, P.freq, F.drive);
+      ampK = 0.12 + 0.88 * F.drive;
+      F.speed = Math.max(0.8, F.speed - (F.speed - 3) * Math.min(1, dt * 1.6));
+    }
+  } else {
+    // 尾を数回ゆったり振って加速し、尾を止めて惰性で滑る
+    F.modeT -= dt;
+    if (target) {
+      F.beating = true;
+    } else if (F.modeT <= 0 || (!F.beating && Math.abs(diff) > 1.1)) {
+      F.beating = !F.beating;
+      F.modeT = F.beating ? (2 + Math.floor(Math.random() * 3)) / F.freq : 1.5 + Math.random() * 2.5;
+    }
+    F.drive += ((F.beating ? 1 : 0) - F.drive) * Math.min(1, dt * (F.beating ? 2.5 : 1.4));
+    freq = target ? 1.2 : F.freq;                       // 尾を振る回数 [回/秒]
+    ampK = 0.12 + 0.88 * F.drive;
+    const vmax = target ? 9 : 4.5 + noise3(time * 0.1, F.seed, 5, 98) * 2;
+    const DRAG = 0.3;
+    F.speed = Math.max(0.8, F.speed + (F.drive * vmax * DRAG - F.speed * DRAG) * dt);
   }
-  F.drive += ((F.beating ? 1 : 0) - F.drive) * Math.min(1, dt * (F.beating ? 2.5 : 1.4));
-  const freq = target ? 1.2 : F.freq;                       // 尾を振る回数 [回/秒]
-  const vmax = target ? 9 : 4.5 + noise3(time * 0.1, F.seed, 5, 98) * 2;
-  const DRAG = 0.3;
-  F.speed = Math.max(0.8, F.speed + (F.drive * vmax * DRAG - F.speed * DRAG) * dt);
 
   const ncy = Math.cos(F.yaw), nsy = Math.sin(F.yaw), ncp = Math.cos(F.pitch), nsp = Math.sin(F.pitch);
   F.x += ncp * ncy * F.speed * dt;
@@ -550,9 +650,11 @@ function updateFish(F, dt, time) {
   F.z = clamp(F.z, hz, D - hz);
   F.y = clamp(F.y, WATER_TOP + F.Rh * 0.8, floorAt(F.x, F.z) - F.Rh - 1);
 
-  // こいでいる間だけ尾を大きく振る
-  F.amp = F.L * 0.075 * (0.12 + 0.88 * F.drive);
+  F.amp = F.L * 0.075 * ampK;
   F.phase += dt * 2 * Math.PI * freq * (0.35 + 0.65 * F.drive);
+  // 速く泳ぐほど体はすぐ頭の向きに追いつく（ため中は遅らせて C の字を深くする）
+  const lagT = A && A.phase === "coil" ? TURN_LAG : clamp(F.L * 0.4 / Math.max(F.speed, 1), 0.3, TURN_LAG);
+  F.lag += (lagT - F.lag) * Math.min(1, dt * 5);
   // 胸鰭は滑っている間は広げ、こいでいる間はたたむ
   F.finAng = 0.3 + 0.4 * (1 - F.drive) + 0.06 * Math.sin(time * 1.3 + F.seed);
 }
@@ -647,6 +749,7 @@ function buildFrame(time) {
   for (const F of fish) drawFish(F, time);
 }
 function step(dt, time) {
+  scheduleDart(time);
   for (const F of fish) updateFish(F, dt, time);
   updateFood(dt);
 }
