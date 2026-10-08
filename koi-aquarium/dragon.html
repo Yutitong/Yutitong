@@ -112,16 +112,17 @@
   <div class="panel">
     <div class="title">
       <h1>龍と錦鯉の水槽</h1>
-      <p class="spec">128 × 128 × 128 voxel ・ 平行投影 ・ ドラッグで回転</p>
+      <p class="spec">128 × 128 × 128 voxel ・ 平行投影 ・ ドラッグで回転 ・ スクロールでズーム</p>
     </div>
     <div class="controls">
       <button id="front" type="button">正面に戻す</button>
+      <button id="unzoom" type="button">ズームを戻す <span id="zoom"></span></button>
       <button id="feed" type="button">餌をやる</button>
       <button id="pause" type="button">一時停止</button>
     </div>
   </div>
   <ul class="legend" id="legend"><li><span class="sw" style="background:linear-gradient(90deg,#348c52 0 34%,#deb450 34% 67%,#d03e28 67% 100%)"></span>龍</li></ul>
-  <p class="hint">緑の龍が水槽の中をうねりながら飛び、近づかれた鯉は驚いて逃げます。ドラッグ（または矢印キー）で水槽を回せます。クリックするとその位置の水面から餌が落ちます。どの角度でも 1 ボクセルが 1 ピクセルのドット絵のままです。</p>
+  <p class="hint">緑の龍が水槽の中をうねりながら飛び、近づかれた鯉は驚いて逃げます。ドラッグ（または矢印キー）で水槽を回せます。スクロール（またはピンチ、＋／－キー）でマウスの位置を中心にズームし、Shift＋ドラッグか右ドラッグで拡大した画面を動かせます。クリックするとその位置の水面から餌が落ちます。どの角度でも 1 ボクセルが 1 ピクセルのドット絵のままです。</p>
 </div>
 
 <script>
@@ -1021,9 +1022,12 @@ function scareFish(dt) {
 //  点をカメラの向きに回してから画面のピクセル格子に落とし、各ピクセルにいちばん手前の点を残す。
 //  （カメラに正対したボクセル格子を作って正面から投影するのと同じ）
 // ============================================================
+// 描画は 228×228 ドットの裏キャンバスに行い、表示用キャンバスへ整数倍に拡大して映す（ズーム）
 const canvas = document.getElementById("tank");
-canvas.width = CW; canvas.height = CH;
-const ctx = canvas.getContext("2d");
+const vctx = canvas.getContext("2d");
+const buf = document.createElement("canvas");
+buf.width = CW; buf.height = CH;
+const ctx = buf.getContext("2d");
 const img = ctx.createImageData(CW, CH);
 const out = new Uint32Array(img.data.buffer);
 const zbuf = new Float32Array(CW * CH), ibuf = new Int32Array(CW * CH);
@@ -1191,33 +1195,123 @@ function frame(now) {
   buildFrame(time);
   render();
   ctx.putImageData(img, 0, 0);
+  present();
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+// ------------------------------------------------------------
+//  ズーム：1 ボクセル = 1 ドットのまま、ドットを大きく映す
+//  view.dot = 1 ドットを何 CSS ピクセルで映すか（整数）, (view.cx, view.cy) = 表示の中心（ドット座標）
+// ------------------------------------------------------------
+const view = { base: 1, dot: 1, cx: CW / 2, cy: CH / 2, cssW: CW, cssH: CH, dpr: 1 };
+const MAX_ZOOM = 12;   // 画面に合わせた大きさの何倍まで拡大できるか
+
+function clampView() {
+  const hw = view.cssW / 2 / view.dot, hh = view.cssH / 2 / view.dot;
+  view.cx = clamp(view.cx, hw, CW - hw);
+  view.cy = clamp(view.cy, hh, CH - hh);
+}
+function present() {
+  const d = view.dot * view.dpr;
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  vctx.fillStyle = "rgb(20,23,28)";
+  vctx.fillRect(0, 0, canvas.width, canvas.height);
+  vctx.imageSmoothingEnabled = false;
+  vctx.setTransform(d, 0, 0, d, (view.cssW / 2 - view.cx * view.dot) * view.dpr, (view.cssH / 2 - view.cy * view.dot) * view.dpr);
+  vctx.drawImage(buf, 0, 0);
+}
+// 画面上の位置 → 裏キャンバスのドット座標
+function toDots(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return [view.cx + (clientX - r.left - view.cssW / 2) / view.dot, view.cy + (clientY - r.top - view.cssH / 2) / view.dot];
+}
+// (clientX, clientY) の下にある点を動かさずに拡大率を変える
+function zoomTo(dot, clientX, clientY) {
+  dot = clamp(Math.round(dot), view.base, view.base * MAX_ZOOM);
+  if (dot === view.dot) return;
+  const r = canvas.getBoundingClientRect();
+  const [px, py] = toDots(clientX, clientY);
+  view.dot = dot;
+  view.cx = px - (clientX - r.left - view.cssW / 2) / dot;
+  view.cy = py - (clientY - r.top - view.cssH / 2) / dot;
+  clampView();
+  zoomLabel.textContent = view.dot === view.base ? "" : "×" + (view.dot / view.base).toFixed(1).replace(/\.0$/, "");
+}
 
 // 画面サイズに合わせて整数倍で拡大
 function fit() {
   const availW = Math.min(window.innerWidth - 32, 1400);
   const availH = window.innerHeight - 230;
   const s = Math.max(1, Math.floor(Math.min(availW / CW, availH / CH)));
-  canvas.style.width = CW * s + "px";
-  canvas.style.height = CH * s + "px";
+  const ratio = view.dot / view.base;
+  view.base = s;
+  view.dot = Math.max(s, Math.round(s * ratio));
+  view.cssW = CW * s; view.cssH = CH * s;
+  view.dpr = window.devicePixelRatio || 1;
+  canvas.style.width = view.cssW + "px";
+  canvas.style.height = view.cssH + "px";
+  canvas.width = Math.round(view.cssW * view.dpr);
+  canvas.height = Math.round(view.cssH * view.dpr);
+  clampView();
 }
+const zoomLabel = document.getElementById("zoom");
 window.addEventListener("resize", fit);
 fit();
+requestAnimationFrame(frame);
+
+// ホイール（トラックパッドのピンチも）で拡大・縮小
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025));
+  let dot = view.dot * f;
+  // 1 回の操作で最低 1 段は変わるように
+  if (Math.round(dot) === view.dot) dot = view.dot + (f > 1 ? 1 : -1);
+  zoomTo(dot, e.clientX, e.clientY);
+}, { passive: false });
 
 // ドラッグで回転、動かさずに離したらその位置の水面に餌
 const ROT_PER_PX = 0.012;
 let homing = false, downX = 0, downY = 0, lastX = 0, lastY = 0, lastT = 0, moved = 0;
+const pointers = new Map();   // 2 本指のピンチ用
+let panning = false, pinchDist = 0, pinchDot = 1;
+canvas.addEventListener("contextmenu", e => e.preventDefault());
 canvas.addEventListener("pointerdown", e => {
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  canvas.setPointerCapture(e.pointerId);
+  if (pointers.size === 2) {
+    // 2 本指になったら回転をやめてピンチ（拡大縮小＋移動）
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a[0] - b[0], a[1] - b[1]); pinchDot = view.dot;
+    lastX = (a[0] + b[0]) / 2; lastY = (a[1] + b[1]) / 2;
+    dragging = false; panning = false; moved = 99;
+    return;
+  }
   dragging = true; homing = false;
+  // Shift・右ボタン・中ボタンでドラッグすると、拡大した画面を動かす
+  panning = e.shiftKey || e.button === 1 || e.button === 2;
   downX = lastX = e.clientX; downY = lastY = e.clientY; lastT = performance.now(); moved = 0;
   cam.vyaw = cam.vpitch = 0;
-  canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    view.cx -= (mx - lastX) / view.dot; view.cy -= (my - lastY) / view.dot;
+    clampView();
+    if (pinchDist > 0) zoomTo(pinchDot * dist / pinchDist, mx, my);   // 指を置いたときの間隔との比で拡大
+    lastX = mx; lastY = my;
+    return;
+  }
   if (!dragging) return;
   const dx = e.clientX - lastX, dy = e.clientY - lastY, now = performance.now();
+  if (panning) {
+    view.cx -= dx / view.dot; view.cy -= dy / view.dot;
+    clampView();
+    moved += Math.abs(dx) + Math.abs(dy);
+    lastX = e.clientX; lastY = e.clientY;
+    return;
+  }
   const k = ROT_PER_PX * CW / canvas.getBoundingClientRect().width * 4;
   cam.yaw += dx * k;
   cam.pitch = clamp(cam.pitch + dy * k, 0, PITCH_MAX);
@@ -1227,8 +1321,11 @@ canvas.addEventListener("pointermove", e => {
   lastX = e.clientX; lastY = e.clientY; lastT = now;
 });
 function endDrag(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size > 0) { lastX = [...pointers.values()][0][0]; lastY = [...pointers.values()][0][1]; return; }
   if (!dragging) return;
   dragging = false;
+  if (panning) { panning = false; cam.vyaw = cam.vpitch = 0; return; }
   if (performance.now() - lastT > 80) cam.vyaw = cam.vpitch = 0;   // 止めてから離したら惰性なし
   if (moved < 5 && e.type === "pointerup") feedAt(e.clientX, e.clientY);
 }
@@ -1237,8 +1334,8 @@ canvas.addEventListener("pointercancel", endDrag);
 
 // クリックした位置の視線が最初に水槽へ入る点の真上（水面）から餌を落とす
 function feedAt(clientX, clientY) {
-  const r = canvas.getBoundingClientRect();
-  const u = (clientX - r.left) / r.width * CW - CW / 2, v = (clientY - r.top) / r.height * CH - CH / 2;
+  const [qx, qy] = toDots(clientX, clientY);
+  const u = qx - CW / 2, v = qy - CH / 2;
   const t = tankEntry(u, v);
   if (t === null) return;
   const o = rayOrigin(u, v), F = basis.F;
@@ -1251,11 +1348,19 @@ canvas.addEventListener("keydown", e => {
   else if (e.key === "ArrowRight") cam.yaw += step;
   else if (e.key === "ArrowUp") cam.pitch = clamp(cam.pitch - step, 0, PITCH_MAX);
   else if (e.key === "ArrowDown") cam.pitch = clamp(cam.pitch + step, 0, PITCH_MAX);
+  else if (e.key === "+" || e.key === "=" || e.key === "-" || e.key === "0") {
+    const r = canvas.getBoundingClientRect(), mx = r.left + r.width / 2, my = r.top + r.height / 2;
+    zoomTo(e.key === "0" ? view.base : view.dot * (e.key === "-" ? 1 / 1.25 : 1.25) + (e.key === "-" ? -0.5 : 0.5), mx, my);
+  }
   else return;
   homing = false;
   e.preventDefault();
 });
 document.getElementById("front").addEventListener("click", () => { homing = true; cam.vyaw = cam.vpitch = 0; });
+document.getElementById("unzoom").addEventListener("click", () => {
+  const r = canvas.getBoundingClientRect();
+  zoomTo(view.base, r.left + r.width / 2, r.top + r.height / 2);
+});
 document.getElementById("feed").addEventListener("click", () => dropFood(10 + Math.random() * (W - 20)));
 const pauseBtn = document.getElementById("pause");
 pauseBtn.addEventListener("click", () => {
