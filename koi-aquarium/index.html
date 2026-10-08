@@ -292,111 +292,141 @@ function finColor(F, kind, u, w) {
   return pack(c[0] * ray, c[1] * ray, c[2] * ray, a);
 }
 
-function pairedFin(F, t, l, v, t0, aFrac, qFrac, ang, kind) {
-  const L = F.L;
-  const a = (t - t0) * L, aMax = aFrac * L;
-  if (a < -0.6 || a > aMax) return 0;
-  const p0 = prof(t0);
-  const b = Math.abs(l) - F.Rw * p0 * 0.7, c = v + F.Rh * p0 * 0.45;
-  const ca = Math.cos(ang), sa = Math.sin(ang);
-  const dist = b * sa + c * ca;
-  if (Math.abs(dist) > 0.8) return 0;
-  const q = b * ca - c * sa, qMax = qFrac * L;
-  if (q < -0.3) return 0;
-  const ea = (a - aMax * 0.5) / (aMax * 0.5 + 0.6), eq = (q - qMax * 0.5) / (qMax * 0.5);
-  if (ea * ea + eq * eq > 1) return 0;
-  return finColor(F, kind, q / qMax, a / aMax);
+// ------------------------------------------------------------
+//  鯉の形は「まっすぐな体」の局所座標で一度だけ細かくサンプリングしておき、
+//  毎フレーム背骨のしなりに沿って曲げてからボクセル空間へ書き込む。
+//  局所座標: t = 鼻先(0)→尾端(1), l = 右方向, v = 背中方向
+// ------------------------------------------------------------
+const SAMPLE = 0.5;   // 0.5 ボクセル間隔なら、どう回転・変形しても穴が空かない
+
+function bodyAt(F, t, l, v) {
+  const p = prof(t);
+  if (p <= 0) return 0;
+  const rw = F.Rw * p, rhT = F.Rh * p, rv = v >= 0 ? rhT : rhT * 0.85;
+  return (l / rw) ** 2 + (v / rv) ** 2 <= 1 ? bodyColor(F, t, l, v, rw, rhT) : 0;
 }
 
-function fishVoxel(F, t, l, v, pfa) {
-  const Rh = F.Rh, Rw = F.Rw;
-  const p = prof(t);
-  if (p > 0) {
-    const rw = Rw * p, rhT = Rh * p, rv = v >= 0 ? rhT : rhT * 0.85;
-    if ((l / rw) ** 2 + (v / rv) ** 2 <= 1) return bodyColor(F, t, l, v, rw, rhT);
-  }
-  const al = Math.abs(l);
-  // 背鰭
+// 背鰭・尻鰭・尾鰭（体の中心面にある鰭）
+function medianFinAt(F, t, l, v) {
+  const Rh = F.Rh, p = prof(t), al = Math.abs(l);
   if (t > 0.27 && t < 0.62 && al < 0.75) {
     const base = Rh * p - 0.6, u = (t - 0.27) / 0.35;
     const fh = Rh * 0.7 * Math.min(1, u / 0.08) * (1 - 0.55 * u);
     if (v > base && v < base + fh) return finColor(F, "dorsal", (v - base) / fh, u);
   }
-  // 尻鰭
   if (t > 0.6 && t < 0.72 && al < 0.75) {
     const base = -Rh * p * 0.85 + 0.6, u = (t - 0.6) / 0.12;
     const fh = Rh * 0.55 * (1 - u) * Math.min(1, u / 0.15);
     if (v < base && v > base - fh) return finColor(F, "anal", (base - v) / fh, u);
   }
-  // 尾鰭（二股）
   if (t > 0.74 && t <= 1 && al < 0.8) {
     const u = (t - 0.74) / 0.26, hh = Rh * (0.22 + 0.95 * u), av = Math.abs(v);
     if (av < hh && t < 1 - 0.1 * (1 - av / hh)) return finColor(F, "tail", u, av / hh);
   }
-  // 胸鰭・腹鰭
-  return pairedFin(F, t, l, v, 0.24, 0.13, 0.15, pfa, "pec")
-      || pairedFin(F, t, l, v, 0.5, 0.08, 0.08, pfa + 0.5, "pel");
+  return 0;
 }
 
-const BEND_N = 64;
-const bendTab = new Float32Array(BEND_N + 1);
+function buildFishModel(F) {
+  const L = F.L, fins = [], body = [], eyes = [];
+  const lMax = F.Rw + 1, vMax = F.Rh * 1.9 + 1;
+  for (let s = SAMPLE / 2; s < L; s += SAMPLE) {
+    const t = s / L;
+    for (let l = -lMax; l <= lMax; l += SAMPLE) {
+      for (let v = -vMax; v <= vMax; v += SAMPLE) {
+        let c = bodyAt(F, t, l, v);
+        if (c) { (c === EYE ? eyes : body).push(t, l, v, c); continue; }
+        c = medianFinAt(F, t, l, v);
+        if (c) fins.push(t, l, v, c);
+      }
+    }
+  }
+  // 後から書いたものが勝つので 鰭 → 胴 → 目 の順に並べる
+  F.model = fins.concat(body, eyes);
 
-function drawFish(F, time) {
-  const L = F.L, half = L / 2;
+  // 胸鰭・腹鰭は鰭の平面上の座標（a: 付け根から後ろへ, q: 外へ, d: 厚み）で持ち、開き具合は毎フレーム決める
+  F.paired = [];
+  for (const [kind, t0, aFrac, qFrac, open] of [["pec", 0.24, 0.13, 0.15, 0], ["pel", 0.5, 0.08, 0.08, 0.5]]) {
+    const aMax = aFrac * L, qMax = qFrac * L, p0 = prof(t0), pts = [];
+    for (let a = -0.5; a <= aMax; a += SAMPLE)
+      for (let q = -0.25; q <= qMax; q += SAMPLE)
+        for (let d = -0.75; d <= 0.75; d += SAMPLE) {
+          const ea = (a - aMax * 0.5) / (aMax * 0.5 + 0.6), eq = (q - qMax * 0.5) / (qMax * 0.5);
+          if (ea * ea + eq * eq <= 1) pts.push(a, q, d, finColor(F, kind, q / qMax, a / aMax));
+        }
+    F.paired.push({ t0, open, la: F.Rw * p0 * 0.7, va: -F.Rh * p0 * 0.45, pts });
+  }
+}
+
+// 背骨：旋回による弧 + 頭から尾へ伝わる波。
+// 振れ幅は頭でわずか、尾で最大（コイ科の泳ぎ方）。角度を積分して位置を出すので、
+// 尾は横に平行移動するのではなく向きを変えながら振れ、体長も伸び縮みしない。
+const BEND_N = 64;
+const spAlong = new Float32Array(BEND_N + 1), spLat = new Float32Array(BEND_N + 1);
+const spCos = new Float32Array(BEND_N + 1), spSin = new Float32Array(BEND_N + 1);
+
+function computeSpine(F) {
+  const L = F.L, ds = L / BEND_N, K = 2 * Math.PI / (L * 1.05);
+  let along = 0, lat = 0, pc = 1, ps = 0;
+  for (let k = 0; k <= BEND_N; k++) {
+    const s = k * ds, x = s / L;
+    const env = 0.1 - 0.25 * x + 1.15 * x * x, denv = (-0.25 + 2.3 * x) / L;
+    const ph = K * s - F.phase;
+    const slope = F.kappa * s + F.amp * (denv * Math.sin(ph) + env * K * Math.cos(ph));
+    const c = 1 / Math.sqrt(1 + slope * slope), sn = slope * c;
+    if (k > 0) { along += ds * (c + pc) / 2; lat += ds * (sn + ps) / 2; }
+    spAlong[k] = along; spLat[k] = lat; spCos[k] = c; spSin[k] = sn;
+    pc = c; ps = sn;
+  }
+}
+
+function drawFish(F) {
+  computeSpine(F);
   const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
   const fx = cp * cyw, fy = -sp, fz = cp * syw;   // 前
   const rx = -syw, rz = cyw;                        // 右（ヨーが増える向き）
   const ux = -sp * cyw, uy = -cp, uz = -sp * syw;   // 背中側
+  // 体の中央を位置の基準に、重心あたり（鼻先から 35%）が泳ぐ軌跡に乗るよう横方向をそろえる
+  const aC = spAlong[BEND_N >> 1], latC = spLat[Math.round(BEND_N * 0.35)];
 
-  // 体のしなり：旋回による弧 + 尾へ向かう波
-  let maxOff = 0;
-  for (let k = 0; k <= BEND_N; k++) {
-    const t = k / BEND_N, s = t * L;
-    const o = F.kappa * s * s / 2 + F.amp * t * t * Math.sin(5.3 * t - F.phase);
-    bendTab[k] = o;
-    if (Math.abs(o) > maxOff) maxOff = Math.abs(o);
-  }
-  const ext = F.Rh * 1.9 + 2 + maxOff;
-  const nx = F.x + fx * half, ny = F.y + fy * half, nz = F.z + fz * half;
-  const tx = F.x - fx * half, ty = F.y - fy * half, tz = F.z - fz * half;
-  const x0 = Math.max(0, Math.floor(Math.min(nx, tx) - ext)), x1 = Math.min(W - 1, Math.ceil(Math.max(nx, tx) + ext));
-  const y0 = Math.max(0, Math.floor(Math.min(ny, ty) - ext)), y1 = Math.min(H - 1, Math.ceil(Math.max(ny, ty) + ext));
-  const z0 = Math.max(0, Math.floor(Math.min(nz, tz) - ext)), z1 = Math.min(D - 1, Math.ceil(Math.max(nz, tz) + ext));
-  const pfa = 0.45 + 0.3 * Math.sin(time * 2.2 + F.seed);
+  const plot = (t, l, v, c) => {
+    const k = clamp((t * BEND_N + 0.5) | 0, 0, BEND_N);
+    const a = aC - spAlong[k] + l * spSin[k];
+    const b = spLat[k] - latC + l * spCos[k];
+    put(Math.floor(F.x + fx * a + rx * b + ux * v),
+        Math.floor(F.y + fy * a + uy * v),
+        Math.floor(F.z + fz * a + rz * b + uz * v), c);
+  };
 
-  for (let y = y0; y <= y1; y++) {
-    const dy = y + 0.5 - F.y;
-    for (let z = z0; z <= z1; z++) {
-      const dz = z + 0.5 - F.z;
-      for (let x = x0; x <= x1; x++) {
-        const dx = x + 0.5 - F.x;
-        const s = dx * fx + dy * fy + dz * fz;
-        const t = 0.5 - s / L;
-        if (t < -0.02 || t > 1.02) continue;
-        const k = clamp(Math.round(t * BEND_N), 0, BEND_N);
-        const l = dx * rx + dz * rz - bendTab[k];
-        const v = dx * ux + dy * uy + dz * uz;
-        const c = fishVoxel(F, t, l, v, pfa);
-        if (c) put(x, y, z, c);
-      }
+  for (const P of F.paired) {
+    const ang = F.finAng + P.open, ca = Math.cos(ang), sa = Math.sin(ang), pts = P.pts;
+    for (let i = 0; i < pts.length; i += 4) {
+      const q = pts[i + 1], d = pts[i + 2];
+      const b = q * ca + d * sa, c = -q * sa + d * ca, t = P.t0 + pts[i] / F.L;
+      plot(t, P.la + b, P.va + c, pts[i + 3]);
+      plot(t, -P.la - b, P.va + c, pts[i + 3]);
     }
   }
+  const m = F.model;
+  for (let i = 0; i < m.length; i += 4) plot(m[i], m[i + 1], m[i + 2], m[i + 3]);
 }
 
 const fish = [];
 function spawnFish() {
   const rng = mulberry32(99);
   VARIETIES.forEach((V, i) => {
-    fish.push({
+    const F = {
       kind: V.kind, name: V.name, L: V.L, Rh: V.L * 0.155, Rw: V.L * 0.135,
       seed: 1000 + i * 37,
       x: 20 + (i % 3) * 40 + rng() * 10,
       y: 16 + Math.floor(i / 3) * 14 + rng() * 6,
       z: 14 + rng() * 18,
       yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
-      speed: 4, kappa: 0, amp: 1.2, phase: rng() * 6,
+      speed: 2 + rng() * 2, kappa: 0, amp: 0, phase: rng() * 6, finAng: 0.5,
+      beating: rng() < 0.5, modeT: rng() * 2, drive: 0, freq: 0.65 + rng() * 0.15,
       ty: 25, yTimer: 0,
-    });
+    };
+    buildFishModel(F);
+    fish.push(F);
   });
 }
 
@@ -466,8 +496,19 @@ function updateFish(F, dt, time) {
   const wp = clamp(Math.atan2(-dy, Math.hypot(dx, dz)), -0.45, 0.45);
   F.pitch += (wp - F.pitch) * Math.min(1, dt * 1.2);
 
-  const cruise = 3 + noise3(time * 0.2, F.seed, 5, 98) * 3.5;
-  F.speed += ((target ? 8 : cruise) - F.speed) * Math.min(1, dt * 0.8);
+  // 泳ぎのリズム：尾を数回ゆったり振って加速し、尾を止めて惰性で滑る
+  F.modeT -= dt;
+  if (target) {
+    F.beating = true;
+  } else if (F.modeT <= 0 || (!F.beating && Math.abs(diff) > 1.1)) {
+    F.beating = !F.beating;
+    F.modeT = F.beating ? (2 + Math.floor(Math.random() * 3)) / F.freq : 1.5 + Math.random() * 2.5;
+  }
+  F.drive += ((F.beating ? 1 : 0) - F.drive) * Math.min(1, dt * (F.beating ? 2.5 : 1.4));
+  const freq = target ? 1.2 : F.freq;                       // 尾を振る回数 [回/秒]
+  const vmax = target ? 9 : 4.5 + noise3(time * 0.1, F.seed, 5, 98) * 2;
+  const DRAG = 0.3;
+  F.speed = Math.max(0.8, F.speed + (F.drive * vmax * DRAG - F.speed * DRAG) * dt);
 
   const ncy = Math.cos(F.yaw), nsy = Math.sin(F.yaw), ncp = Math.cos(F.pitch), nsp = Math.sin(F.pitch);
   F.x += ncp * ncy * F.speed * dt;
@@ -479,9 +520,12 @@ function updateFish(F, dt, time) {
   F.z = clamp(F.z, hz, D - hz);
   F.y = clamp(F.y, WATER_TOP + F.Rh * 0.8, floorAt(F.x, F.z) - F.Rh - 1);
 
-  F.kappa = clamp(F.yawRate / Math.max(F.speed, 2.5), -0.022, 0.022);
-  F.amp = 0.8 + F.speed * 0.15;
-  F.phase += dt * (2.4 + F.speed * 0.6);
+  // 曲がるときは体を弓なりに、こいでいる間だけ尾を大きく振る
+  F.kappa = clamp(F.yawRate * 0.014, -0.02, 0.02);
+  F.amp = F.L * 0.075 * (0.12 + 0.88 * F.drive);
+  F.phase += dt * 2 * Math.PI * freq * (0.35 + 0.65 * F.drive);
+  // 胸鰭は滑っている間は広げ、こいでいる間はたたむ
+  F.finAng = 0.3 + 0.4 * (1 - F.drive) + 0.06 * Math.sin(time * 1.3 + F.seed);
 }
 
 // ============================================================
@@ -571,7 +615,7 @@ function drawFrame() {
 function buildFrame(time) {
   grid.fill(0);
   drawFood();
-  for (const F of fish) drawFish(F, time);
+  for (const F of fish) drawFish(F);
 }
 function step(dt, time) {
   for (const F of fish) updateFish(F, dt, time);
