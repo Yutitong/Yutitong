@@ -1064,7 +1064,7 @@ const Dragon_mouth = () => dragon.mouth;
 //  ・表面には水平方向の「流れの場」があり、龍の胴や尾、鯉の尾びれが動くと押される（簡易的な流体計算）。
 //    雲の模様はその流れでねじられ、渦の強いところは細かく波立つ
 //  ・生き物が表面近くを通ると「盛り上がり」が足され、流れに運ばれながら広がって消えていく（尾を引く）
-//  ・雲を突き抜けたり表面をかすめたりすると、雲が細長い筋になって体に引きずられ、たなびきながら消えていく
+//  ・雲から抜け出したり表面をかすめたりすると、通った跡に霞が残り、その場で広がりながら薄れて消える
 // ============================================================
 const CLOUD_Y = H - 30;              // 雲の表面の平均の高さ（y は下向き）
 const CLOUD_FLOW = 3;                // 流れる速さ [voxel/秒]（+x 向き）
@@ -1103,111 +1103,39 @@ function splat(x, z, rad, fn) {
 }
 const cloudSurfaceAt = (x, z) => sampleGrid(cloudH, x / CG, z / CG);
 
-// ---- 雲の筋：雲から引き出され、根元は雲の表面、先は生き物の体にくっついて伸びる（形は紐の計算で決める）。
-//      目標の長さまで伸びると体から離れ、細かい渦に乗ってばらばらに広がりながら、霧のように薄れて消える
-const streamers = [];
-const MAX_STREAMERS = 14, ROPE_N = 14;
-function attachedStreamer(obj, key) {
-  for (const st of streamers) if (st.attached && st.obj === obj && st.key === key) return st;
-  return null;
+// ---- 霞：雲から抜け出した直後や表面をかすめているあいだ、体が通った場所に雲の霞を少しずつ落としていく。
+//      霞は落ちたその場で、雲の流れに乗ってゆっくり漂いながら広がり、薄れて消える（体と雲を結ぶものは無い）
+const mists = [];
+const MAX_MISTS = 160;
+function depositMist(x, y, z, rad) {
+  if (mists.length >= MAX_MISTS) return;   // 多すぎるときは落とさない（古いものを急に消すと不自然なので）
+  mists.push({ x, y, z, r0: 1.2 + rad * 0.35, age: 0, life: 2.5 + Math.random() * 1.5, seed: (Math.random() * 1e6) | 0 });
 }
-function startStreamer(obj, key, x, y, z, rad) {
-  if (streamers.length >= MAX_STREAMERS || attachedStreamer(obj, key)) return;
-  obj.streamCool = obj.streamCool || {};
-  if ((obj.streamCool[key] || 0) > 0) return;
-  obj.streamCool[key] = 1.5;
-  const rx = x, ry = cloudSurfaceAt(x, z) + 0.5, rz = z;
-  const pts = [], prev = [];
-  for (let q = 0; q < ROPE_N; q++) {
-    const t = q / (ROPE_N - 1), p = [mix(rx, x, t), mix(ry, y, t), mix(rz, z, t)];
-    pts.push(p); prev.push(p.slice());
-  }
-  streamers.push({ obj, key, attached: true, age: 0, detachAge: 0, life: 3.5 + Math.random() * 1.5,
-                   target: 12 + rad * 3.5 + Math.random() * 8, len: Math.hypot(x - rx, y - ry, z - rz),
-                   r0: Math.min(3.2, 1.2 + rad * 0.4), phase: Math.random() * 6.28, pts, prev });
-}
-// くっついている筋の先を体の位置へ
-function growStreamer(st, x, y, z) {
-  const T = st.pts[ROPE_N - 1];
-  T[0] = x; T[1] = y; T[2] = z;
-  const R = st.pts[0];
-  st.len = Math.min(st.target, Math.max(st.len, Math.hypot(x - R[0], y - R[1], z - R[2])));
-}
-function updateStreamers(dt) {
-  for (let n = streamers.length - 1; n >= 0; n--) {
-    const st = streamers[n], P = st.pts, Q = st.prev;
-    st.age += dt;
-    const R = P[0], T = P[ROPE_N - 1];
-    // 伸びきったら（または時間切れで）体から離れる
-    if (st.attached && (Math.hypot(T[0] - R[0], T[1] - R[1], T[2] - R[2]) > st.target * 1.15 || st.age > 3)) { st.attached = false; st.detachAge = st.age; }
-    // 根元は雲の表面に貼りついたまま流れる
-    R[0] += CLOUD_FLOW * dt; R[1] = cloudSurfaceAt(R[0], R[2]) + 0.5;
-    // 途中の点（離れた後は先端も）：慣性 + 雲の流れに引かれる + ゆっくり雲へ沈む
-    const last = st.attached ? ROPE_N - 1 : ROPE_N;
-    const sink = st.attached ? 1.5 : 5;
-    for (let q = 1; q < last; q++) {
-      const p = P[q], o = Q[q], fi = p[0] / CG, fj = p[2] / CG;
-      const vx = (p[0] - o[0]) * 0.9, vy = (p[1] - o[1]) * 0.9, vz = (p[2] - o[2]) * 0.9;
-      o[0] = p[0]; o[1] = p[1]; o[2] = p[2];
-      const fx = (CLOUD_FLOW + sampleGrid(velX, fi, fj) * 0.6) * dt, fz = sampleGrid(velZ, fi, fj) * 0.6 * dt;
-      if (st.attached) {
-        p[0] += vx * 0.9 + fx * 0.25; p[1] += vy + sink * dt * dt * 10; p[2] += vz * 0.9 + fz * 0.25;
-      } else {
-        // 離れた後は紐ではなく、ひとつひとつが細かい渦に乗ってばらばらに漂う（だんだん広がっていく）
-        const sw = 2.2, ph = st.phase + q * 0.7, tt = st.age * 0.6;
-        const tx = (noise3(p[0] * 0.08 + ph, p[1] * 0.08, tt, 731) - 0.5) * sw;
-        const ty = (noise3(p[0] * 0.08, p[1] * 0.08 + ph, tt, 732) - 0.5) * sw * 0.6;
-        const tz = (noise3(p[2] * 0.08, tt, p[1] * 0.08 + ph, 733) - 0.5) * sw;
-        p[0] += vx * 0.6 + fx * 0.6 + tx * dt; p[1] += vy * 0.6 + ty * dt + 0.6 * dt; p[2] += vz * 0.6 + fz * 0.6 + tz * dt;
-      }
-    }
-    // 長さを保つ（根元と、くっついている先端は動かさない）
-    const L = st.len / (ROPE_N - 1);
-    for (let it = 0; it < (st.attached ? 5 : 0); it++) {   // 長さを保つのは、くっついている間だけ
-      for (let q = 0; q < ROPE_N - 1; q++) {
-        const a = P[q], b = P[q + 1], dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], d = Math.hypot(dx, dy, dz) || 1e-6;
-        const diff = (d - L) / d;
-        const fa = q === 0 ? 0 : 0.5, fb = (q + 1 === ROPE_N - 1 && st.attached) ? 0 : 0.5;
-        const k = fa + fb > 0 ? 1 / (fa + fb) : 0;
-        a[0] += dx * diff * fa * k; a[1] += dy * diff * fa * k; a[2] += dz * diff * fa * k;
-        b[0] -= dx * diff * fb * k; b[1] -= dy * diff * fb * k; b[2] -= dz * diff * fb * k;
-      }
-    }
-    // 雲の中に潜った部分は表面に出しておく（雲の中は見えないので）
-    for (let q = 1; q < ROPE_N; q++) { const p = P[q]; p[1] = Math.min(p[1], cloudSurfaceAt(p[0], p[2]) - 0.3); }
-    if (!st.attached && st.age - st.detachAge > st.life) streamers.splice(n, 1);
+function updateMist(dt) {
+  for (let n = mists.length - 1; n >= 0; n--) {
+    const m = mists[n];
+    m.age += dt;
+    if (m.age > m.life) { mists.splice(n, 1); continue; }
+    const fi = m.x / CG, fj = m.z / CG;
+    m.x += (CLOUD_FLOW * 0.7 + sampleGrid(velX, fi, fj) * 0.4) * dt;
+    m.z += sampleGrid(velZ, fi, fj) * 0.4 * dt;
+    m.y += 0.6 * dt;                                        // ゆっくり雲へ沈んでいく
   }
 }
-function emitStreamers(time) {
-  for (let sIdx = 0; sIdx < streamers.length; sIdx++) {
-    const st = streamers[sIdx];
-    const a = st.attached ? 0 : Math.min(1, (st.age - st.detachAge) / st.life);   // 離れてからの経過（0〜1）
-    if (a >= 1) continue;
-    // 時間とともに太く広がり、そのぶん点がまばらになって消えていく
-    const spread = 1 + a * 2.2, density = Math.pow(1 - a, 1.6);
-    const seed = (st.phase * 1000) | 0;
-    let n = 0;
-    for (let q = 0; q < ROPE_N - 1; q++) {
-      const A = st.pts[q], B = st.pts[q + 1];
-      const len = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
-      const steps = Math.max(1, Math.ceil(len / 0.7));
-      for (let t = 0; t < steps; t++, n++) {
-        const f = (q + t / steps) / (ROPE_N - 1);                 // 根元 0 → 先 1
-        const cx = mix(A[0], B[0], t / steps), cy = mix(A[1], B[1], t / steps), cz = mix(A[2], B[2], t / steps);
-        // 根元は太く濃く、先は細く淡い
-        const r = st.r0 * spread * (0.3 + 0.7 * Math.pow(1 - f, 0.7));
-        const dens = density * (0.35 + 0.65 * (1 - f));
-        const count = Math.ceil(r * r * 2.2);
-        for (let m = 0; m < count; m++) {
-          // 点ごとに決まった乱数で位置と「消える順番」を決めるので、チラつかずにだんだん抜けていく
-          if (hash(n, m, seed, 91) > dens) continue;
-          const u1 = hash(n, m, seed, 92), u2 = hash(n, m, seed, 93), u3 = hash(n, m, seed, 94);
-          const rr = r * Math.sqrt(u1), th = u2 * Math.PI * 2, el = (u3 - 0.5) * 1.6;
-          const ox = Math.cos(th) * rr, oz = Math.sin(th) * rr, oy = el * rr * 0.6;
-          const k = 1 / (Math.hypot(ox, oy, oz) || 1);
-          cloudPut(cx + ox, cy + oy, cz + oz, pack(...CLOUD_TOP, 255), ox * k, oy * k - 0.4, oz * k);
-        }
-      }
+function emitMist() {
+  const c = pack(...CLOUD_TOP, 255);
+  for (const m of mists) {
+    const a = m.age / m.life;
+    // 広がりながら、点がまばらになって消えていく（点ごとに決まった順番で抜けるのでチラつかない）
+    const r = m.r0 * (1 + 1.6 * a), dens = Math.pow(1 - a, 1.5) * 0.8;
+    const count = Math.ceil(r * r * 2.2);
+    for (let q = 0; q < count; q++) {
+      if (hash(q, m.seed, 0, 91) > dens) continue;
+      const u1 = hash(q, m.seed, 0, 92), u2 = hash(q, m.seed, 0, 93), u3 = hash(q, m.seed, 0, 94);
+      const rr = r * Math.cbrt(u1), th = u2 * Math.PI * 2, ph = Math.acos(u3 * 2 - 1);
+      const ox = Math.sin(ph) * Math.cos(th) * rr, oy = Math.cos(ph) * rr * 0.6, oz = Math.sin(ph) * Math.sin(th) * rr;
+      const k = 1 / (Math.hypot(ox, oy, oz) || 1);
+      cloudPut(m.x + ox, m.y + oy, m.z + oz, c, ox * k, oy * k - 0.4, oz * k);
     }
   }
 }
@@ -1222,10 +1150,11 @@ function stirPoint(obj, key, x, y, z, rad, dt) {
   const sp = Math.hypot(vx, vy, vz);
   if (sp > 80) return;                               // 一瞬で飛んだ（初期化など）ときは無視
   const depth = y - cloudSurfaceAt(x, z);            // 正なら雲の中
-  const st0 = attachedStreamer(obj, key);
-  if (st0 && (depth < -rad - 6 || depth > rad + 14)) {   // 雲から離れていても、くっついている筋は伸ばし続ける
-    growStreamer(st0, x, y, z);
-    return;
+  // 霞：雲から抜け出した直後や表面をかすめているあいだ、動いた距離に応じて通った場所に落としていく
+  obj.mistDist = obj.mistDist || {};
+  if (depth < rad * 0.5 && depth > -rad - 10 && sp > 2) {
+    const moved = (obj.mistDist[key] || 0) + sp * dt;
+    if (moved > 1.8 + rad * 0.8) { obj.mistDist[key] = 0; depositMist(x, y, z, rad); } else obj.mistDist[key] = moved;   // 太い体ほど間隔をあける
   }
   if (depth < -rad - 6 || depth > rad + 14) return;
   const w = Math.exp(-(((depth - 1) / (rad + 5)) ** 2));
@@ -1238,17 +1167,6 @@ function stirPoint(obj, key, x, y, z, rad, dt) {
   for (let q = 1; q <= segs; q++) {
     const t = q / segs;
     splat(mix(prev[0], x, t), mix(prev[2], z, t), rad + 3, (k, g) => { puff[k] = Math.min(PUFF_MAX, puff[k] + amount / segs * g); });
-  }
-  // 雲の筋：くっついている筋があれば体の位置まで伸ばす。無ければ、雲から抜け出す／表面を速くかすめるときに引き出す
-  obj.streamCool = obj.streamCool || {};
-  obj.streamCool[key] = (obj.streamCool[key] || 0) - dt;
-  const st = attachedStreamer(obj, key);
-  if (st) {
-    growStreamer(st, x, y, z);
-  } else {
-    const leaving = depth < rad && depth > -rad - 2 && vy < -3;          // 雲から上へ抜け出している
-    const skimming = Math.abs(depth) < rad * 0.8 && sp > 12;             // 表面を速くかすめている
-    if ((leaving || skimming) && Math.random() < dt * 3) startStreamer(obj, key, x, y, z, rad);
   }
 }
 
@@ -1309,7 +1227,7 @@ function updateClouds(dt, time) {
       dispX[k] = clamp((dispX[k] + velX[k] * dt) * dd, -24, 24);
       dispZ[k] = clamp((dispZ[k] + velZ[k] * dt) * dd, -24, 24);
     }
-    updateStreamers(dt);
+    updateMist(dt);
   }
   // 渦の強さ
   for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
@@ -1383,7 +1301,7 @@ function emitClouds(time) {
     }
   }
   castShadow = true;
-  emitStreamers(time);
+  emitMist();
 }
 
 // 鯉が龍に気づいて逃げる
