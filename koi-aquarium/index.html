@@ -118,7 +118,7 @@
     </div>
   </div>
   <ul class="legend" id="legend"></ul>
-  <p class="hint">水槽をクリックするとその位置に餌が落ちます（奥行きはランダム）。奥にいる鯉ほど青く霞み、上からの光で砂利に影が落ちます。</p>
+  <p class="hint">水槽をクリックするとその位置に餌が落ちます（奥行きはランダム）。陰影は付けず、奥行きは鯉どうしの重なりと縁取り、体の向きの変化だけで表しています。</p>
 </div>
 
 <script>
@@ -127,14 +127,9 @@
 //  ボクセル空間  x: 左→右, y: 上→下, z: 手前(0)→奥(D-1)
 // ============================================================
 const W = 128, H = 72, D = 48;
-const WATER_TOP = 6;               // 水面の行
+const WATER_TOP = 3;               // 鯉が上がってこられる上限の行
 const N = W * H * D;
 const grid = new Uint32Array(N);   // 0 = 空, それ以外 = (alpha<<24 | rgb)
-const staticGrid = new Uint32Array(N);
-const topY = new Int16Array(W * D); // 各 (x,z) 列で最も上にある不透明ボクセルの y（影の計算用）
-const staticTop = new Int16Array(W * D);
-const floorMin = new Int16Array(W * D);
-const OPAQUE = 200;
 
 // 表示キャンバス（水槽の枠と台を含む）
 const TX = 6, TY = 7;              // 水槽内部の左上
@@ -149,14 +144,6 @@ const mix = (a, b, t) => a + (b - a) * t;
 function put(x, y, z, c) {
   if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) return;
   grid[idx(x, y, z)] = c;
-  if ((c >>> 24) >= OPAQUE) {
-    const k = x + W * z;
-    if (y < topY[k]) topY[k] = y;
-  }
-}
-function putIfEmpty(x, y, z, c) {
-  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) return;
-  if (grid[idx(x, y, z)] === 0) put(x, y, z, c);
 }
 
 // ------------------------------------------------------------
@@ -189,202 +176,8 @@ function noise3(x, y, z, s) {
 }
 
 // ============================================================
-//  静的な地形：砂利・岩・水草の茂み・エアストーン
+//  餌
 // ============================================================
-const PEBBLES = [
-  [200, 182, 146], [170, 146, 108], [140, 122, 98], [218, 208, 184],
-  [112, 102, 90], [182, 156, 118], [84, 78, 70], [196, 170, 128],
-];
-const rockVoxels = [];
-
-function buildStatic() {
-  grid.fill(0);
-  topY.fill(H);
-
-  // 砂利：奥に向かって盛り上がる斜面（正面からでも表面が見える）
-  for (let z = 0; z < D; z++) {
-    for (let x = 0; x < W; x++) {
-      const zf = z / (D - 1);
-      const h = 3.5 + 12 * Math.pow(zf, 1.3)
-        + (noise3(x * 0.07, z * 0.09, 0, 7) - 0.5) * 4
-        + (noise3(x * 0.25, z * 0.25, 1, 8) - 0.5) * 1.2;
-      const sy = Math.round(H - 1 - h);
-      for (let y = sy; y < H; y++) {
-        const cell = hash(Math.floor((x + (z & 1)) / 2), Math.floor((y + (x & 1)) / 2), Math.floor(z / 2), 3);
-        const p = PEBBLES[Math.floor(cell * PEBBLES.length)];
-        const g = hash(x, y, z, 4);
-        const k = g < 0.12 ? 0.62 : 0.82 + g * 0.14;
-        put(x, y, z, pack(p[0] * k, p[1] * k, p[2] * k, 255));
-      }
-    }
-  }
-
-  // 岩
-  const rocks = [
-    { x: 27, z: 37, rx: 10, ry: 8, rz: 7, s: 11 },
-    { x: 101, z: 33, rx: 13, ry: 10, rz: 9, s: 12 },
-    { x: 63, z: 42, rx: 6, ry: 5, rz: 4.5, s: 13 },
-    { x: 84, z: 11, rx: 5, ry: 3.5, rz: 4, s: 14 },
-    { x: 14, z: 8, rx: 3.5, ry: 2.5, rz: 3, s: 15 },
-  ];
-  for (const r of rocks) {
-    const surf = topY[Math.round(r.x) + W * Math.round(r.z)];
-    const cy = surf - r.ry * 0.55;
-    for (let y = Math.floor(cy - r.ry - 2); y <= Math.ceil(cy + r.ry + 2); y++)
-      for (let z = Math.floor(r.z - r.rz - 2); z <= Math.ceil(r.z + r.rz + 2); z++)
-        for (let x = Math.floor(r.x - r.rx - 2); x <= Math.ceil(r.x + r.rx + 2); x++) {
-          if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) continue;
-          const dx = (x + 0.5 - r.x) / r.rx, dy = (y + 0.5 - cy) / r.ry, dz = (z + 0.5 - r.z) / r.rz;
-          const rr = Math.sqrt(dx * dx + dy * dy * (dy < 0 ? 1 : 0.6) + dz * dz);
-          const thr = 1 + (noise3(x * 0.22, y * 0.22, z * 0.22, r.s) - 0.5) * 0.6;
-          if (rr < thr) {
-            const n = noise3(x * 0.4, y * 0.4, z * 0.4, r.s + 50);
-            const strata = (Math.floor(y * 0.6 + n * 2.5) % 3 === 0) ? 0.86 : 1;
-            const k = (0.82 + n * 0.3) * strata;
-            put(x, y, z, pack(118 * k, 113 * k, 104 * k, 255));
-            rockVoxels.push(x, y, z);
-          }
-        }
-  }
-  // 岩の上面に苔
-  for (let i = 0; i < rockVoxels.length; i += 3) {
-    const x = rockVoxels[i], y = rockVoxels[i + 1], z = rockVoxels[i + 2];
-    if (y > 0 && grid[idx(x, y - 1, z)] === 0 && noise3(x * 0.3, y * 0.3, z * 0.3, 77) > 0.42) {
-      const g = hash(x, y, z, 78);
-      put(x, y, z, g < 0.5 ? pack(74, 112, 48, 255) : pack(98, 138, 58, 255));
-    }
-  }
-
-  // 水草の茂み（アヌビアス風の葉）
-  const rng = mulberry32(2024);
-  const bushes = [[40, 33], [115, 24], [20, 20], [76, 38], [52, 14]];
-  for (const [bx, bz] of bushes) {
-    const base = topY[bx + W * bz];
-    const leaves = 7 + Math.floor(rng() * 5);
-    for (let i = 0; i < leaves; i++) {
-      const yaw = rng() * Math.PI * 2;
-      const tilt = 0.25 + rng() * 0.75;
-      const len = 2.6 + rng() * 1.6;
-      leaf(bx + (rng() - 0.5) * 2, base - rng() * 1.5, bz + (rng() - 0.5) * 2, len, 1.5 + rng() * 0.5, 0.7, yaw, tilt, rng());
-    }
-  }
-
-  // エアストーン（奥の左隅）
-  const ax = 9, az = D - 6, ay = topY[ax + W * az];
-  for (let dy = 0; dy < 2; dy++) for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++)
-    put(ax + dx, ay - 1 - dy, az + dz, pack(150, 150, 156, 255));
-  airStone.x = ax + 1.5; airStone.y = ay - 3; airStone.z = az + 1.5;
-
-  staticGrid.set(grid);
-  staticTop.set(topY);
-
-  // 魚がぶつからないよう、近傍の最も高い地形を求めておく
-  for (let z = 0; z < D; z++) for (let x = 0; x < W; x++) {
-    let m = H;
-    for (let dz = -4; dz <= 4; dz++) for (let dx = -4; dx <= 4; dx++) {
-      const xx = clamp(x + dx, 0, W - 1), zz = clamp(z + dz, 0, D - 1);
-      m = Math.min(m, staticTop[xx + W * zz]);
-    }
-    floorMin[x + W * z] = m;
-  }
-}
-
-function leaf(cx, cy, cz, a, c, b, yaw, tilt, shade) {
-  const ct = Math.cos(tilt), st = Math.sin(tilt), cyw = Math.cos(yaw), syw = Math.sin(yaw);
-  const dx = ct * cyw, dy = -st, dz = ct * syw;     // 葉の向き
-  const wx = -syw, wz = cyw;                         // 葉の幅方向
-  const nx = dy * wz, ny = dz * wx - dx * wz, nz = -dy * wx; // 法線
-  const ox = cx + dx * a, oy = cy + dy * a, oz = cz + dz * a;
-  const R = a + 1;
-  const base = 0.8 + shade * 0.3;
-  for (let y = Math.floor(oy - R); y <= Math.ceil(oy + R); y++)
-    for (let z = Math.floor(oz - R); z <= Math.ceil(oz + R); z++)
-      for (let x = Math.floor(ox - R); x <= Math.ceil(ox + R); x++) {
-        const px = x + 0.5 - ox, py = y + 0.5 - oy, pz = z + 0.5 - oz;
-        const pa = px * dx + py * dy + pz * dz;
-        const pw = px * wx + pz * wz;
-        const pn = px * nx + py * ny + pz * nz;
-        if ((pa / a) ** 2 + (pw / c) ** 2 + (pn / b) ** 2 < 1) {
-          const vein = Math.abs(pw) < 0.45;
-          const k = base * (vein ? 1.25 : 1);
-          putIfEmpty(x, y, z, pack(36 * k, 92 * k, 42 * k, 255));
-        }
-      }
-}
-
-// ============================================================
-//  動的なもの：水草（バリスネリア）・泡・餌
-// ============================================================
-const blades = [];
-function buildPlants() {
-  const rng = mulberry32(7);
-  const clumps = [];
-  for (let x = 4; x < W - 4; x += 13 + Math.floor(rng() * 10)) clumps.push([x, D - 3 - Math.floor(rng() * 5), 3 + Math.floor(rng() * 3)]);
-  clumps.push([3, 24, 4], [124, 18, 4], [5, 32, 3], [122, 40, 3], [90, 30, 3], [44, 40, 3]);
-  for (const [cx, cz, n] of clumps) {
-    for (let i = 0; i < n; i++) {
-      const x = clamp(cx + (rng() - 0.5) * 4, 0, W - 1), z = clamp(cz + (rng() - 0.5) * 3, 0, D - 1);
-      const by = staticTop[Math.floor(x) + W * Math.floor(z)] + 1;
-      const maxH = by - WATER_TOP - 3;
-      blades.push({
-        x, z, by,
-        h: maxH * (0.45 + rng() * 0.55),
-        ph: rng() * Math.PI * 2,
-        lean: (rng() - 0.5) * 0.25,
-        tw: rng() * Math.PI,
-        amp: 1.5 + rng() * 2.5,
-        tone: rng(),
-      });
-    }
-  }
-}
-function drawPlants(t) {
-  for (const b of blades) {
-    const r0 = mix(34, 52, b.tone), g0 = mix(88, 104, b.tone), b0 = mix(36, 30, b.tone);
-    for (let h = 0; h < b.h; h += 0.6) {
-      const k = h / b.h;
-      const sway = b.amp * k * k * Math.sin(t * 0.7 + b.ph + h * 0.06);
-      const px = b.x + b.lean * h + sway;
-      const pz = b.z + 0.8 * k * k * Math.cos(t * 0.5 + b.ph);
-      const py = Math.floor(b.by - h);
-      const tw = b.tw + h * 0.07 + Math.sin(t * 0.4 + b.ph) * 0.3;
-      const wdt = k < 0.85 ? 2 : 1;
-      const col = pack(mix(r0, 150, k * 0.55), mix(g0, 190, k * 0.5), mix(b0, 60, k * 0.5), 255);
-      for (let w = 0; w < wdt; w++)
-        putIfEmpty(Math.floor(px + Math.cos(tw) * w * 0.95), py, Math.floor(pz + Math.sin(tw) * w * 0.95), col);
-    }
-  }
-}
-
-const airStone = { x: 0, y: 0, z: 0, acc: 0 };
-const bubbles = [];
-function updateBubbles(dt, t) {
-  airStone.acc += dt;
-  while (airStone.acc > 0.09) {
-    airStone.acc -= 0.09;
-    bubbles.push({
-      x: airStone.x + (Math.random() - 0.5) * 2, y: airStone.y, z: airStone.z + (Math.random() - 0.5) * 2,
-      vy: 9 + Math.random() * 8, ph: Math.random() * 6.28, big: Math.random() < 0.25,
-    });
-  }
-  for (let i = bubbles.length - 1; i >= 0; i--) {
-    const b = bubbles[i];
-    b.y -= b.vy * dt;
-    b.x += Math.sin(t * 6 + b.ph) * dt * 2;
-    if (b.y < WATER_TOP + 1) bubbles.splice(i, 1);
-  }
-}
-function drawBubbles() {
-  const rim = pack(214, 244, 250, 120), shine = pack(255, 255, 255, 190);
-  for (const b of bubbles) {
-    const x = Math.floor(b.x), y = Math.floor(b.y), z = Math.floor(b.z);
-    if (b.big) {
-      putIfEmpty(x, y, z, shine);
-      putIfEmpty(x + 1, y, z, rim); putIfEmpty(x, y + 1, z, rim); putIfEmpty(x + 1, y + 1, z, rim);
-    } else putIfEmpty(x, y, z, rim);
-  }
-}
-
 const foods = [];
 function dropFood(x) {
   for (let i = 0; i < 5; i++) {
@@ -398,7 +191,7 @@ function updateFood(dt) {
   for (let i = foods.length - 1; i >= 0; i--) {
     const f = foods[i];
     if (f.float > 0) { f.float -= dt; continue; }
-    const fl = staticTop[Math.floor(f.x) + W * Math.floor(f.z)] - 1;
+    const fl = H - 1;
     if (f.y < fl) f.y = Math.min(fl, f.y + 3.5 * dt);
     else if ((f.rest += dt) > 12) foods.splice(i, 1);
   }
@@ -608,7 +401,7 @@ function spawnFish() {
 }
 
 const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
-const floorAt = (x, z) => floorMin[clamp(Math.floor(x), 0, W - 1) + W * clamp(Math.floor(z), 0, D - 1)];
+const floorAt = () => H - 1;   // 装飾が無いので底は水槽の底面
 
 function updateFish(F, dt, time) {
   const cyw = Math.cos(F.yaw), syw = Math.sin(F.yaw), cp = Math.cos(F.pitch), sp = Math.sin(F.pitch);
@@ -701,27 +494,10 @@ const img = ctx.createImageData(CW, CH);
 const out = new Uint32Array(img.data.buffer);
 const zb = new Int16Array(W * H);
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-const QSTEP = 7;
-const WATER_HI = [58, 152, 160], WATER_LO = [10, 48, 64], AIR = [26, 36, 44];
-const fogC = new Float32Array(3);
+const BG = [242, 194, 48];         // 山吹色のベタ塗り
+const OUTLINE = 0.6;               // 手前の物体の縁取りの暗さ
 
-function fog(x, y, time) {
-  if (y < WATER_TOP) { fogC[0] = AIR[0]; fogC[1] = AIR[1]; fogC[2] = AIR[2]; return; }
-  const fy = (y - WATER_TOP) / (H - WATER_TOP);
-  const k = Math.pow(fy, 0.9);
-  let r = mix(WATER_HI[0], WATER_LO[0], k), g = mix(WATER_HI[1], WATER_LO[1], k), b = mix(WATER_HI[2], WATER_LO[2], k);
-  const u = x + y * 0.5;
-  const s = Math.sin(u * 0.11 + time * 0.2) + 0.6 * Math.sin(u * 0.23 - time * 0.13);
-  if (s > 0.9) { const a = (s - 0.9) * 22 * (1 - fy); r += a * 0.8; g += a; b += a * 0.9; }
-  fogC[0] = r; fogC[1] = g; fogC[2] = b;
-}
-function caustic(x, z, t) {
-  const c = Math.sin(x * 0.35 + t * 1.1 + Math.sin(z * 0.31 - t * 0.6) * 2)
-          * Math.sin(z * 0.42 - t * 0.9 + Math.sin(x * 0.27 + t * 0.5) * 2);
-  return c > 0.5 ? (c - 0.5) * 2 : 0;
-}
-
-function render(time) {
+function render() {
   // 1) 深度バッファ
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -730,56 +506,31 @@ function render(time) {
       zb[x + W * y] = z;
     }
   }
-  // 2) 合成と陰影
+  // 2) 固有色をそのまま合成（陰影・霞みは付けない）
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const p = x + W * y;
-      fog(x, y, time);
-      const fr = fogC[0], fgc = fogC[1], fbc = fogC[2];
       let T = 1, R = 0, G = 0, B = 0, first = true;
       let z = zb[p], i = x + W * (z + D * y);
       for (; z < D; z++, i += W) {
         const v = grid[i];
         if (!v) continue;
         const a = (v >>> 24) / 255;
-        let cr = (v >> 16) & 255, cg = (v >> 8) & 255, cb = v & 255;
-
-        const shadow = topY[x + W * z] < y;
-        const above = y > 0 ? grid[i - W * D] : 0;
-        const exposed = (above >>> 24) < OPAQUE;
-        let lt = shadow ? 0.68 : 1.0;
-        if (exposed && !shadow) lt += 0.1 + caustic(x, z, time) * 0.35;
+        let k = 1;
         if (first) {
           first = false;
+          // 隣のピクセルがずっと奥（または背景）なら、ここは手前の物体の輪郭
           const zl = x > 0 ? zb[p - 1] : D, zr = x < W - 1 ? zb[p + 1] : D;
           const zu = y > 0 ? zb[p - W] : D, zd = y < H - 1 ? zb[p + W] : D;
-          lt += 0.06 * clamp(zl - zr, -2, 2) + 0.07 * clamp(zu - zd, -2, 2);
-          if (zl > z + 3 || zr > z + 3 || zu > z + 3 || zd > z + 3) lt *= 0.8;
+          if (zl > z + 3 || zr > z + 3 || zu > z + 3 || zd > z + 3) k = OUTLINE;
         }
-        const fd = 0.03 + 0.55 * z / D;
-        cr = cr * lt * (1 - fd) + fr * fd;
-        cg = cg * lt * (1 - fd) + fgc * fd;
-        cb = cb * lt * (1 - fd) + fbc * fd;
-        R += T * a * cr; G += T * a * cg; B += T * a * cb;
+        R += T * a * ((v >> 16) & 255) * k;
+        G += T * a * ((v >> 8) & 255) * k;
+        B += T * a * (v & 255) * k;
         T *= 1 - a;
         if (T < 0.03) break;
       }
-      // 奥のガラス（何も無ければ水の色）
-      R += T * fr * 0.9; G += T * fgc * 0.9; B += T * fbc * 0.9;
-
-      // 水面のきらめき
-      if (y === WATER_TOP || y === WATER_TOP + 1) {
-        const k = (y === WATER_TOP ? 0.42 : 0.14) + 0.12 * Math.sin(x * 0.5 + time * 2.1) * Math.sin(x * 0.13 - time);
-        R = mix(R, 196, k); G = mix(G, 240, k); B = mix(B, 238, k);
-      }
-      // 前面ガラスの映り込み
-      const gl = (x + y + 30) % 96;
-      if (gl < 3 || gl === 6) { R *= 1.1; G *= 1.1; B *= 1.12; }
-
-      const dth = (BAYER[(x & 3) + ((y & 3) << 2)] / 16 - 0.5) * QSTEP;
-      R = Math.round((R + dth) / QSTEP) * QSTEP;
-      G = Math.round((G + dth) / QSTEP) * QSTEP;
-      B = Math.round((B + dth) / QSTEP) * QSTEP;
+      R += T * BG[0]; G += T * BG[1]; B += T * BG[2];
       out[(y + TY) * CW + x + TX] = 0xff000000 | (c255(B) << 16) | (c255(G) << 8) | c255(R);
     }
   }
@@ -818,21 +569,15 @@ function drawFrame() {
 //  ループ
 // ============================================================
 function buildFrame(time) {
-  grid.set(staticGrid);
-  topY.set(staticTop);
-  drawPlants(time);
+  grid.fill(0);
   drawFood();
   for (const F of fish) drawFish(F, time);
-  drawBubbles();
 }
 function step(dt, time) {
   for (const F of fish) updateFish(F, dt, time);
-  updateBubbles(dt, time);
   updateFood(dt);
 }
 
-buildStatic();
-buildPlants();
 spawnFish();
 drawFrame();
 
@@ -845,7 +590,7 @@ function frame(now) {
     step(dt, time);
   }
   buildFrame(time);
-  render(time);
+  render();
   ctx.putImageData(img, 0, 0);
   requestAnimationFrame(frame);
 }
