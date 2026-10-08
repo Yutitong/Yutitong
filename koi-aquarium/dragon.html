@@ -112,7 +112,7 @@
   <div class="panel">
     <div class="title">
       <h1>龍と錦鯉の水槽</h1>
-      <p class="spec">128 × 72 × 48 voxel ・ 平行投影 ・ ドラッグで回転</p>
+      <p class="spec">128 × 128 × 128 voxel ・ 平行投影 ・ ドラッグで回転</p>
     </div>
     <div class="controls">
       <button id="front" type="button">正面に戻す</button>
@@ -129,11 +129,11 @@
 // ============================================================
 //  ボクセル空間  x: 左→右, y: 上→下, z: 手前(0)→奥(D-1)
 // ============================================================
-const W = 128, H = 72, D = 48;
+const W = 128, H = 128, D = 128;   // 龍がのびのび飛べる立方体の水槽
 const WATER_TOP = 3;               // 鯉が上がってこられる上限の行
 
-// 表示キャンバス。どの向きに回しても水槽の箱が収まる大きさ（水槽の対角線は約 155 voxel）
-const CW = 152, CH = 164;
+// 表示キャンバス。どの向きに回しても水槽の箱が収まる大きさ（立方体の対角線は約 222 voxel）
+const CW = 228, CH = 228;
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const c255 = v => v < 0 ? 0 : v > 255 ? 255 : v | 0;
 const pack = (r, g, b, a) => ((a << 24) | (c255(r) << 16) | (c255(g) << 8) | c255(b)) >>> 0;
@@ -471,8 +471,8 @@ function spawnFish() {
       kind: V.kind, name: V.name, L: V.L, Rh: V.L * 0.155, Rw: V.L * 0.135,
       id: i + 1, seed: 1000 + i * 37,
       x: 20 + (i % 3) * 40 + rng() * 10,
-      y: 16 + Math.floor(i / 3) * 14 + rng() * 6,
-      z: 14 + rng() * 18,
+      y: 20 + rng() * (H - 50),
+      z: 20 + rng() * (D - 40),
       yaw: rng() * Math.PI * 2, pitch: 0, yawRate: 0,
       speed: 2 + rng() * 2, amp: 0, phase: rng() * 6, finAng: 0.5,
       lag: TURN_LAG, dart: null,
@@ -714,7 +714,7 @@ const D_RIDGE = [208, 62, 40], D_BONE = [236, 218, 172], D_HAIR = [240, 236, 222
 const D_EYE = [250, 214, 70], D_PUPIL = [20, 18, 16], D_MOUTH = [150, 40, 40], D_TOOTH = [250, 248, 240];
 
 const dragon = {
-  x: 64, y: 30, z: 24, dir: [1, 0, 0], speed: 14, mouth: 0,
+  x: W / 2, y: H / 2, z: D / 2, dir: [1, 0, 0], speed: 14, mouth: 0,
   trail: new Float32Array(TRAIL * 3), head: 0, count: 1,
 };
 dragon.trail.set([dragon.x, dragon.y, dragon.z], 0);
@@ -741,30 +741,46 @@ function updateDragon(dt, time) {
   let d = [dir[0], dir[1], dir[2]];
   // ゆったりと向きを変える（水平方向と上下方向の気まぐれ）
   const yaw = Math.atan2(dir[2], dir[0]);
-  const wy = yaw + (noise3(time * 0.15, 0, 0, 501) - 0.5) * 3;
+  const wy = yaw + (noise3(time * 0.08, 0, 0, 501) - 0.5) * 2.2;
   d[0] += Math.cos(wy) * 0.8; d[2] += Math.sin(wy) * 0.8;
-  // 上下は「目指す高さ」を数秒ごとに選び直して、水槽の上から下まで広く使う
-  Dg.yTimer = (Dg.yTimer || 0) - dt;
-  if (Dg.yTimer <= 0) { Dg.ty = 18 + Math.random() * (H - 40); Dg.yTimer = 3 + Math.random() * 4; }
-  d[1] += clamp((Dg.ty - Dg.y) * 0.05, -0.7, 0.7);
+  // 数秒ごとに立方体の中の行き先を選び直し、水槽を大きく横切って飛ぶ
+  Dg.goalT = (Dg.goalT || 0) - dt;
+  const gx = Dg.gx - Dg.x, gy = Dg.gy - Dg.y, gz = Dg.gz - Dg.z, gd = Math.hypot(gx, gy, gz);
+  if (Dg.goalT <= 0 || gd < 20) {
+    Dg.gx = 26 + Math.random() * (W - 52); Dg.gy = 26 + Math.random() * (H - 52); Dg.gz = 26 + Math.random() * (D - 52);
+    Dg.goalT = 5 + Math.random() * 4;
+  } else {
+    d[0] += gx / gd * 0.7; d[1] += gy / gd * 0.5; d[2] += gz / gd * 0.7;
+  }
   // 壁を先読みしてよける
-  const L = 20, px = Dg.x + dir[0] * L, py = Dg.y + dir[1] * L, pz = Dg.z + dir[2] * L;
-  const MX = 20, MY = 16, MZ = 14;
-  if (px < MX) d[0] += (MX - px) * 0.12; if (px > W - MX) d[0] -= (px - (W - MX)) * 0.12;
-  if (py < MY) d[1] += (MY - py) * 0.12; if (py > H - MY) d[1] -= (py - (H - MY)) * 0.12;
-  if (pz < MZ) d[2] += (MZ - pz) * 0.16; if (pz > D - MZ) d[2] -= (pz - (D - MZ)) * 0.16;
+  const L = 34, px = Dg.x + dir[0] * L, py = Dg.y + dir[1] * L, pz = Dg.z + dir[2] * L;
+  const M = 22;
+  if (px < M) d[0] += (M - px) * 0.08; if (px > W - M) d[0] -= (px - (W - M)) * 0.08;
+  if (py < M) d[1] += (M - py) * 0.08; if (py > H - M) d[1] -= (py - (H - M)) * 0.08;
+  if (pz < M) d[2] += (M - pz) * 0.08; if (pz > D - M) d[2] -= (pz - (D - M)) * 0.08;
   // 自分の胴にぶつからないよう、先読みの位置の近くにある胴から離れる
   for (let i = 60; i < SPINE; i += 16) {
     const [bx, by, bz] = trailPoint(i);
     const ex = px - bx, ey = py - by, ez = pz - bz, dd = Math.hypot(ex, ey, ez);
     if (dd < 12 && dd > 0.01) { const w = (12 - dd) * 0.08; d[0] += ex / dd * w; d[1] += ey / dd * w; d[2] += ez / dd * w; }
   }
-  // 1 秒に 1.5 rad までしか曲がれない
+  // 1 秒に 0.75 rad までしか曲がれない（大きな弧を描いて飛ぶ）
   let n = Math.hypot(d[0], d[1], d[2]) || 1;
   d = d.map(c => c / n);
-  const dot = clamp(d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2], -1, 1), ang = Math.acos(dot), maxA = 1.5 * dt;
-  const f = ang > maxA ? maxA / ang : 1;
-  for (let a = 0; a < 3; a++) dir[a] += (d[a] - dir[a]) * f;
+  const dot = clamp(d[0] * dir[0] + d[1] * dir[1] + d[2] * dir[2], -1, 1), ang = Math.acos(dot);
+  const turn = Math.min(ang, 0.75 * dt);
+  if (turn > 1e-6) {
+    // dir を d の方へ、2 つの向きに垂直な軸のまわりに turn だけ回す（真逆を向いていても水平に回り始める）
+    let ax = dir[1] * d[2] - dir[2] * d[1], ay = dir[2] * d[0] - dir[0] * d[2], az = dir[0] * d[1] - dir[1] * d[0];
+    let an = Math.hypot(ax, ay, az);
+    if (an < 1e-4) { ax = 0; ay = 1; az = 0; an = 1; }
+    ax /= an; ay /= an; az /= an;
+    const c = Math.cos(turn), sn = Math.sin(turn), kd = ax * dir[0] + ay * dir[1] + az * dir[2];
+    const cx = ay * dir[2] - az * dir[1], cy = az * dir[0] - ax * dir[2], cz = ax * dir[1] - ay * dir[0];
+    dir[0] = dir[0] * c + cx * sn + ax * kd * (1 - c);
+    dir[1] = dir[1] * c + cy * sn + ay * kd * (1 - c);
+    dir[2] = dir[2] * c + cz * sn + az * kd * (1 - c);
+  }
   dir[1] = clamp(dir[1], -0.6, 0.6);
   n = Math.hypot(dir[0], dir[1], dir[2]) || 1;
   for (let a = 0; a < 3; a++) dir[a] /= n;
