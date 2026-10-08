@@ -465,8 +465,9 @@ const floorAt = () => H - 1;   // 装飾が無いので底は水槽の底面
 //    phase: wait（驚くまでの反応時間）→ coil（ため）→ burst（突進）→ recover（減速）
 // ------------------------------------------------------------
 const DART = {
-  dash:   { coil: 0.22, burst: 2.6, recover: 1.6, vmax: 27, freq: 3.4, amp: 0.11 },
-  flinch: { coil: 0.12, burst: 0.55, recover: 1.1, vmax: 13, freq: 2.6, amp: 0.09 },
+  // vmax: 最高速度 [voxel/秒], accel/decel: 加速・減速の速さ [1/秒], brake: 行き先の何 voxel 手前で減速に入るか（速さ × brake + 6）
+  dash:   { coil: 0.22, burst: 1.6, recover: 1.4, vmax: 54, accel: 9, decel: 3.2, brake: 0.3, freq: 4.6, amp: 0.11 },
+  flinch: { coil: 0.12, burst: 0.55, recover: 1.1, vmax: 13, accel: 3.5, decel: 1.6, brake: 0, freq: 2.6, amp: 0.09 },
 };
 let nextDart = 9 + Math.random() * 6;
 
@@ -508,7 +509,7 @@ function advanceDart(F, dt) {
     A.phase = "burst"; A.t = 0;
   } else if (A.phase === "burst") {
     if (A.kind === "dash") startle(F, F.L * 0.9);   // 突進の途中ですれ違った鯉も驚く
-    const near = A.kind === "dash" && Math.hypot(A.tx - F.x, A.tz - F.z) < F.speed * 0.6 + 6;
+    const near = A.kind === "dash" && Math.hypot(A.tx - F.x, A.tz - F.z) < F.speed * P.brake + 6;
     if (A.t >= P.burst || near) { A.phase = "recover"; A.t = 0; }
   } else if (A.phase === "recover" && A.t >= P.recover) {
     F.dart = null;
@@ -567,7 +568,7 @@ function updateFish(F, dt, time) {
   }
 
   // 壁・水面・底を先読みして避ける（速いほど遠くを見る）
-  const look = half + 9 + F.speed * 0.5;
+  const look = half + 9 + Math.min(F.speed, 12) * 0.5;
   const px = F.x + fx * look, py = F.y + fy * look, pz = F.z + fz * look;
   const MX = 7, MZ = 3;
   if (px < MX) dx += (MX - px) * 0.4;
@@ -615,13 +616,13 @@ function updateFish(F, dt, time) {
       // 突進：速く大きく尾を振って一気に加速
       F.drive = 1;
       ampK = P.amp / 0.075;
-      F.speed += (P.vmax - F.speed) * Math.min(1, dt * 3.5);
+      F.speed += (P.vmax - F.speed) * Math.min(1, dt * P.accel);
     } else {
       // 減速：尾を止めて惰性で滑り、いつもの速さに戻る
       F.drive += (0 - F.drive) * Math.min(1, dt * 3);
       freq = mix(F.freq, P.freq, F.drive);
       ampK = 0.12 + 0.88 * F.drive;
-      F.speed = Math.max(0.8, F.speed - (F.speed - 3) * Math.min(1, dt * 1.6));
+      F.speed = Math.max(0.8, F.speed - (F.speed - 3) * Math.min(1, dt * P.decel));
     }
   } else {
     // 尾を数回ゆったり振って加速し、尾を止めて惰性で滑る
