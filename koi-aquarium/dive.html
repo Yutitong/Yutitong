@@ -106,6 +106,11 @@
   .pad { display: grid; grid-template-columns: repeat(3, 48px); gap: 6px; justify-content: center; }
   .pad button { padding: 8px 0; touch-action: none; user-select: none; -webkit-user-select: none; }
   @media (hover: hover) and (pointer: fine) { .pad { display: none; } }
+  .weather { width: 100%; max-width: 720px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .weather .wnow { color: var(--ink-dim); font-size: 12px; margin-right: 4px; font-variant-numeric: tabular-nums; }
+  .weather .wnow b { color: var(--ink); font-weight: 400; font-family: var(--font-pixel); }
+  .weather button { font-size: 13px; padding: 4px 10px; }
+  .weather button[aria-pressed="true"] { border-color: var(--koi); color: #fff; }
   .hint { color: var(--ink-dim); font-size: 12px; margin: 0; max-width: 720px; width: 100%; }
 </style>
 </head>
@@ -123,7 +128,15 @@
       <button id="pause" type="button">一時停止</button>
     </div>
   </div>
-  <ul class="legend" id="legend"><li><span class="sw" style="background:linear-gradient(90deg,#348c52 0 34%,#deb450 34% 67%,#d03e28 67% 100%)"></span>龍</li><li><span class="sw" style="background:linear-gradient(90deg,#f6f4ee 0 50%,#c8c4bc 50% 100%)"></span>雲海</li></ul>
+  <div class="weather" role="group" aria-label="天気">
+    <span class="wnow">天気 <b id="wnow">曇り</b></span>
+    <button type="button" data-weather="auto" aria-pressed="true">自動</button>
+    <button type="button" data-weather="0" aria-pressed="false">晴れ</button>
+    <button type="button" data-weather="1" aria-pressed="false">薄曇り</button>
+    <button type="button" data-weather="2" aria-pressed="false">曇り</button>
+    <button type="button" data-weather="3" aria-pressed="false">荒天</button>
+  </div>
+  <ul class="legend" id="legend"><li><span class="sw" style="background:linear-gradient(90deg,#348c52 0 34%,#deb450 34% 67%,#d03e28 67% 100%)"></span>龍</li><li><span class="sw" style="background:linear-gradient(90deg,#f6f4ee 0 50%,#c8c4bc 50% 100%)"></span>雲海</li><li><span class="sw" style="background:linear-gradient(90deg,#f6f4ee 0 50%,#a9a6b0 50% 100%)"></span>ちぎれ雲（天気しだい）</li></ul>
   <div class="pad" id="pad" aria-label="移動ボタン">
     <button type="button" data-move="up" aria-label="上へ">上</button>
     <button type="button" data-move="fwd" aria-label="前へ">▲</button>
@@ -1046,7 +1059,7 @@ const pres = new Float32Array(CN), presT = new Float32Array(CN), divg = new Floa
 const dispX = new Float32Array(CN), dispZ = new Float32Array(CN);   // 流れで押し流された模様のずれ [voxel]
 const PUFF_MAX = 14, PUFF_LIFE = 2.2, VEL_LIFE = 2.2, DISP_LIFE = 5;
 const CLOUD_OWNER = 200, WISP_OWNER = 201;
-const CLOUD_TOP = [246, 244, 238], CLOUD_UNDER = [214, 212, 220];
+const CLOUD_TOP = [246, 244, 238];
 const cidx2 = (i, j) => i + CNX * j;
 
 // 格子の値を (fi, fj)（格子単位の位置）で補間して読む
@@ -1201,8 +1214,8 @@ function updateClouds(dt, time) {
     curl[k] = ((velZ[k + 1] - velZ[k - 1]) - (velX[k + CNX] - velX[k - CNX])) / (2 * CG);
   }
 
-  // 5) 雲の形：上面と下面の 2 枚で厚みのある層を作る。厚みが 0 に近づくところで上下の面が閉じ、切れ間になる
-  //    （離れて浮かぶ小さなちぎれ雲も同じ仕組みでできる。ガラスの近くでも丸く閉じるので、まっすぐな断面は無い）
+  // 5) 雲の形：上面と下面で包んだ、ひとつながりの立体。雲の無いところへ向かって上下の面が丸く閉じ、切れ間になる
+  //    （ガラスの近くでも丸く閉じるので、まっすぐな断面は無い）
   const ox = time * CLOUD_FLOW;
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
     const k = cidx2(i, j);
@@ -1211,18 +1224,23 @@ function updateClouds(dt, time) {
     const wall = smooth01(Math.min(i * CG, W - i * CG, j * CG, D - j * CG) / 12);
     const cv = noise3(x * 0.022, z * 0.022, time * 0.02, 711) * 0.65 + noise3(x * 0.06, z * 0.06, time * 0.04, 712) * 0.35;
     const pf = puff[k];
-    const cover = clamp(smooth01((cv - 0.36) / 0.24) * wall + pf * 0.05, 0, 1);
+    // 天気が悪いほど雲のあるところが広がる（晴れなら切れ間だらけ、荒天なら一面の雲）
+    const cover = clamp(smooth01((cv - (0.6 - 0.38 * weather.w)) / 0.24) * wall + pf * 0.05, 0, 1);
     // もこもこ：大・中・小のこぶを重ねる（|2n-1| にすると、こぶの頭が丸く谷が細く切れ込む積雲らしい形になる）
     const b1 = Math.abs(noise3(x * 0.05, z * 0.05, time * 0.03, 701) * 2 - 1);
     const b2 = Math.abs(noise3(x * 0.11, z * 0.11, time * 0.05, 702) * 2 - 1);
     const b3 = Math.abs(noise3(x * 0.23, z * 0.23, time * 0.08, 705) * 2 - 1);
     const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
     const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 8 * turb : 0;
-    const thick = cover * 22 + pf * 0.9;
-    const billow = (b1 * 9 + b2 * 4.5 + b3 * 2.2) * Math.sqrt(cover);
-    cloudThick[k] = thick;
-    cloudH[k] = LAYER_MID - thick * 0.6 - billow - chop * cover;
-    cloudB[k] = LAYER_MID + thick * 0.4 + (noise3(x * 0.08, z * 0.08, time * 0.05, 706) - 0.5) * 5 * cover;
+    // ひとつながりの丸い塊：中ほどの高さから上下へふくらませる。縁では急に立ち上がり、上下の面が同じ高さで丸く閉じる
+    const e = Math.pow(cover, 0.3);
+    const body = (12 + 12 * weather.w) * e + pf * 0.9;                       // 荒れるほど分厚い
+    const billow = (b1 * 9 + b2 * 4.5 + b3 * 2.2) * (0.7 + 0.6 * weather.w) * e;
+    const sag = (Math.abs(noise3(x * 0.07, z * 0.07, time * 0.04, 706) * 2 - 1) * 4 + 1) * e;   // 底のゆるいふくらみ
+    const mid = LAYER_MID + (noise3(x * 0.03, z * 0.03, time * 0.02, 707) - 0.5) * 6;
+    cloudH[k] = mid - body * 0.55 - billow - chop * cover;
+    cloudB[k] = mid + body * 0.45 + sag;
+    cloudThick[k] = cloudB[k] - cloudH[k];
   }
   // 面の向き（隣の高さとの差から）。y は下向きなので、上面は (hx, -1, hz)、下面は (-bx, 1, -bz) を正規化したもの
   for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
@@ -1238,11 +1256,11 @@ function updateClouds(dt, time) {
 }
 
 // 雲の点を書く（このページの光の当て方に合わせる）
-function cloudPut(x, y, z, c, nx, ny, nz) {
-  put(x, y, z, c, levelOf(nx, ny, nz), CLOUD_OWNER);
+function cloudPut(x, y, z, c, nx, ny, nz, owner = CLOUD_OWNER) {
+  put(x, y, z, c, levelOf(nx, ny, nz), owner);
 }
 function emitClouds(time) {
-  const top = pack(...CLOUD_TOP, 255), under = pack(...CLOUD_UNDER, 255);
+  const c = pack(...stormTint(CLOUD_TOP), 255);
   const ox = time * CLOUD_FLOW;
   const lerp4 = (a, k00, u, v) => mix(mix(a[k00], a[k00 + 1], u), mix(a[k00 + CNX], a[k00 + CNX + 1], u), v);
   // 格子のマスごとに、目からの距離で点の細かさを変える（近いほど細かく、遠いほど粗く大きな点で）
@@ -1256,24 +1274,182 @@ function emitClouds(time) {
     pointSize = sp * 1.15;
     for (let b = 0; b < n; b++) for (let a = 0; a < n; a++) {
       const u = (a + 0.5) / n, v = (b + 0.5) / n, x = (i + u) * CG, z = (j + v) * CG;
-      const thick = lerp4(cloudThick, k00, u, v);
+      const top = lerp4(cloudH, k00, u, v), bot = lerp4(cloudB, k00, u, v), thick = bot - top;
       if (thick < 0.8) continue;                       // 切れ間
-      // ふわふわ：薄いところほど点を間引いて、縁をぼそぼそ崩す。間引く模様は雲と一緒に流れる
-      const hx = Math.round((x - ox) / sp), hz = Math.round(z / sp);
-      if (hash(hx, hz, n, 77) < Math.min(1, thick / 4)) {
-        castShadow = ((a | b) & 1) === 0 || n === 1;
-        cloudPut(x, lerp4(cloudH, k00, u, v), z, top, lerp4(cloudNx, k00, u, v), lerp4(cloudNy, k00, u, v), lerp4(cloudNz, k00, u, v));
-      }
-      // 下面：底に向かってうっすら透ける
-      if (hash(hx, hz, n, 78) < Math.min(1, thick / 6) * 0.72) {
-        castShadow = false;
-        cloudPut(x, lerp4(cloudB, k00, u, v), z, under, lerp4(cloudBx, k00, u, v), lerp4(cloudBy, k00, u, v), lerp4(cloudBz, k00, u, v));
-      }
+      // ふわふわ：ごく薄い縁だけ点を間引いてぼそぼそ崩す（上下とも同じ所が抜けるので段にならない）。間引く模様は雲と一緒に流れる
+      if (thick < 3 && hash(Math.round((x - ox) / sp), Math.round(z / sp), n, 77) > thick / 3) continue;
+      emitColumn(x, z, top, bot, sp, c,
+                 lerp4(cloudNx, k00, u, v), lerp4(cloudNy, k00, u, v), lerp4(cloudNz, k00, u, v),
+                 lerp4(cloudBx, k00, u, v), lerp4(cloudBy, k00, u, v), lerp4(cloudBz, k00, u, v), ((a | b) & 1) === 0 || n === 1);
     }
   }
   pointSize = 0.65;
   castShadow = true;
   emitMist();
+}
+
+// ============================================================
+//  天気：晴れ（0）→ 薄曇り → 曇り → 荒天（1）。自動でゆっくり移り変わり、ボタンで選ぶこともできる。
+//  悪いほど雲海は厚く荒れて切れ間がなくなり、水槽のあちこちにちぎれ雲が浮かんで流れる。
+//  雲は灰色がかり、水も少し暗くなる
+// ============================================================
+const WEATHERS = [{ name: "晴れ", w: 0 }, { name: "薄曇り", w: 0.35 }, { name: "曇り", w: 0.68 }, { name: "荒天", w: 1 }];
+const weather = { w: 0.68, target: 2, auto: true, timer: 30 };
+function updateWeather(dt) {
+  if (weather.auto && (weather.timer -= dt) <= 0) {
+    // たいていは隣の天気へ。ときどき一気に変わる
+    let next = weather.target + (Math.random() < 0.5 ? -1 : 1);
+    if (Math.random() < 0.2) next = Math.floor(Math.random() * WEATHERS.length);
+    if (next < 0 || next >= WEATHERS.length || next === weather.target) next = weather.target === 0 ? 1 : weather.target - 1;
+    weather.target = next;
+    weather.timer = 35 + Math.random() * 45;
+  }
+  // 晴れから荒天まで 30 秒ほどかけて移り変わる
+  weather.w += clamp(WEATHERS[weather.target].w - weather.w, -0.03 * dt, 0.03 * dt);
+}
+const stormTint = c => {
+  const k = weather.w * 0.6;
+  return [mix(c[0], c[0] * 0.62, k), mix(c[1], c[1] * 0.64, k), mix(c[2], c[2] * 0.74, k)];
+};
+const waterTint = c => {
+  const k = weather.w * 0.45;
+  return [mix(c[0], c[0] * 0.72, k), mix(c[1], c[1] * 0.74, k), mix(c[2], c[2] * 0.8, k)];
+};
+
+// ------------------------------------------------------------
+//  ちぎれ雲：天気が悪いほど数が増え、流れに乗って水槽の中をゆっくり横切っていく。
+//  上流のガラス際でふくらみながら生まれ、下流のガラスに着いたり寿命が来たりすると、縮みながら散って消える。
+//  形は土台の大きなこぶと、上に乗る小さなこぶの集まり（底は少し平たい）。生き物が突っ込むと押しのけられる
+// ------------------------------------------------------------
+const MAX_CLOUDLETS = Math.round(10 * Math.pow(W * D / 16384, 0.75));
+const CLOUDLET_OWNER = 202;               // 202 番から 1 つずつ（ちぎれ雲どうしや雲海にも影を落とし合う）
+const cloudlets = [];
+let cloudletPushers = null;               // ほかに雲を押すもの（一人称のページでは自分）
+function spawnCloudlet(anywhere) {
+  const used = new Set(cloudlets.map(C => C.owner));
+  let owner = CLOUDLET_OWNER;
+  while (used.has(owner)) owner++;
+  const s = (0.75 + weather.w * 0.6) * (0.7 + Math.random() * 0.6);   // 荒れるほど大きい
+  const R = 5 * s, puffs = [], nb = 2 + (Math.random() * 2 | 0), nt = 1 + (Math.random() * 2 | 0);   // こぶは多くても 5 個
+  for (let i = 0; i < nb; i++)
+    puffs.push({ dx: (i - (nb - 1) / 2) * R * 1.1 + (Math.random() - 0.5) * R * 0.4, dy: 0, dz: (Math.random() - 0.5) * R * 0.8, r: R * (0.85 + Math.random() * 0.3) });
+  for (let i = 0; i < nt; i++)
+    puffs.push({ dx: (Math.random() - 0.5) * R * nb * 0.8, dy: -R * (0.6 + Math.random() * 0.4), dz: (Math.random() - 0.5) * R * 0.6, r: R * (0.55 + Math.random() * 0.3) });
+  for (const P of puffs) P.ph = [Math.random() * 6.3, Math.random() * 6.3, Math.random() * 6.3];
+  let ext = 0;
+  for (const P of puffs) ext = Math.max(ext, Math.hypot(P.dx, P.dy, P.dz) + P.r * 1.15);
+  const yTop = ext + 3, yBot = Math.max(yTop + 1, CLOUD_Y - 10 - ext * 0.5);
+  cloudlets.push({
+    owner, puffs, ext, seed: (Math.random() * 1e6) | 0,
+    x: anywhere ? ext + 2 + Math.random() * (W - 2 * ext - 4) : ext + 2,
+    y: yTop + Math.random() * (yBot - yTop), z: ext + 2 + Math.random() * Math.max(1, D - 2 * ext - 4),
+    vx: 0, vy: 0, vz: 0, drift: (Math.random() - 0.5) * 1.2,
+    age: 0, life: 40 + Math.random() * 50, grow: anywhere ? 1 : 0, leaving: false,
+  });
+}
+// 今の大きさの倍率（生まれかけ・消えかけは小さい）
+const cloudletScale = C => 0.4 + 0.6 * smooth01(C.grow);
+function initCloudlets() {
+  const n = Math.round(MAX_CLOUDLETS * smooth01((weather.w - 0.1) / 0.75));
+  for (let i = 0; i < n; i++) spawnCloudlet(true);
+}
+function updateCloudlets(dt) {
+  if (dt <= 0) return;
+  const target = Math.round(MAX_CLOUDLETS * smooth01((weather.w - 0.1) / 0.75));
+  let alive = 0;
+  for (const C of cloudlets) if (!C.leaving) alive++;
+  if (alive < target && cloudlets.length < 54 && Math.random() < dt * 0.6) spawnCloudlet(false);
+  if (alive > target && Math.random() < dt * 0.5) {
+    // 晴れてきたら、古いものから散っていく
+    let old = null;
+    for (const C of cloudlets) if (!C.leaving && (!old || C.age > old.age)) old = C;
+    if (old) old.leaving = true;
+  }
+  const wind = CLOUD_FLOW * (1.2 + 1.6 * weather.w);   // 荒れるほど速く流れる
+  const damp = Math.exp(-dt / 1.5);
+  for (let n = cloudlets.length - 1; n >= 0; n--) {
+    const C = cloudlets[n];
+    C.age += dt;
+    const sc = cloudletScale(C);
+    if (C.age > C.life || C.x + C.ext * sc > W - 3) C.leaving = true;
+    C.grow = clamp(C.grow + (C.leaving ? -dt / 5 : dt / 4), 0, 1);
+    if (C.leaving && C.grow <= 0) { cloudlets.splice(n, 1); continue; }
+    // 生き物が突っ込むと押しのけられる
+    const push = (x, y, z, rad) => {
+      const dx = C.x - x, dy = C.y - y, dz = C.z - z, d = Math.hypot(dx, dy, dz), reach = C.ext * sc * 0.8 + rad;
+      if (d < reach && d > 0.01) {
+        const k = (reach - d) / reach * 30 * dt;
+        C.vx += dx / d * k; C.vy += dy / d * k * 0.5; C.vz += dz / d * k;
+      }
+    };
+    push(dragon.x, dragon.y, dragon.z, 6);
+    for (let i = 40; i < SPINE; i += 40) push(spX[i], spY[i], spZ[i], dragonRadius(i * SEG));
+    for (const F of fish) push(F.x, F.y, F.z, F.L * 0.4);
+    if (cloudletPushers) cloudletPushers(push);
+    C.vx *= damp; C.vy *= damp; C.vz *= damp;
+    const m = C.ext * sc + 2;
+    C.x = clamp(C.x + (wind + C.vx) * dt, m, W - m);
+    C.y = clamp(C.y + (C.vy + Math.sin(C.age * 0.3 + C.seed) * 0.3) * dt, m, CLOUD_Y - 6);
+    C.z = clamp(C.z + (C.vz + C.drift) * dt, m, D - m);
+  }
+}
+// こぶの表面のでこぼこ（向き d に対する半径の倍率）
+const puffBump = (P, dx, dy, dz) =>
+  0.86 + 0.3 * Math.abs(Math.sin(dx * 3.1 + P.ph[0]) * Math.sin(dy * 2.7 + P.ph[1]) * Math.sin(dz * 3.3 + P.ph[2]));
+// ちぎれ雲の表面に点を置く。spacingFor(中心, 半径) は点の間隔を返す（負なら描かない。遠いほど粗くしてよい）
+function emitCloudlets(spacingFor) {
+  const c = pack(...stormTint(CLOUD_TOP), 255);
+  for (const C of cloudlets) {
+    const g = smooth01(C.grow), s = cloudletScale(C);
+    if (g <= 0.01) continue;
+    let sp = spacingFor(C.x, C.y, C.z, C.ext * s);
+    if (!(sp > 0)) continue;
+    sp = 0.5 * Math.pow(2, Math.round(Math.log2(sp / 0.5) * 2) / 2);   // 細かさは数段階だけ（段階ごとに表面の点を覚えておく）
+    const pts = cloudletSurface(C, sp / s);
+    for (let q = 0, k = 0; k < pts.length; q++, k += 6) {
+      if (g < 1 && hash(q, 0, C.seed, 95) > g) continue;   // 生まれかけ・消えかけは点がまばら
+      cloudPut(C.x + pts[k] * s, C.y + pts[k + 1] * s, C.z + pts[k + 2] * s, c, pts[k + 3], pts[k + 4], pts[k + 5], C.owner);
+    }
+  }
+}
+// ちぎれ雲の表面の点（大きさ 1 倍のときの、中心からの位置と面の向き）。形は変わらないので、細かさごとに一度だけ作る
+function cloudletSurface(C, sp) {
+  const key = Math.round(Math.log2(sp) * 2);
+  C.cache = C.cache || {};
+  if (C.cache[key]) return C.cache[key];
+  sp = Math.pow(2, key / 2);
+  const out = [], ps = C.puffs;
+  for (let i = 0; i < ps.length; i++) {
+    const P = ps[i], n = Math.ceil(4 * Math.PI * P.r * P.r / (sp * sp));
+    for (let q = 0; q < n; q++) {
+      const dy = 1 - 2 * (q + 0.5) / n, rr = Math.sqrt(1 - dy * dy), th = q * 2.399963;
+      const dx = Math.cos(th) * rr, dz = Math.sin(th) * rr, rad = P.r * puffBump(P, dx, dy, dz);
+      const x = P.dx + dx * rad, y = P.dy + dy * rad * (dy > 0 ? 0.6 : 1), z = P.dz + dz * rad;
+      // ほかのこぶの中に埋もれる点は描かない
+      let hidden = false;
+      for (let j = 0; j < ps.length && !hidden; j++) {
+        if (j === i) continue;
+        const Q = ps[j], qr = Q.r * 0.9, ex = x - Q.dx, ey = y - Q.dy, ez = z - Q.dz;
+        hidden = ex * ex + ey * ey + ez * ez < qr * qr;
+      }
+      if (!hidden) out.push(x, y, z, dx, dy > 0 ? dy * 1.6 : dy, dz);
+    }
+  }
+  return (C.cache[key] = new Float32Array(out));
+}
+
+// 雲海の 1 本の柱：上面と下面の点に加えて、斜面が急なところは上下の面から中ほどへ向かって側面の点を足す
+// （縁では上下の面が同じ高さで丸く閉じるので、横から見ても上下の境目が無い）
+function emitColumn(x, z, top, bot, sp, c, tnx, tny, tnz, bnx, bny, bnz, shadowCaster) {
+  const half = (bot - top) / 2;
+  castShadow = shadowCaster;
+  cloudPut(x, top, z, c, tnx, tny, tnz);
+  castShadow = false;
+  const tWall = Math.min(half, Math.hypot(tnx, tnz) / Math.max(0.08, -tny) * sp * 1.2);
+  for (let d = sp; d < tWall; d += sp) cloudPut(x, top + d, z, c, tnx, tny, tnz);
+  cloudPut(x, bot, z, c, bnx, bny, bnz);
+  const bWall = Math.min(half, Math.hypot(bnx, bnz) / Math.max(0.08, bny) * sp * 1.2);
+  for (let d = sp; d < bWall; d += sp) cloudPut(x, bot - d, z, c, bnx, bny, bnz);
 }
 
 // 鯉が龍に気づいて逃げる
@@ -1357,7 +1533,7 @@ function shadeSample(i) {
     const col = (sX[i] | 0) + W * (sZ[i] | 0);
     if (topY[col] < (sY[i] | 0) && topOwner[col] !== own) level = Math.max(1, level - 1);
   }
-  if (own === CLOUD_OWNER || own === WISP_OWNER) return CLOUD_TONE[level].slice();
+  if (own >= CLOUD_OWNER) return stormTint(CLOUD_TONE[level]);
   if (level === 3) { r = mix(r, 255, 0.24); g = mix(g, 250, 0.24); bl = mix(bl, 232, 0.24); }
   else if (level === 1) { r = r * 0.6 + 8; g = g * 0.62 + 10; bl = bl * 0.7 + 26; }
   return [r, g, bl];
@@ -1368,8 +1544,8 @@ const CLOUD_TONE = [null, [176, 174, 192], [238, 236, 230], [255, 253, 246]];
 function waterColor(py) {
   const dy = eye.F[1] + eye.U[1] * (RH / 2 - py) / FOCAL;     // その行の視線の y 成分（下向きが正）
   const t = clamp(-dy * 1.2, -1, 1);
-  return t >= 0 ? [mix(BG[0], BG_UP[0], t), mix(BG[1], BG_UP[1], t), mix(BG[2], BG_UP[2], t)]
-                : [mix(BG[0], BG_DOWN[0], -t), mix(BG[1], BG_DOWN[1], -t), mix(BG[2], BG_DOWN[2], -t)];
+  return waterTint(t >= 0 ? [mix(BG[0], BG_UP[0], t), mix(BG[1], BG_UP[1], t), mix(BG[2], BG_UP[2], t)]
+                          : [mix(BG[0], BG_DOWN[0], -t), mix(BG[1], BG_DOWN[1], -t), mix(BG[2], BG_DOWN[2], -t)]);   // 天気が悪いと水も少し暗い
 }
 
 function render() {
@@ -1409,7 +1585,7 @@ function render() {
         const far = (px > 0 ? zbuf[p - 1] > lim : 1) + (px < RW - 1 ? zbuf[p + 1] > lim : 1) +
                     (py > 0 ? zbuf[p - RW] > lim : 1) + (py < RH - 1 ? zbuf[p + RW] > lim : 1);
         const so = sO[ibuf[p]];
-        if (far >= (so === CLOUD_OWNER || so === WISP_OWNER ? 2 : 1)) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
+        if (far >= (so >= CLOUD_OWNER ? 2 : 1)) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
         // 遠いほど水の色に溶ける（奥行きが分かる）
         const f = Math.min(0.85, 1 - Math.exp(-d / FOG_DIST * 1.4));
         r = mix(r, wc[0], f); g = mix(g, wc[1], f); b = mix(b, wc[2], f);
@@ -1461,13 +1637,22 @@ function buildFrame(time) {
   drawFrameEdges();
   drawFood();
   emitClouds(time);
+  emitCloudlets((x, y, z, r) => {
+    if (behindEye(x, y, z, r)) return -1;   // 目の後ろは描かない
+    const sp = clamp(Math.hypot(x - eye.x, y - eye.y, z - eye.z) / 80, 0.5, 2);   // 遠いほど粗く大きな点で
+    pointSize = sp * 1.15;
+    return sp;
+  });
+  pointSize = 0.65;
   emitDragon(time);
   for (const F of fish) if (!behindEye(F.x, F.y, F.z, F.L)) drawFish(F, time);
 }
 function step(dt, time) {
   updateDragon(dt, time);
   stirPoint(eye, "eye", eye.x, eye.y, eye.z, 4, dt);   // 自分が雲に入るとかき乱される
+  updateWeather(dt);
   updateClouds(dt, time);
+  updateCloudlets(dt);
   scareFish(dt);
   scheduleDart(time);
   for (const F of fish) updateFish(F, dt, time);
@@ -1480,6 +1665,8 @@ eyeBasis();
 for (let i = 0; i < 1200; i++) updateDragon(1 / 60, -20 + i / 60);
 computeDragonSpine(0);
 updateClouds(0, 0);   // 最初のフレームから雲の形が決まっているように
+initCloudlets();
+cloudletPushers = push => push(eye.x, eye.y, eye.z, 4);   // 自分が泳いで突っ込んでも押しのけられる
 
 let time = 0, last = performance.now(), paused = false;
 function frame(now) {
@@ -1566,6 +1753,28 @@ if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").m
   paused = true;
   pauseBtn.textContent = "再開";
 }
+
+// 天気のボタン：選ぶとその天気へゆっくり移り、「自動」で気まぐれに戻る
+const wnow = document.getElementById("wnow");
+const weatherBtns = [...document.querySelectorAll("[data-weather]")];
+function syncWeatherUI() {
+  let near = 0;
+  WEATHERS.forEach((S, i) => { if (Math.abs(S.w - weather.w) < Math.abs(WEATHERS[near].w - weather.w)) near = i; });
+  const moving = Math.abs(WEATHERS[weather.target].w - weather.w) > 0.02;
+  wnow.textContent = WEATHERS[near].name + (moving && near !== weather.target ? " → " + WEATHERS[weather.target].name : "") + (weather.auto ? "（自動）" : "");
+  for (const b of weatherBtns) {
+    const v = b.dataset.weather;
+    b.setAttribute("aria-pressed", String(v === "auto" ? weather.auto : !weather.auto && +v === weather.target));
+  }
+}
+for (const b of weatherBtns) b.addEventListener("click", () => {
+  const v = b.dataset.weather;
+  if (v === "auto") weather.auto = true;
+  else { weather.auto = false; weather.target = +v; }
+  syncWeatherUI();
+});
+setInterval(syncWeatherUI, 500);
+syncWeatherUI();
 
 // 品種の凡例
 const legend = document.getElementById("legend");
