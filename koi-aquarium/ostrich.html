@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ダチョウの水槽</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+<style>
+  /* 夜の部屋に置かれた水槽。キャンバスが主役で、文字は脇に小さく控える */
+  :root {
+    --room: #14171c;
+    --room-2: #1c2027;
+    --ink: #d9dccf;
+    --ink-dim: #8c93a0;
+    --line: #2c323b;
+    --koi: #e0452f;
+    --font-pixel: "DotGothic16", "MS Gothic", ui-monospace, monospace;
+    --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--room);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .wrap {
+    min-height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding-inline: 16px;
+    padding-block: 24px;
+  }
+  canvas:active { cursor: grabbing; }
+  canvas:focus-visible { outline: 2px solid var(--koi); outline-offset: 4px; }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+  .panel {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 24px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  h1 {
+    margin: 0;
+    font-family: var(--font-pixel);
+    font-weight: 400;
+    font-size: 22px;
+    letter-spacing: 0.06em;
+    text-wrap: balance;
+  }
+  .spec {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+  }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-family: var(--font-pixel);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--room-2);
+    border: 1px solid var(--line);
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--ink-dim); }
+  button:focus-visible { outline: 2px solid var(--koi); outline-offset: 2px; }
+  .legend {
+    width: 100%;
+    max-width: 720px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    color: var(--ink-dim);
+    font-size: 12px;
+  }
+  .legend li { display: flex; align-items: center; gap: 6px; }
+  .sw { width: 18px; height: 8px; display: inline-block; image-rendering: pixelated; }
+  .hint { color: var(--ink-dim); font-size: 12px; margin: 0; max-width: 720px; width: 100%; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="tank" tabindex="0" aria-label="ダチョウが 3 羽歩き回るボクセルの水槽。ドラッグか矢印キーで回転"></canvas>
+  <div class="panel">
+    <div class="title">
+      <h1>ダチョウの水槽</h1>
+      <p class="spec">128 × 128 × 128 voxel ・ 平行投影 ・ ドラッグで回転 ・ スクロールでズーム</p>
+    </div>
+    <div class="controls">
+      <button id="front" type="button">正面に戻す</button>
+      <button id="unzoom" type="button">ズームを戻す <span id="zoom"></span></button>
+      <button id="feed" type="button">餌をまく</button>
+      <button id="pause" type="button">一時停止</button>
+    </div>
+  </div>
+  <ul class="legend" id="legend"><li><span class="sw" style="background:linear-gradient(90deg,#242126 0 50%,#f4f0e6 50% 100%)"></span>オス</li><li><span class="sw" style="background:linear-gradient(90deg,#806e5e 0 50%,#b2a28e 50% 100%)"></span>メス 2 羽</li></ul>
+  <p class="hint">水を抜いて砂を敷いた水槽で、ダチョウ 3 羽（黒いオスと灰褐色のメス 2 羽）が歩き回り、立ち止まって首をめぐらせたり、地面をつついたり、ときどき走ったりします。ドラッグ（または矢印キー）で水槽を回せます。スクロール（またはピンチ、＋／－キー）でマウスの位置を中心にズームし、Shift＋ドラッグか右ドラッグで拡大した画面を動かせます。クリックするとその位置に餌がまかれ、ダチョウが寄ってきてついばみます。どの角度でも 1 ボクセルが 1 ピクセルのドット絵のままです。</p>
+</div>
+
+<script>
+"use strict";
+// ============================================================
+//  ボクセル空間  x: 左→右, y: 上→下, z: 手前(0)→奥(D-1)
+// ============================================================
+const W = 128, H = 128, D = 128;   // ダチョウが歩き回れる立方体の水槽
+
+// 表示キャンバス。どの向きに回しても水槽の箱が収まる大きさ（立方体の対角線は約 222 voxel）
+const CW = 228, CH = 228;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const c255 = v => v < 0 ? 0 : v > 255 ? 255 : v | 0;
+const pack = (r, g, b, a) => ((a << 24) | (c255(r) << 16) | (c255(g) << 8) | c255(b)) >>> 0;
+const mix = (a, b, t) => a + (b - a) * t;
+
+// ダチョウや地面は「点」の集まりとして毎フレーム書き出す。位置はボクセル格子に丸めず連続値のまま持ち、
+// 描くときにカメラの向きに合わせた格子（＝画面のピクセル）へ落とし込む。
+// そのため水槽をどの向きに回しても、1 ボクセルが 1 ピクセルのドット絵になる。
+//   level: 明るさの段階（0 = 陰影なし, 1 = 暗, 2 = 中, 3 = 明）, owner: 影を落とす物体の番号（0 = 影を落とさない）
+const MAXS = 420000;
+const sX = new Float32Array(MAXS), sY = new Float32Array(MAXS), sZ = new Float32Array(MAXS);
+const sC = new Uint32Array(MAXS), sL = new Uint8Array(MAXS), sO = new Uint8Array(MAXS);
+let sN = 0;
+// 各 (x,z) 列でいちばん上にある鯉の点の y と、その鯉。下にいる別の鯉はこの影に入る
+const topY = new Int16Array(W * D), topOwner = new Uint8Array(W * D);
+const OPAQUE = 200;
+
+function put(x, y, z, c, level = 0, owner = 0) {
+  if (!(x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D) || sN >= MAXS) return;
+  sX[sN] = x; sY[sN] = y; sZ[sN] = z; sC[sN] = c; sL[sN] = level; sO[sN] = owner; sN++;
+  if (owner && (c >>> 24) >= OPAQUE) {
+    const k = (x | 0) + W * (z | 0), yi = y | 0;
+    if (yi < topY[k]) { topY[k] = yi; topOwner[k] = owner; }
+  }
+}
+
+// ------------------------------------------------------------
+//  乱数とノイズ
+// ------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash(x, y, z, s) {
+  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(z | 0, 0x9e3779b1) ^ Math.imul(s | 0, 0x85ebca77);
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  h ^= h >>> 15;
+  return (h >>> 0) / 4294967296;
+}
+function noise3(x, y, z, s) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  let fx = x - xi, fy = y - yi, fz = z - zi;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+  const a = mix(hash(xi, yi, zi, s), hash(xi + 1, yi, zi, s), fx);
+  const b = mix(hash(xi, yi + 1, zi, s), hash(xi + 1, yi + 1, zi, s), fx);
+  const c = mix(hash(xi, yi, zi + 1, s), hash(xi + 1, yi, zi + 1, s), fx);
+  const d = mix(hash(xi, yi + 1, zi + 1, s), hash(xi + 1, yi + 1, zi + 1, s), fx);
+  return mix(mix(a, b, fy), mix(c, d, fy), fz);
+}
+
+// ============================================================
+//  共通の道具
+// ============================================================
+// 光の向き（光源へ向かう単位ベクトル）。上から、少し左手前から当たる
+const LIGHT = (() => { const v = [-0.35, -1, -0.5], n = Math.hypot(...v); return v.map(c => c / n); })();
+const levelOf = (nx, ny, nz) => {
+  const lam = (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / (Math.hypot(nx, ny, nz) || 1);
+  return lam > 0.42 ? 3 : lam > -0.2 ? 2 : 1;
+};
+const pc = c => pack(c[0], c[1], c[2], 255);
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+const SEG = 0.5;
+const add = (p, v, k) => [p[0] + v[0] * k, p[1] + v[1] * k, p[2] + v[2] * k];
+const norm = v => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+// 細い管（角・脚）：p0 から p1 まで、太さ r0 → r1
+function tube(p0, p1, r0, r1, col, owner) {
+  const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2], len = Math.hypot(ax, ay, az) || 1;
+  const tx = ax / len, ty = ay / len, tz = az / len;
+  // 管に垂直な 2 方向
+  let ux = -ty, uy = tx, uz = 0;
+  if (Math.abs(tz) > 0.9) { ux = 0; uy = -tz; uz = ty; }
+  let un = Math.hypot(ux, uy, uz); ux /= un; uy /= un; uz /= un;
+  const vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+  const c = pc(col);
+  for (let t = 0; t <= len; t += SEG) {
+    const r = mix(r0, r1, t / len), cx = p0[0] + tx * t, cy = p0[1] + ty * t, cz = p0[2] + tz * t;
+    const m = Math.max(4, Math.ceil(2 * Math.PI * r / SEG));
+    for (let k = 0; k < m; k++) {
+      const a = 2 * Math.PI * k / m, ca = Math.cos(a), sa = Math.sin(a);
+      const nx = ux * ca + vx * sa, ny = uy * ca + vy * sa, nz = uz * ca + vz * sa;
+      put(cx + nx * r, cy + ny * r, cz + nz * r, c, levelOf(nx, ny, nz), owner);
+    }
+    put(cx, cy, cz, c, 2, owner);
+  }
+}
+
+// 楕円体の殻（局所座標の点・色・表面の向き）。形と色は最初に一度だけ作って使い回す
+//   a: 前後, b: 上下, w: 左右 の半径。fluff を大きくすると表面がけば立つ（羽毛）
+const blobCache = new Map();
+function blobPoints(key, a, b, w, colorFn, fluff = 0, seed = 0) {
+  let pts = blobCache.get(key);
+  if (pts) return pts;
+  pts = [];
+  const R = Math.max(a, b, w) * (1 + fluff) + 0.5;
+  for (let i = -R; i <= R; i += SEG) for (let j = -R; j <= R; j += SEG) for (let k = -R; k <= R; k += SEG) {
+    const d = Math.hypot(i / a, j / b, k / w);
+    const lim = 1 + (fluff ? (noise3(i * 0.45, j * 0.45, k * 0.45, seed) - 0.5) * 2 * fluff : 0);
+    if (d > lim || d < lim - 0.45 * Math.min(1, 6 / Math.max(a, b, w))) continue;   // 中身は見えないので殻だけ
+    pts.push(i, j, k, pc(colorFn(i, j, k)), i / (a * a), j / (b * b), k / (w * w));
+  }
+  blobCache.set(key, pts);
+  return pts;
+}
+// 殻を、中心 c・向き (F, U, R)（前・上・横）で置く
+function emitBlob(pts, c, F, U, R, owner) {
+  for (let p = 0; p < pts.length; p += 7) {
+    const i = pts[p], j = pts[p + 1], k = pts[p + 2], gi = pts[p + 4], gj = pts[p + 5], gk = pts[p + 6];
+    const nx = F[0] * gi + U[0] * gj + R[0] * gk, ny = F[1] * gi + U[1] * gj + R[1] * gk, nz = F[2] * gi + U[2] * gj + R[2] * gk;
+    put(c[0] + F[0] * i + U[0] * j + R[0] * k, c[1] + F[1] * i + U[1] * j + R[1] * k, c[2] + F[2] * i + U[2] * j + R[2] * k,
+        pts[p + 3], levelOf(nx, ny, nz), owner);
+  }
+}
+
+// ============================================================
+//  地面：水を抜いた水槽の底に敷いた砂。ゆるやかな砂丘に風紋、岩と枯れ草。
+//  動かないので点は最初に一度だけ作り、毎フレームそのまま書き込む
+// ============================================================
+const SAND_OWNER = 50, ROCK_OWNER = 51;
+const groundY = new Float32Array((W + 1) * (D + 1));   // 1 voxel ごとの地面の y（y は下向き）
+for (let z = 0; z <= D; z++) for (let x = 0; x <= W; x++) {
+  const h = 6 + noise3(x * 0.025, z * 0.025, 0, 801) * 8 + noise3(x * 0.08, z * 0.08, 0, 802) * 2;
+  groundY[x + (W + 1) * z] = H - 1 - h;
+}
+function groundAt(x, z) {
+  const fx = clamp(x, 0, W - 0.001), fz = clamp(z, 0, D - 0.001), i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j, k = i + (W + 1) * j;
+  return mix(mix(groundY[k], groundY[k + 1], u), mix(groundY[k + W + 1], groundY[k + W + 2], u), v);
+}
+const ROCKS = [{ x: 28, z: 96, r: 8 }, { x: 102, z: 30, r: 6 }, { x: 84, z: 104, r: 4.5 }];
+const statics = { x: [], y: [], z: [], c: [], l: [], o: [] };
+function addStatic(x, y, z, col, nx, ny, nz, owner) {
+  statics.x.push(x); statics.y.push(y); statics.z.push(z); statics.c.push(pc(col)); statics.l.push(levelOf(nx, ny, nz)); statics.o.push(owner);
+}
+(function buildGround() {
+  const SAND = [226, 196, 140], SAND_D = [206, 174, 122], GRAIN_D = [178, 146, 102], GRAIN_L = [242, 222, 178];
+  // 砂の表面
+  for (let z = 0.3; z < D; z += 0.6) for (let x = 0.3; x < W; x += 0.6) {
+    const y = groundAt(x, z);
+    const gx = groundAt(x + 0.5, z) - groundAt(x - 0.5, z), gz = groundAt(x, z + 0.5) - groundAt(x, z - 0.5);
+    const ripple = Math.sin(x * 0.42 + z * 0.16 + noise3(x * 0.05, z * 0.05, 1, 803) * 6);   // 風紋
+    const g = hash(Math.round(x * 1.7), Math.round(z * 1.7), 0, 804);
+    const col = g < 0.05 ? GRAIN_D : g > 0.97 ? GRAIN_L : ripple > 0.72 ? SAND_D : SAND;
+    addStatic(x, y, z, col, gx, -1, gz, SAND_OWNER);
+  }
+  // ガラスに接する砂の断面（地層のしま）
+  const strata = y => ((y * 0.5 + noise3(y * 0.2, 0, 0, 805) * 2) | 0) % 3 === 0 ? [188, 156, 106] : [204, 172, 120];
+  for (let t = 0.3; t < W; t += 0.6) for (const [z, nz] of [[0.05, -1], [D - 0.05, 1]])
+    for (let y = groundAt(t, z) + 0.6; y < H; y += 0.6) addStatic(t, y, z, strata(y), 0, 0, nz, SAND_OWNER);
+  for (let t = 0.3; t < D; t += 0.6) for (const [x, nx] of [[0.05, -1], [W - 0.05, 1]])
+    for (let y = groundAt(x, t) + 0.6; y < H; y += 0.6) addStatic(x, y, t, strata(y), nx, 0, 0, SAND_OWNER);
+  // 岩
+  for (const [n, rk] of ROCKS.entries()) {
+    const cy = groundAt(rk.x, rk.z) + rk.r * 0.3;
+    for (let i = -rk.r - 2; i <= rk.r + 2; i += 0.5) for (let j = -rk.r - 2; j <= rk.r * 0.4; j += 0.5) for (let k = -rk.r - 2; k <= rk.r + 2; k += 0.5) {
+      const d = Math.hypot(i, j * 1.25, k) / rk.r, lim = 1 + (noise3(i * 0.25, j * 0.25, k * 0.25, 810 + n) - 0.5) * 0.5;
+      if (d > lim || d < lim - 0.12) continue;
+      const x = rk.x + i, y = cy + j, z = rk.z + k;
+      if (y > groundAt(x, z) + 0.5) continue;
+      const t = noise3(x * 0.4, y * 0.4, z * 0.4, 820);
+      addStatic(x, y, z, t > 0.62 ? [96, 90, 84] : t < 0.3 ? [150, 142, 128] : [124, 116, 104], i, j * 1.25, k, ROCK_OWNER);
+    }
+  }
+  // 枯れ草の株
+  const rng = mulberry32(830);
+  for (let n = 0; n < 9; n++) {
+    const cx = 10 + rng() * (W - 20), cz = 10 + rng() * (D - 20), base = groundAt(cx, cz);
+    for (let b = 0; b < 8; b++) {
+      const ang = rng() * Math.PI * 2, lean = 0.2 + rng() * 0.5, len = 5 + rng() * 6;
+      const col = rng() < 0.5 ? [186, 162, 96] : [150, 140, 80];
+      for (let u = 0; u <= len; u += 0.5) {
+        const k = u / len, out = Math.sin(lean) * u * (0.4 + k);
+        addStatic(cx + Math.cos(ang) * out, base - Math.cos(lean) * u * (1 - 0.25 * k * k), cz + Math.sin(ang) * out, col, 0, -1, 0, SAND_OWNER);
+      }
+    }
+  }
+  for (const key of Object.keys(statics)) statics[key] = key === "c" ? Uint32Array.from(statics[key]) : key === "l" || key === "o" ? Uint8Array.from(statics[key]) : Float32Array.from(statics[key]);
+})();
+function emitGround() {
+  const S = statics;
+  for (let i = 0; i < S.x.length; i++) put(S.x[i], S.y[i], S.z[i], S.c[i], S.l[i], S.o[i]);
+}
+
+// ============================================================
+//  餌：地面にまいた粒。ダチョウが寄ってきてついばむ
+// ============================================================
+const foods = [];
+function dropFood(x, z) {
+  for (let i = 0; i < 6; i++) {
+    const fx = clamp(x + (Math.random() - 0.5) * 10, 4, W - 4), fz = clamp((z === undefined ? 20 + Math.random() * (D - 40) : z) + (Math.random() - 0.5) * 10, 4, D - 4);
+    foods.push({ x: fx, y: 2, z: fz, vy: 0, rest: 0 });
+  }
+}
+function updateFood(dt) {
+  for (let i = foods.length - 1; i >= 0; i--) {
+    const f = foods[i], fl = groundAt(f.x, f.z) - 0.6;
+    if (f.y < fl) { f.vy += 120 * dt; f.y = Math.min(fl, f.y + f.vy * dt); }
+    else if ((f.rest += dt) > 30) foods.splice(i, 1);
+  }
+}
+function drawFood() {
+  const c = pack(150, 92, 40, 255);
+  for (const f of foods) { put(f.x, f.y, f.z, c, 2, 0); put(f.x + 0.5, f.y, f.z, c, 2, 0); put(f.x, f.y - 0.5, f.z + 0.5, c, 2, 0); }
+}
+
+// ============================================================
+//  ダチョウ：羽毛の胴（楕円体）＋ S 字の首と小さな頭＋ かかとが後ろに曲がる 2 関節の脚
+//  y は下向きなので「上」は (0, -1, 0)
+// ============================================================
+const UP = [0, -1, 0];
+const HIP_H = 28;                    // 地面から腰までの高さ
+const LEG_A = 17, LEG_B = 17;        // 腰 → かかと、かかと → 足
+const OST_BLACK = [36, 33, 38], OST_WHITE = [244, 240, 230], OST_BROWN = [128, 110, 94], OST_BROWN_D = [104, 88, 76], OST_BROWN_L = [178, 162, 142];
+const OST_SKIN_M = [216, 164, 154], OST_SKIN_F = [190, 170, 160], OST_LEG_M = [206, 132, 120], OST_LEG_F = [184, 158, 146];
+const OST_BEAK = [232, 200, 160], OST_NAIL = [70, 60, 54], OST_EYE = [20, 16, 16];
+
+const ostriches = [];
+function makeOstrich(id, male, x, z, yaw) {
+  const O = { id, male, x, z, yaw, speed: 0, mode: "idle", modeT: 1 + Math.random() * 2, tx: x, tz: z, phase: Math.random(),
+              peck: 0, peckT: 0, headYaw: 0, lean: 0, seed: id * 97, wing: 0, target: null };
+  const tone = male ? null : [OST_BROWN, OST_BROWN_D, OST_BROWN_L];
+  // 胴：オスは黒い体に白い翼、メスは灰褐色。羽毛のまだら
+  O.body = blobPoints("body" + (male ? "M" : "F"), 13, 9, 9.5, (i, j, k) => {
+    const g = hash(Math.round(i * 1.4), Math.round(j * 1.4), Math.round(k * 1.4), 900 + id);
+    if (male) return g < 0.12 ? [56, 52, 58] : OST_BLACK;
+    return g < 0.18 ? tone[1] : g > 0.9 ? tone[2] : tone[0];
+  }, 0.12, 900 + id);
+  // 翼（体の両脇にたたんだ羽）と尾羽
+  O.wingPts = blobPoints("wing" + (male ? "M" : "F"), 8.5, 4.6, 2.4, (i, j, k) => {
+    const g = hash(Math.round(i * 1.6), Math.round(j * 1.6), Math.round(k * 1.6), 910);
+    if (male) return i < -5 || g < 0.1 ? [222, 216, 206] : OST_WHITE;
+    return i < -4 ? OST_BROWN_L : g < 0.2 ? OST_BROWN_D : [150, 132, 114];
+  }, 0.18, 911);
+  O.tailPts = blobPoints("tail" + (male ? "M" : "F"), 5, 4.5, 6, (i, j, k) => {
+    const g = hash(Math.round(i * 1.6), Math.round(j * 1.6), Math.round(k * 1.6), 920);
+    return male ? (g < 0.15 ? [220, 214, 204] : OST_WHITE) : (g < 0.3 ? OST_BROWN_L : [196, 184, 168]);
+  }, 0.3, 921);
+  O.collar = blobPoints("collar" + (male ? "M" : "F"), 3.2, 2.4, 3.4, () => (male ? OST_WHITE : OST_BROWN_L), 0.25, 930);
+  O.headPts = blobPoints("head" + (male ? "M" : "F"), 3.2, 2.6, 2.4, (i, j) => (j > 1.6 ? (male ? [150, 132, 128] : [168, 156, 148]) : male ? OST_SKIN_M : OST_SKIN_F), 0.05, 940);
+  O.beakPts = blobPoints("beak", 2.8, 0.85, 1.8, () => OST_BEAK);
+  O.skin = male ? OST_SKIN_M : OST_SKIN_F;
+  O.legCol = male ? OST_LEG_M : OST_LEG_F;
+  ostriches.push(O);
+  return O;
+}
+
+function chooseMode(O) {
+  const r = Math.random();
+  O.peckT = 0;
+  if (r < 0.42) { O.mode = "walk"; pickTarget(O, 20, 60); O.modeT = 8; }
+  else if (r < 0.62) { O.mode = "idle"; O.modeT = 1.5 + Math.random() * 2.5; }
+  else if (r < 0.86) { O.mode = "peck"; O.modeT = 1.5 + Math.random() * 2.5; }
+  else { O.mode = "run"; pickTarget(O, 55, 100); O.modeT = 5; }
+}
+function pickTarget(O, dmin, dmax) {
+  for (let n = 0; n < 20; n++) {
+    const a = Math.random() * Math.PI * 2, d = dmin + Math.random() * (dmax - dmin);
+    const tx = O.x + Math.cos(a) * d, tz = O.z + Math.sin(a) * d;
+    if (tx > 24 && tx < W - 24 && tz > 24 && tz < D - 24) { O.tx = tx; O.tz = tz; return; }
+  }
+  O.tx = W / 2 + (Math.random() - 0.5) * 30; O.tz = D / 2 + (Math.random() - 0.5) * 30;
+}
+
+function updateOstrich(O, dt, time) {
+  // 餌があれば一番近いものへ
+  let food = null, best = 1e9;
+  for (const f of foods) {
+    if (f.y < groundAt(f.x, f.z) - 2) continue;   // まだ落ちている途中
+    const d = Math.hypot(f.x - O.x, f.z - O.z);
+    if (d < best) { best = d; food = f; }
+  }
+  if (food && O.mode !== "eat") { O.mode = "toFood"; O.tx = food.x; O.tz = food.z; O.modeT = 6; }
+  if (O.mode === "toFood" && food && best < 25) { O.mode = "eat"; O.modeT = 3; O.peckT = 0; }
+  if (O.mode === "eat" && !food) chooseMode(O);
+
+  O.modeT -= dt;
+  const toT = Math.hypot(O.tx - O.x, O.tz - O.z);
+  if (O.modeT <= 0 || ((O.mode === "walk" || O.mode === "run") && toT < 6)) chooseMode(O);
+
+  // 行きたい向き
+  let dx = Math.cos(O.yaw) * 0.3, dz = Math.sin(O.yaw) * 0.3, want = 0;
+  if (O.mode === "walk" || O.mode === "run" || O.mode === "toFood") {
+    dx += (O.tx - O.x) / (toT || 1); dz += (O.tz - O.z) / (toT || 1);
+    want = O.mode === "run" ? 30 : O.mode === "toFood" ? 14 : 9;
+  } else if (O.mode === "eat" && food) {
+    dx += (food.x - O.x) / (best || 1); dz += (food.z - O.z) / (best || 1);
+  }
+  // 壁・岩・ほかのダチョウをよける
+  const M = 22;
+  if (O.x < M) dx += (M - O.x) * 0.15; if (O.x > W - M) dx -= (O.x - (W - M)) * 0.15;
+  if (O.z < M) dz += (M - O.z) * 0.15; if (O.z > D - M) dz -= (O.z - (D - M)) * 0.15;
+  for (const rk of ROCKS) {
+    const ex = O.x - rk.x, ez = O.z - rk.z, d = Math.hypot(ex, ez), R = rk.r + 14;
+    if (d < R && d > 0.01) { dx += ex / d * (R - d) * 0.12; dz += ez / d * (R - d) * 0.12; }
+  }
+  for (const P of ostriches) {
+    if (P === O) continue;
+    const ex = O.x - P.x, ez = O.z - P.z, d = Math.hypot(ex, ez), R = 32;
+    if (d < R && d > 0.01) { dx += ex / d * (R - d) * 0.08; dz += ez / d * (R - d) * 0.08; }
+  }
+  const diff = wrapAngle(Math.atan2(dz, dx) - O.yaw);
+  const maxTurn = O.mode === "run" ? 1.4 : 2.2;
+  O.yaw = wrapAngle(O.yaw + clamp(diff * 2.5, -maxTurn, maxTurn) * dt);
+  if (Math.abs(diff) > 1.2) want *= 0.4;   // 大きく向きを変えるときはゆっくり
+  O.speed += (want - O.speed) * Math.min(1, dt * (want > O.speed ? 2.5 : 4));
+  O.x = clamp(O.x + Math.cos(O.yaw) * O.speed * dt, 16, W - 16);
+  O.z = clamp(O.z + Math.sin(O.yaw) * O.speed * dt, 16, D - 16);
+
+  // 歩きのリズム：足が地面に着いている間（周期の 60%）に、体がちょうど一歩分進む
+  const S0 = clamp(O.speed * 0.5, 8, 30);
+  O.stride = S0 * clamp(O.speed / 3, 0, 1);
+  O.phase = (O.phase + 0.6 * O.speed / S0 * dt) % 1;
+  O.lean += (clamp(O.speed / 30, 0, 1) * 0.28 - O.lean) * Math.min(1, dt * 3);
+  O.wing += ((O.mode === "run" ? 1 : 0) - O.wing) * Math.min(1, dt * 4);   // 走るときは翼を少し広げる
+
+  // 首と頭：つつく・見回す
+  O.peckT += dt;
+  let peckTarget = 0;
+  if (O.mode === "peck" || O.mode === "eat") peckTarget = (O.peckT % 0.7) < 0.32 ? 1 : 0.62;
+  O.peck += (peckTarget - O.peck) * Math.min(1, dt * 9);
+  const look = O.mode === "idle" ? Math.sin(time * 0.9 + O.seed) * 0.8 : O.mode === "walk" ? Math.sin(time * 0.5 + O.seed) * 0.25 : 0;
+  O.headYaw += (look - O.headYaw) * Math.min(1, dt * 3);
+  // ついばんだら餌が無くなる
+  if (O.mode === "eat" && food && O.peck > 0.9 && O.beak && Math.hypot(O.beak[0] - food.x, O.beak[2] - food.z) < 6) {
+    foods.splice(foods.indexOf(food), 1);
+  }
+}
+
+// 2 関節の脚：腰 hip から足 foot まで。関節（かかと）は後ろ向きに曲がる
+function legJoint(hip, foot, back) {
+  let d = [foot[0] - hip[0], foot[1] - hip[1], foot[2] - hip[2]];
+  let L = Math.hypot(...d);
+  const maxL = LEG_A + LEG_B - 0.05;
+  if (L > maxL) { d = d.map(c => c * maxL / L); L = maxL; }
+  const dir = d.map(c => c / L);
+  const a = (LEG_A * LEG_A - LEG_B * LEG_B + L * L) / (2 * L), h = Math.sqrt(Math.max(0, LEG_A * LEG_A - a * a));
+  const bv = norm(add(back, dir, -dot(back, dir)));
+  return [add(add(hip, dir, a), bv, h), add(hip, d, 1)];
+}
+
+function emitOstrich(O, time) {
+  const f = [Math.cos(O.yaw), 0, Math.sin(O.yaw)], r = [-Math.sin(O.yaw), 0, Math.cos(O.yaw)];
+  // 前かがみ（走るほど）
+  const cl = Math.cos(O.lean), sl = Math.sin(O.lean);
+  const F = norm([f[0] * cl, sl, f[2] * cl]), U = norm(cross(r, F).map(c => -c));
+  const U2 = dot(U, UP) < 0 ? U.map(c => -c) : U;
+  // 歩くと体が上下に揺れる
+  const bob = -Math.abs(Math.sin(O.phase * Math.PI * 2)) * 1.3 * clamp(O.speed / 8, 0, 1);
+  const gy = groundAt(O.x, O.z);
+  const P = [O.x, gy - (HIP_H + 3) + bob, O.z];
+  const own = O.id;
+
+  // 脚
+  const lift = Math.min(6, 2 + O.speed * 0.15) * clamp(O.speed / 3, 0, 1);
+  for (const [side, off] of [[1, 0], [-1, 0.5]]) {
+    const p = (O.phase + off) % 1;
+    let along, up = 0;
+    if (p < 0.6) along = O.stride * (0.5 - p / 0.6);
+    else { const v = (p - 0.6) / 0.4; along = O.stride * (-0.5 + v); up = Math.sin(Math.PI * v) * lift; }
+    const hip = add(add(P, U2, -3), r, side * 4.6);
+    const fx = O.x + f[0] * along + r[0] * side * 4, fz = O.z + f[2] * along + r[2] * side * 4;
+    const foot = [fx, groundAt(fx, fz) - 0.8 - up, fz];
+    const [knee, ft] = legJoint(hip, foot, [-f[0], 0.15, -f[2]]);
+    tube(hip, knee, 3.4, 1.5, O.skin, own);          // 太もも（羽毛の無い肉付きのよい部分）
+    tube(knee, ft, 1.3, 1.0, O.legCol, own);          // すね
+    // 2 本の指（太い中指と、外側の小さな指）
+    const toeDir = norm([f[0] + r[0] * side * 0.15, 0.05, f[2] + r[2] * side * 0.15]);
+    const toe2 = norm([f[0] + r[0] * side * 0.8, 0.05, f[2] + r[2] * side * 0.8]);
+    tube(ft, add(ft, toeDir, 5.5), 1.0, 0.7, O.legCol, own);
+    put(...add(ft, toeDir, 6.1), pc(OST_NAIL), 2, own);
+    tube(ft, add(ft, toe2, 3), 0.8, 0.6, O.legCol, own);
+  }
+
+  // 胴・翼・尾羽
+  emitBlob(O.body, P, F, U2, r, own);
+  for (const side of [1, -1]) {
+    const wc = add(add(add(P, F, -3 + O.wing * 1), U2, 1.5 + O.wing * 2.5), r, side * (8.2 + O.wing * 2.5));
+    emitBlob(O.wingPts, wc, F, U2, r, own);
+  }
+  emitBlob(O.tailPts, add(add(P, F, -12), U2, 3.5), F, U2, r, own);
+
+  // 首：根元から頭まで 2 次ベジェ曲線。つつくときは前下へ大きく曲がる
+  const nb = add(add(P, F, 10), U2, 5);
+  const hyC = Math.cos(O.headYaw), hyS = Math.sin(O.headYaw);
+  const fh = [f[0] * hyC + r[0] * hyS, 0, f[2] * hyC + r[2] * hyS];        // 首を向けた方向（水平）
+  const headBob = Math.sin(O.phase * Math.PI * 4) * 1.4 * clamp(O.speed / 8, 0, 1);
+  const hu = add(add(nb, fh, 7 + headBob), UP, 25);
+  const reach = 24;
+  const gpx = O.x + fh[0] * reach, gpz = O.z + fh[2] * reach;
+  const hp = [gpx, groundAt(gpx, gpz) - 3.5, gpz];
+  const pk = O.peck;
+  const H0 = [mix(hu[0], hp[0], pk), mix(hu[1], hp[1], pk), mix(hu[2], hp[2], pk)];
+  const C = add(add(nb, UP, 14 * (1 - pk)), fh, 3 + 9 * pk);
+  const bez = t => [0, 1, 2].map(a => (1 - t) * (1 - t) * nb[a] + 2 * (1 - t) * t * C[a] + t * t * H0[a]);
+  let prev = nb;
+  for (let s = 1; s <= 14; s++) {
+    const q = bez(s / 14);
+    tube(prev, q, mix(2.8, 1.4, (s - 1) / 14), mix(2.8, 1.4, s / 14), O.skin, own);
+    prev = q;
+  }
+  emitBlob(O.collar, add(nb, UP, -0.5), F, U2, r, own);
+
+  // 頭：首の先の向きと、見ている方向の間を向く
+  const tan = norm([H0[0] - bez(0.88)[0], H0[1] - bez(0.88)[1], H0[2] - bez(0.88)[2]]);
+  const hfUp = norm([fh[0], 0.18, fh[2]]);
+  const hf = norm([mix(hfUp[0], tan[0], pk), mix(hfUp[1], tan[1], pk), mix(hfUp[2], tan[2], pk)]);
+  const hup = norm(add(UP, hf, -dot(UP, hf)));
+  const hr = cross(hf, hup);
+  emitBlob(O.headPts, add(H0, hf, 0.6), hf, hup, hr, own);
+  const beakC = add(add(H0, hf, 4.6), hup, -0.6);
+  emitBlob(O.beakPts, beakC, hf, hup, hr, own);
+  O.beak = add(beakC, hf, 2.6);
+  for (const side of [1, -1]) {               // 大きな黒い目
+    const e = add(add(add(H0, hf, 1.4), hup, 0.9), hr, side * 2.35);
+    put(...e, pc(OST_EYE), 2, own); put(...add(e, hup, 0.5), pc(OST_EYE), 2, own); put(...add(e, hf, 0.5), pc(OST_EYE), 2, own);
+    put(...add(add(e, hup, 0.5), hf, 0.5), pc([250, 250, 246]), 2, own);
+  }
+}
+
+// ============================================================
+//  投影：回転できるカメラからの平行投影
+//  点をカメラの向きに回してから画面のピクセル格子に落とし、各ピクセルにいちばん手前の点を残す。
+//  （カメラに正対したボクセル格子を作って正面から投影するのと同じ）
+// ============================================================
+// 描画は 228×228 ドットの裏キャンバスに行い、表示用キャンバスへ整数倍に拡大して映す（ズーム）
+const canvas = document.getElementById("tank");
+const vctx = canvas.getContext("2d");
+const buf = document.createElement("canvas");
+buf.width = CW; buf.height = CH;
+const ctx = buf.getContext("2d");
+const img = ctx.createImageData(CW, CH);
+const out = new Uint32Array(img.data.buffer);
+const zbuf = new Float32Array(CW * CH), ibuf = new Int32Array(CW * CH);
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const BG = [242, 194, 48];         // 山吹色のベタ塗り（水）
+const ROOM = [[20, 23, 28], [24, 27, 33]];
+const OUTLINE = 0.6;               // 手前の物体の縁取りの暗さ
+const CX = W / 2, CY = H / 2, CZ = D / 2;
+
+// カメラ：yaw = 水平方向の回転（0 で正面）, pitch = 見下ろす角度（0 で真横, π/2 で真上）
+const cam = { yaw: -0.45, pitch: 0.32, vyaw: 0, vpitch: 0 };
+const PITCH_MAX = Math.PI / 2;
+let basis;
+function cameraBasis() {
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const F = [sy * cp, sp, cy * cp];          // 画面の奥へ向かう向き
+  const R = [cy, 0, -sy];                     // 画面の右
+  const Dn = [F[1] * R[2], F[2] * R[0] - F[0] * R[2], -F[1] * R[0]];  // 画面の下（F × R）
+  return { F, R, Dn };
+}
+
+// 水槽の枠（12 本の辺）。2 voxel 角の棒として点を並べておく
+const frameX = [], frameY = [], frameZ = [];
+(function buildFrameEdges() {
+  const corners = [];
+  for (let k = 0; k < 8; k++) corners.push([k & 1 ? W : 0, k & 2 ? H : 0, k & 4 ? D : 0]);
+  for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) {
+    const diff = a ^ b;
+    if (diff !== 1 && diff !== 2 && diff !== 4) continue;   // 1 軸だけ違う 2 頂点 = 辺
+    const A = corners[a], B = corners[b], len = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+    for (let t = 0; t <= len; t += 0.5) {
+      for (const o1 of [0.25, 0.75, 1.25, 1.75]) for (const o2 of [0.25, 0.75, 1.25, 1.75]) {
+        // 辺の方向以外の 2 軸について、箱の内側へ少し入った位置に置く
+        const p = [0, 1, 2].map(ax => {
+          if (A[ax] !== B[ax]) return A[ax] + (B[ax] - A[ax]) * t / len;
+          return A[ax];
+        });
+        let used = 0;
+        for (let ax = 0; ax < 3; ax++) {
+          if (A[ax] !== B[ax]) continue;
+          const o = used++ === 0 ? o1 : o2;
+          p[ax] = A[ax] === 0 ? o : A[ax] - o;
+        }
+        frameX.push(p[0]); frameY.push(p[1]); frameZ.push(p[2]);
+      }
+    }
+  }
+})();
+const FRAME_C = pack(16, 17, 20, 255);
+function drawFrameEdges() {
+  for (let i = 0; i < frameX.length; i++) put(frameX[i], frameY[i], frameZ[i], FRAME_C);
+}
+
+function shadeSample(i) {
+  const v = sC[i];
+  let r = (v >> 16) & 255, g = (v >> 8) & 255, bl = v & 255, level = sL[i];
+  const own = sO[i];
+  if (own) {
+    // 自分より上に別の鯉がいれば、その影に入って 1 段暗くなる
+    const col = (sX[i] | 0) + W * (sZ[i] | 0);
+    if (topY[col] < (sY[i] | 0) && topOwner[col] !== own) level = Math.max(1, level - 1);
+  }
+  if (level === 3) { r = mix(r, 255, 0.24); g = mix(g, 250, 0.24); bl = mix(bl, 232, 0.24); }
+  else if (level === 1) { r = r * 0.6 + 8; g = g * 0.62 + 10; bl = bl * 0.7 + 26; }  // 影は少し青みに寄せる
+  return [r, g, bl];
+}
+
+function render() {
+  basis = cameraBasis();
+  const { F, R, Dn } = basis;
+  const hw = CW / 2, hh = CH / 2;
+  // 1) 点を画面へ。各ピクセルにいちばん手前の点を残す
+  zbuf.fill(Infinity);
+  for (let i = 0; i < sN; i++) {
+    const qx = sX[i] - CX, qy = sY[i] - CY, qz = sZ[i] - CZ;
+    const px = Math.floor(qx * R[0] + qz * R[2] + hw);
+    const py = Math.floor(qx * Dn[0] + qy * Dn[1] + qz * Dn[2] + hh);
+    if (px < 0 || px >= CW || py < 0 || py >= CH) continue;
+    const d = qx * F[0] + qy * F[1] + qz * F[2], p = px + CW * py;
+    if (d < zbuf[p]) { zbuf[p] = d; ibuf[p] = i; }
+  }
+  // 2) 陰影・縁取りを付けて合成。何も無いピクセルは、水槽の中なら黄色、外なら部屋
+  for (let py = 0; py < CH; py++) {
+    for (let px = 0; px < CW; px++) {
+      const p = px + CW * py, d = zbuf[p];
+      let r, g, b;
+      if (d < Infinity) {
+        [r, g, b] = shadeSample(ibuf[p]);
+        // 隣のピクセルがずっと奥（または背景）なら、ここは手前の物体の輪郭
+        const dl = px > 0 ? zbuf[p - 1] : Infinity, dr = px < CW - 1 ? zbuf[p + 1] : Infinity;
+        const du = py > 0 ? zbuf[p - CW] : Infinity, dd = py < CH - 1 ? zbuf[p + CW] : Infinity;
+        if (dl > d + 3 || dr > d + 3 || du > d + 3 || dd > d + 3) { r *= OUTLINE; g *= OUTLINE; b *= OUTLINE; }
+      } else if (insideTank(px + 0.5 - hw, py + 0.5 - hh)) {
+        [r, g, b] = BG;
+      } else {
+        [r, g, b] = ROOM[(py / CH + BAYER[(px & 3) + ((py & 3) << 2)] / 16 * 0.15 > 0.55) ? 1 : 0];
+      }
+      out[p] = 0xff000000 | (c255(b) << 16) | (c255(g) << 8) | c255(r);
+    }
+  }
+}
+
+// 画面上の点 (u, v)（中心からのずれ）を通る視線が水槽の箱を通るか（スラブ法）
+function rayOrigin(u, v) {
+  const { R, Dn } = basis;
+  return [CX + R[0] * u + Dn[0] * v, CY + R[1] * u + Dn[1] * v, CZ + R[2] * u + Dn[2] * v];
+}
+// 視線が水槽に入る位置（視線上の距離）。通らなければ null
+function tankEntry(u, v) {
+  const o = rayOrigin(u, v), F = basis.F, size = [W, H, D];
+  let t0 = -1e9, t1 = 1e9;
+  for (let ax = 0; ax < 3; ax++) {
+    if (Math.abs(F[ax]) < 1e-6) { if (o[ax] < 0 || o[ax] > size[ax]) return null; continue; }
+    let a = (0 - o[ax]) / F[ax], b = (size[ax] - o[ax]) / F[ax];
+    if (a > b) [a, b] = [b, a];
+    if (a > t0) t0 = a;
+    if (b < t1) t1 = b;
+  }
+  return t1 >= t0 ? t0 : null;
+}
+const insideTank = (u, v) => tankEntry(u, v) !== null;
+
+// ============================================================
+//  ループ
+// ============================================================
+function buildFrame(time) {
+  sN = 0;
+  topY.fill(H);
+  drawFrameEdges();
+  emitGround();
+  drawFood();
+  for (const O of ostriches) emitOstrich(O, time);
+}
+function step(dt, time) {
+  for (const O of ostriches) updateOstrich(O, dt, time);
+  updateFood(dt);
+}
+
+makeOstrich(1, true, 46, 60, 0.4);
+makeOstrich(2, false, 86, 44, 2.6);
+makeOstrich(3, false, 78, 88, -2.2);
+
+let time = 0, last = performance.now(), paused = false, dragging = false;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) {
+    time += dt;
+    step(dt, time);
+  }
+  // 手を離した後も少しだけ惰性で回る
+  if (!dragging) {
+    cam.yaw += cam.vyaw * dt; cam.pitch = clamp(cam.pitch + cam.vpitch * dt, 0, PITCH_MAX);
+    const k = Math.exp(-4 * dt); cam.vyaw *= k; cam.vpitch *= k;
+  }
+  if (homing) {
+    const k = Math.min(1, dt * 6);
+    cam.yaw += wrapAngle(0 - cam.yaw) * k; cam.pitch += (0 - cam.pitch) * k;
+    if (Math.abs(wrapAngle(cam.yaw)) < 0.002 && cam.pitch < 0.002) { cam.yaw = 0; cam.pitch = 0; homing = false; }
+  }
+  buildFrame(time);
+  render();
+  ctx.putImageData(img, 0, 0);
+  present();
+  requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------------
+//  ズーム：1 ボクセル = 1 ドットのまま、ドットを大きく映す
+//  view.dot = 1 ドットを何 CSS ピクセルで映すか（整数）, (view.cx, view.cy) = 表示の中心（ドット座標）
+// ------------------------------------------------------------
+const view = { base: 1, dot: 1, cx: CW / 2, cy: CH / 2, cssW: CW, cssH: CH, dpr: 1 };
+const MAX_ZOOM = 12;   // 画面に合わせた大きさの何倍まで拡大できるか
+
+function clampView() {
+  const hw = view.cssW / 2 / view.dot, hh = view.cssH / 2 / view.dot;
+  view.cx = clamp(view.cx, hw, CW - hw);
+  view.cy = clamp(view.cy, hh, CH - hh);
+}
+function present() {
+  const d = view.dot * view.dpr;
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  vctx.fillStyle = "rgb(20,23,28)";
+  vctx.fillRect(0, 0, canvas.width, canvas.height);
+  vctx.imageSmoothingEnabled = false;
+  vctx.setTransform(d, 0, 0, d, (view.cssW / 2 - view.cx * view.dot) * view.dpr, (view.cssH / 2 - view.cy * view.dot) * view.dpr);
+  vctx.drawImage(buf, 0, 0);
+}
+// 画面上の位置 → 裏キャンバスのドット座標
+function toDots(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return [view.cx + (clientX - r.left - view.cssW / 2) / view.dot, view.cy + (clientY - r.top - view.cssH / 2) / view.dot];
+}
+// (clientX, clientY) の下にある点を動かさずに拡大率を変える
+function zoomTo(dot, clientX, clientY) {
+  dot = clamp(Math.round(dot), view.base, view.base * MAX_ZOOM);
+  if (dot === view.dot) return;
+  const r = canvas.getBoundingClientRect();
+  const [px, py] = toDots(clientX, clientY);
+  view.dot = dot;
+  view.cx = px - (clientX - r.left - view.cssW / 2) / dot;
+  view.cy = py - (clientY - r.top - view.cssH / 2) / dot;
+  clampView();
+  zoomLabel.textContent = view.dot === view.base ? "" : "×" + (view.dot / view.base).toFixed(1).replace(/\.0$/, "");
+}
+
+// 画面サイズに合わせて整数倍で拡大
+function fit() {
+  const availW = Math.min(window.innerWidth - 32, 1400);
+  const availH = window.innerHeight - 230;
+  const s = Math.max(1, Math.floor(Math.min(availW / CW, availH / CH)));
+  const ratio = view.dot / view.base;
+  view.base = s;
+  view.dot = Math.max(s, Math.round(s * ratio));
+  view.cssW = CW * s; view.cssH = CH * s;
+  view.dpr = window.devicePixelRatio || 1;
+  canvas.style.width = view.cssW + "px";
+  canvas.style.height = view.cssH + "px";
+  canvas.width = Math.round(view.cssW * view.dpr);
+  canvas.height = Math.round(view.cssH * view.dpr);
+  clampView();
+}
+const zoomLabel = document.getElementById("zoom");
+window.addEventListener("resize", fit);
+fit();
+requestAnimationFrame(frame);
+
+// ホイール（トラックパッドのピンチも）で拡大・縮小
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025));
+  let dot = view.dot * f;
+  // 1 回の操作で最低 1 段は変わるように
+  if (Math.round(dot) === view.dot) dot = view.dot + (f > 1 ? 1 : -1);
+  zoomTo(dot, e.clientX, e.clientY);
+}, { passive: false });
+
+// ドラッグで回転、動かさずに離したらその位置の水面に餌
+const ROT_PER_PX = 0.012;
+let homing = false, downX = 0, downY = 0, lastX = 0, lastY = 0, lastT = 0, moved = 0;
+const pointers = new Map();   // 2 本指のピンチ用
+let panning = false, pinchDist = 0, pinchDot = 1;
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("pointerdown", e => {
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  canvas.setPointerCapture(e.pointerId);
+  if (pointers.size === 2) {
+    // 2 本指になったら回転をやめてピンチ（拡大縮小＋移動）
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a[0] - b[0], a[1] - b[1]); pinchDot = view.dot;
+    lastX = (a[0] + b[0]) / 2; lastY = (a[1] + b[1]) / 2;
+    dragging = false; panning = false; moved = 99;
+    return;
+  }
+  dragging = true; homing = false;
+  // Shift・右ボタン・中ボタンでドラッグすると、拡大した画面を動かす
+  panning = e.shiftKey || e.button === 1 || e.button === 2;
+  downX = lastX = e.clientX; downY = lastY = e.clientY; lastT = performance.now(); moved = 0;
+  cam.vyaw = cam.vpitch = 0;
+});
+canvas.addEventListener("pointermove", e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    view.cx -= (mx - lastX) / view.dot; view.cy -= (my - lastY) / view.dot;
+    clampView();
+    if (pinchDist > 0) zoomTo(pinchDot * dist / pinchDist, mx, my);   // 指を置いたときの間隔との比で拡大
+    lastX = mx; lastY = my;
+    return;
+  }
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY, now = performance.now();
+  if (panning) {
+    view.cx -= dx / view.dot; view.cy -= dy / view.dot;
+    clampView();
+    moved += Math.abs(dx) + Math.abs(dy);
+    lastX = e.clientX; lastY = e.clientY;
+    return;
+  }
+  const k = ROT_PER_PX * CW / canvas.getBoundingClientRect().width * 4;
+  cam.yaw += dx * k;
+  cam.pitch = clamp(cam.pitch + dy * k, 0, PITCH_MAX);
+  const dtm = Math.max(1, now - lastT) / 1000;
+  cam.vyaw = dx * k / dtm * 0.5; cam.vpitch = dy * k / dtm * 0.5;
+  moved += Math.abs(dx) + Math.abs(dy);
+  lastX = e.clientX; lastY = e.clientY; lastT = now;
+});
+function endDrag(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size > 0) { lastX = [...pointers.values()][0][0]; lastY = [...pointers.values()][0][1]; return; }
+  if (!dragging) return;
+  dragging = false;
+  if (panning) { panning = false; cam.vyaw = cam.vpitch = 0; return; }
+  if (performance.now() - lastT > 80) cam.vyaw = cam.vpitch = 0;   // 止めてから離したら惰性なし
+  if (moved < 5 && e.type === "pointerup") feedAt(e.clientX, e.clientY);
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+
+// クリックした位置の視線が最初に水槽へ入る点の真下の地面に餌をまく
+function feedAt(clientX, clientY) {
+  const [qx, qy] = toDots(clientX, clientY);
+  const u = qx - CW / 2, v = qy - CH / 2;
+  const t = tankEntry(u, v);
+  if (t === null) return;
+  const o = rayOrigin(u, v), F = basis.F;
+  dropFood(o[0] + F[0] * t, o[2] + F[2] * t);
+}
+
+canvas.addEventListener("keydown", e => {
+  const step = 0.08;
+  if (e.key === "ArrowLeft") cam.yaw -= step;
+  else if (e.key === "ArrowRight") cam.yaw += step;
+  else if (e.key === "ArrowUp") cam.pitch = clamp(cam.pitch - step, 0, PITCH_MAX);
+  else if (e.key === "ArrowDown") cam.pitch = clamp(cam.pitch + step, 0, PITCH_MAX);
+  else if (e.key === "+" || e.key === "=" || e.key === "-" || e.key === "0") {
+    const r = canvas.getBoundingClientRect(), mx = r.left + r.width / 2, my = r.top + r.height / 2;
+    zoomTo(e.key === "0" ? view.base : view.dot * (e.key === "-" ? 1 / 1.25 : 1.25) + (e.key === "-" ? -0.5 : 0.5), mx, my);
+  }
+  else return;
+  homing = false;
+  e.preventDefault();
+});
+document.getElementById("front").addEventListener("click", () => { homing = true; cam.vyaw = cam.vpitch = 0; });
+document.getElementById("unzoom").addEventListener("click", () => {
+  const r = canvas.getBoundingClientRect();
+  zoomTo(view.base, r.left + r.width / 2, r.top + r.height / 2);
+});
+document.getElementById("feed").addEventListener("click", () => dropFood(24 + Math.random() * (W - 48), 24 + Math.random() * (D - 48)));
+const pauseBtn = document.getElementById("pause");
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "再開" : "一時停止";
+});
+if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  paused = true;
+  pauseBtn.textContent = "再開";
+}
+
+</script>
+</body>
+</html>
