@@ -860,9 +860,46 @@ const CLOUD_Y = H - 30;              // 雲の表面の平均の高さ（y は�
 const CLOUD_FLOW = 3;                // 流れる速さ [voxel/秒]（+x 向き）
 const CG = 2;                        // 格子の間隔 [voxel]
 const CNX = W / CG + 1, CNZ = D / CG + 1, CN = CNX * CNZ;
-const cloudH = new Float32Array(CN);  // 上面の y
-const cloudB = new Float32Array(CN), cloudThick = new Float32Array(CN);   // 下面の y と、雲の厚み
+const cloudH = new Float32Array(CN);  // いちばん上の雲の面の y
+const cloudB = new Float32Array(CN), cloudThick = new Float32Array(CN);   // いちばん下の雲の面の y と、その間の厚み
 const LAYER_MID = CLOUD_Y + 8;        // 雲の層の厚みの中心
+// 雲の立体：格子の各点（x, z は CG ごと、高さは CY0 から CG ごとに NL 段）で、雲の内側なら負・外側なら正になる値 cloudS。
+// 値が 0 になるところが雲の表面。上面・下面の区別は無く、こぶは上下左右どの向きにも盛り上がる
+const CY0 = LAYER_MID - 44, NL = Math.ceil((H - CY0) / CG) + 1;
+const cloudS = new Float32Array(CNX * NL * CNZ);             // 並びは x → 高さ → z（GPU の 3 次元の絵と同じ）
+const colMid = new Float32Array(CN), colH = new Float32Array(CN), colA = new Float32Array(CN);   // 列ごとの中ほどの高さ・厚みの半分・もこもこの強さ
+const colAny = new Uint8Array(CN), colLo = new Int16Array(CN), colHi = new Int16Array(CN);       // 雲がある列か・雲のある段の範囲
+let cloudShapeVersion = 0;
+const CLOUD_SLICES = 4;                                      // 雲の形は重いので、毎フレーム奥行き方向の 1/4 ずつ計算し直す
+let cloudDirty0 = 0, cloudDirty1 = CNZ;                       // まだ GPU に送っていない範囲（z の格子番号）
+// もこもこの元：繰り返しのある 3 次元の模様（一度だけ作る）。値は 0〜1 で、こぶの頭は丸く、こぶの間の谷は細く切れ込む
+const BX = 64, BY = 32, BZ = 64;
+const billowVol = new Float32Array(BX * BY * BZ);
+(function buildBillow() {
+  const vnoise = (x, y, z, cell, s) => {
+    const PX = BX / cell, PY = BY / cell, fx = x / cell, fy = y / cell, fz = z / cell;
+    const xi = Math.floor(fx), yi = Math.floor(fy), zi = Math.floor(fz);
+    let u = fx - xi, v = fy - yi, w = fz - zi;
+    u = u * u * (3 - 2 * u); v = v * v * (3 - 2 * v); w = w * w * (3 - 2 * w);
+    const L = (a, b, c) => hash(a % PX, b % PY, c % PX, s);
+    return mix(mix(mix(L(xi, yi, zi), L(xi + 1, yi, zi), u), mix(L(xi, yi + 1, zi), L(xi + 1, yi + 1, zi), u), v),
+               mix(mix(L(xi, yi, zi + 1), L(xi + 1, yi, zi + 1), u), mix(L(xi, yi + 1, zi + 1), L(xi + 1, yi + 1, zi + 1), u), v), w);
+  };
+  let max = 0;
+  for (let z = 0; z < BZ; z++) for (let y = 0; y < BY; y++) for (let x = 0; x < BX; x++) {
+    const b = 0.62 * Math.abs(vnoise(x, y, z, 16, 801) * 2 - 1) + 0.38 * Math.abs(vnoise(x, y, z, 8, 802) * 2 - 1);
+    billowVol[x + BX * (y + BY * z)] = b;
+    max = Math.max(max, b);
+  }
+  for (let k = 0; k < billowVol.length; k++) billowVol[k] /= max;
+})();
+function billowAt(x, y, z) {
+  const xf = Math.floor(x), yf = Math.floor(y), zf = Math.floor(z), u = x - xf, v = y - yf, w = z - zf;
+  const x0 = xf & 63, x1 = (xf + 1) & 63, y0 = yf & 31, y1 = (yf + 1) & 31, z0 = zf & 63, z1 = (zf + 1) & 63, A = billowVol;
+  const r00 = (y0 + BY * z0) * BX, r10 = (y1 + BY * z0) * BX, r01 = (y0 + BY * z1) * BX, r11 = (y1 + BY * z1) * BX;
+  return mix(mix(mix(A[r00 + x0], A[r00 + x1], u), mix(A[r10 + x0], A[r10 + x1], u), v),
+             mix(mix(A[r01 + x0], A[r01 + x1], u), mix(A[r11 + x0], A[r11 + x1], u), v), w);
+}
 const smooth01 = t => t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);
 let puff = new Float32Array(CN), puffTmp = new Float32Array(CN);   // 盛り上がりの量 [voxel]
 let velX = new Float32Array(CN), velZ = new Float32Array(CN);       // 流れの場（一定の流れからのずれ）[voxel/秒]
@@ -1000,18 +1037,20 @@ function updateClouds(dt, time) {
     }
     updateMist(dt);
   }
-  // 雲の形（ノイズの計算が重い）は 2 フレームに 1 回だけ計算し直す。間はそのまま使う
-  if (dt > 0 && (cloudFrame++ & 1)) return;
   // 渦の強さ
   for (let j = 1; j < CNZ - 1; j++) for (let i = 1; i < CNX - 1; i++) {
     const k = cidx2(i, j);
     curl[k] = ((velZ[k + 1] - velZ[k - 1]) - (velX[k + CNX] - velX[k - CNX])) / (2 * CG);
   }
 
-  // 5) 雲の形：上面と下面で包んだ、ひとつながりの立体。雲の無いところへ向かって上下の面が丸く閉じ、切れ間になる
-  //    （ガラスの近くでも丸く閉じるので、まっすぐな断面は無い）
-  const ox = time * CLOUD_FLOW;
-  for (let j = 0; j < CNZ; j++) for (let i = 0; i < CNX; i++) {
+  // 5) 雲の形：列ごとに「中ほどの高さ・厚み・もこもこの強さ」を決め、3 次元のもこもこ模様と組み合わせて
+  //    格子の各点の cloudS を求める。こぶは上にも下にも横にも盛り上がり、影はこぶごとの下側に落ちる
+  //    （ガラスの近くや雲の切れ目では厚みが 0 になって丸く閉じるので、まっすぐな断面は無い）
+  const ox = time * CLOUD_FLOW, rise = time * 0.25;   // 模様は流れに乗って動き、ゆっくり湧き上がる
+  // 毎フレーム奥行き方向の 1/4 ずつ（4 フレームで一回り）。最初の 1 回だけは全部
+  let j0 = 0, j1 = CNZ;
+  if (dt > 0) { const part = cloudFrame++ % CLOUD_SLICES; j0 = Math.floor(CNZ * part / CLOUD_SLICES); j1 = Math.floor(CNZ * (part + 1) / CLOUD_SLICES); }
+  for (let j = j0; j < j1; j++) for (let i = 0; i < CNX; i++) {
     const k = cidx2(i, j);
     const x = i * CG - ox - dispX[k], z = j * CG - dispZ[k];
     // 雲のあるところ：大きなまだら模様。ガラスの近くでは薄れる。盛り上がった（かき混ぜられた）ところは雲が濃くなる
@@ -1020,33 +1059,58 @@ function updateClouds(dt, time) {
     const pf = puff[k];
     // 天気が悪いほど雲のあるところが広がる（晴れなら切れ間だらけ、荒天なら一面の雲）
     const cover = clamp(smooth01((cv - (0.6 - 0.38 * weather.w)) / 0.24) * wall + pf * 0.05, 0, 1);
-    // もこもこ：大・中・小のこぶを重ねる（|2n-1| にすると、こぶの頭が丸く谷が細く切れ込む積雲らしい形になる）
-    const b1 = Math.abs(noise3(x * 0.05, z * 0.05, time * 0.03, 701) * 2 - 1);
-    const b2 = Math.abs(noise3(x * 0.11, z * 0.11, time * 0.05, 702) * 2 - 1);
-    const b3 = Math.abs(noise3(x * 0.23, z * 0.23, time * 0.08, 705) * 2 - 1);
+    const e = Math.pow(cover, 0.3);                    // 雲の縁で急に立ち上がる（断面が丸くなる）
     const turb = Math.min(1, Math.abs(curl[k]) * 0.35);
-    const chop = turb > 0.05 ? (noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 8 * turb : 0;
-    // ひとつながりの丸い塊：中ほどの高さから上下へふくらませる。縁では急に立ち上がり、上下の面が同じ高さで丸く閉じる
-    const e = Math.pow(cover, 0.3);
-    const body = (12 + 12 * weather.w) * e + pf * 0.9;                       // 荒れるほど分厚い
-    const billow = (b1 * 9 + b2 * 4.5 + b3 * 2.2) * (0.7 + 0.6 * weather.w) * e;
-    const sag = (Math.abs(noise3(x * 0.07, z * 0.07, time * 0.04, 706) * 2 - 1) * 4 + 1) * e;   // 底のゆるいふくらみ
-    const mid = LAYER_MID + (noise3(x * 0.03, z * 0.03, time * 0.02, 707) - 0.5) * 6;
-    cloudH[k] = mid - body * 0.55 - billow - chop * cover;
-    cloudB[k] = mid + body * 0.45 + sag;
-    cloudThick[k] = cloudB[k] - cloudH[k];
+    const chop = turb > 0.05 ? Math.abs(noise3(x * 0.32, z * 0.32, time * 1.4, 704) - 0.5) * 8 * turb : 0;   // 渦のところは波立つ
+    const big = noise3(x * 0.05, z * 0.05, time * 0.03, 701);
+    // 芯の高さも場所ごとに上下させる（雲の「赤道」が一直線に並ばない）
+    colMid[k] = LAYER_MID + (noise3(x * 0.03, z * 0.03, time * 0.02, 707) - 0.5) * 6 + (noise3(x * 0.07, z * 0.07, time * 0.03, 708) - 0.5) * 9;
+    colH[k] = (3 + 4 * weather.w) * (0.5 + big) * e + pf * 0.45;          // 芯の厚み（荒れるほど分厚い）
+    colA[k] = (11 + 8 * weather.w) * e + chop * cover;                     // こぶの大きさ
   }
-
+  for (let j = j0; j < j1; j++) for (let i = 0; i < CNX; i++) {
+    const k = cidx2(i, j), mid = colMid[k], h = colH[k], a = colA[k];
+    const x = i * CG - ox - dispX[k], z = j * CG - dispZ[k];
+    // 雲になりうるのは中ほどから h + a + 2 以内だけ。それより外は簡単な見積もり（正の値）で済ませる
+    const reach = h + a + 2.5;
+    let any = 0, lo = NL, hi = -1, top = mid, bot = mid, prev = 1;
+    for (let l = 0, o = i + CNX * NL * j; l < NL; l++, o += CNX) {
+      const y = CY0 + l * CG, dy = y - mid;
+      let s;
+      if (dy > reach || dy < -reach) s = (dy < 0 ? -dy : dy) - reach + 0.5;
+      else {
+        // 下半分は少し平たく、もこもこも控えめ（それでも下へ向かってこぶが盛り上がる）。
+        // 中ほどの高さで折れ目ができないよう、上下の切り替えはなめらかにする（折れ目があると陰影がそこで水平に分かれる）
+        const below = smooth01((dy + 3) / 6);
+        const d = (Math.sqrt(dy * dy + 4) - 2) * (1 + 0.15 * below), amp = a * (1 - 0.25 * below);
+        s = d - h - amp;                                // もこもこが最大でも届かないなら外側
+        if (s < 0) s = d - h - amp * billowAt(x, y + rise, z);
+      }
+      s = Math.max(s, y - (H - 2));                     // 水槽の底より下へははみ出さない
+      cloudS[o] = s;
+      if (s < 0) {
+        if (!any) top = l > 0 ? y - CG * s / (s - prev) : y;
+        any = 1; lo = Math.min(lo, l); hi = l;
+        bot = y;
+      } else if (any && prev < 0) bot = y - CG * s / (s - prev);
+      prev = s;
+    }
+    colAny[k] = any; colLo[k] = Math.max(0, lo - 1); colHi[k] = Math.min(NL - 1, hi + 1);
+    // いちばん上の面・いちばん下の面（雲をかき混ぜる計算と影に使う）
+    cloudH[k] = top; cloudB[k] = bot; cloudThick[k] = any ? bot - top : 0;
+  }
+  cloudDirty0 = Math.min(cloudDirty0, j0); cloudDirty1 = Math.max(cloudDirty1, j1);
+  cloudShapeVersion++;
 }
 
-// 雲海は高さの格子（上面・下面・厚み）をそのまま GPU に渡し、視線を少しずつ進めて雲の層に入った場所を探す
+// 雲海は、いちばん上・下の面の高さ（影に使う）と、立体の cloudS（3 次元の絵）を GPU に渡す
 const cloudTex = new Float32Array(CN * 4);
 let cloudYMin = 0, cloudYMax = -1;               // 雲のある高さの範囲（視線を進めるのはこの間だけ）
 function packClouds() {
   let lo = 1e9, hi = -1e9;
   for (let k = 0; k < CN; k++) {
     cloudTex[k * 4] = cloudH[k]; cloudTex[k * 4 + 1] = cloudB[k]; cloudTex[k * 4 + 2] = cloudThick[k];
-    if (cloudThick[k] > 0.4) { lo = Math.min(lo, cloudH[k]); hi = Math.max(hi, cloudB[k]); }
+    if (colAny[k]) { lo = Math.min(lo, cloudH[k]); hi = Math.max(hi, cloudB[k]); }
   }
   cloudYMin = lo - 2; cloudYMax = hi + 2;
 }
@@ -1330,6 +1394,11 @@ float hash4(int x, int y, int z, int s) {
   h ^= h >> 15u;
   return float(h) / 4294967296.0;
 }
+// 雲の明るさの段階：真横を向いた面はまだ明るく、下を向くにつれて暗くなる
+int cloudLevelOf(vec3 n) {
+  float lam = dot(normalize(n), uLight);
+  return lam > 0.22 ? 3 : lam > -0.38 ? 2 : 1;
+}
 int levelOf(vec3 n) {
   float lam = dot(normalize(n), uLight);
   return lam > 0.42 ? 3 : lam > -0.2 ? 2 : 1;
@@ -1574,7 +1643,7 @@ void testCloudlet(int id, vec4 t0, vec3 ro, vec3 rd, float tMin) {
       vec2 e = vec2(0.3, 0.0);
       vec3 n = vec3(cloudletDist(p + e.xyy) - cloudletDist(p - e.xyy), cloudletDist(p + e.yxy) - cloudletDist(p - e.yxy),
                     cloudletDist(p + e.yyx) - cloudletDist(p - e.yyx));
-      hT = t; hOwn = t0.z; hCls = 2; hLv = levelOf(n); hCol = vec3(0.0);
+      hT = t; hOwn = t0.z; hCls = 2; hLv = cloudLevelOf(n); hCol = vec3(0.0);
       return;
     }
     t += max(d * 0.6, eps);
@@ -1632,7 +1701,7 @@ void testPrim(int id, vec3 ro, vec3 rd, float tMin) {
       float g = max(0.7, t / uFocal);
       ivec3 cell = ivec3(floor(lp / g));
       if (hash4(cell.x, cell.y, cell.z, seed + k) < t0.w) {
-        hT = t; hOwn = CLOUD_OWNER; hCls = 2; hLv = levelOf(lp / (rad * rad)); hCol = vec3(0.0);
+        hT = t; hOwn = CLOUD_OWNER; hCls = 2; hLv = cloudLevelOf(lp / (rad * rad)); hCol = vec3(0.0);
         return;
       }
     }
@@ -1653,13 +1722,16 @@ void traceTiles(ivec2 tile, vec3 ro, vec3 rd, float tMin) {
 const EYE_FRAG = `#version 300 es
 ${TRACE}
 uniform sampler2D uTop;
+uniform highp sampler3D uCloudS;
 uniform float uStorm;
+const float CY0 = ${glsl(CY0)}, NLF = ${glsl(NL)};
 layout(location = 0) out vec4 oCol;
 layout(location = 1) out vec4 oDat;
 
-vec3 cloudAt(vec2 xz) { return texture(uCloud, (xz / CG + 0.5) / vec2(CNX, CNZ)).xyz; }
-bool cloudOcc(vec3 p) { vec3 c = cloudAt(p.xz); return c.z > 0.8 && p.y >= c.x && p.y <= c.y; }
-// 雲海：高さの範囲の中だけ、視線を少しずつ進めて雲に出入りする場所を探す
+vec3 cloudAt(vec2 xz) { return texture(uCloud, (xz / CG + 0.5) / vec2(CNX, CNZ)).xyz; }   // いちばん上・下の面の y と厚み（影に使う）
+// 雲海：格子の各点の cloudS（内側で負）を 3 次元の絵として受け取り、雲のある高さの範囲の中だけ視線を少しずつ進めて、
+// 符号が変わる場所（雲の表面）を探す。面の向きは cloudS の増える向き
+float cloudSAt(vec3 p) { return texture(uCloudS, vec3((p.x / CG + 0.5) / CNX, ((p.y - CY0) / CG + 0.5) / NLF, (p.z / CG + 0.5) / CNZ)).r; }
 void marchClouds(vec3 ro, vec3 rd) {
   if (uCloudY.y <= uCloudY.x) return;
   float ta, tb;
@@ -1673,29 +1745,21 @@ void marchClouds(vec3 ro, vec3 rd) {
   ta = max(ta, 0.5); tb = min(tb, hT);
   if (ta >= tb) return;
   float t = ta, tp = ta;
-  bool inside = cloudOcc(ro + rd * t);
-  bool fromInside = inside;   // 目が雲の中にいるときは、まわりの雲の内側の面を間引かずに見せる
+  bool inside = cloudSAt(ro + rd * t) < 0.0;   // 目が雲の中にいるときは、雲から出る面が見える
   for (int i = 0; i < 480; i++) {
-    t = min(t + clamp(t * 0.01, 0.3, 2.0), tb);
-    bool o = cloudOcc(ro + rd * t);
+    t = min(t + clamp(t * 0.01, 0.3, 1.6), tb);
+    bool o = cloudSAt(ro + rd * t) < 0.0;
     if (o != inside) {
       // 出入りの境目を細かく詰める
       float a = tp, b = t;
-      for (int j = 0; j < 6; j++) { float m = (a + b) * 0.5; if (cloudOcc(ro + rd * m) == o) b = m; else a = m; }
-      vec3 q = ro + rd * b, c = cloudAt(q.xz);
-      bool top = abs(q.y - c.x) < abs(q.y - c.y);
-      // ふわふわ：ごく薄い縁だけ点を間引いてぼそぼそ崩す（間引く模様は雲と一緒に流れる）
-      float g = b < 45.0 ? 0.5 : b < 110.0 ? 1.0 : 2.0;
-      float dens = min(1.0, c.z / 3.0);
-      if (fromInside || hash4(int(floor((q.x - uOx) / g + 0.5)), int(floor(q.z / g + 0.5)), int(2.0 / g), 77) < dens) {
-        vec2 ex = vec2(CG, 0.0), ez = vec2(0.0, CG);
-        vec3 n;
-        if (top) n = vec3((cloudAt(q.xz + ex).x - cloudAt(q.xz - ex).x) / (2.0 * CG), -1.0, (cloudAt(q.xz + ez).x - cloudAt(q.xz - ez).x) / (2.0 * CG));
-        else n = vec3(-(cloudAt(q.xz + ex).y - cloudAt(q.xz - ex).y) / (2.0 * CG), 1.0, -(cloudAt(q.xz + ez).y - cloudAt(q.xz - ez).y) / (2.0 * CG));
-        hT = b; hCls = 2; hOwn = CLOUD_OWNER; hLv = levelOf(n); hCol = vec3(0.0);
-        return;
-      }
-      inside = o;
+      for (int j = 0; j < 6; j++) { float m = (a + b) * 0.5; if ((cloudSAt(ro + rd * m) < 0.0) == o) b = m; else a = m; }
+      vec3 q = ro + rd * b;
+      // 面の向きは格子 1 つ分離れた点どうしの差から（細かく取ると格子の段ごとに陰影が切り替わって見える）
+      vec3 n = vec3(cloudSAt(q + vec3(CG, 0.0, 0.0)) - cloudSAt(q - vec3(CG, 0.0, 0.0)),
+                    cloudSAt(q + vec3(0.0, CG, 0.0)) - cloudSAt(q - vec3(0.0, CG, 0.0)),
+                    cloudSAt(q + vec3(0.0, 0.0, CG)) - cloudSAt(q - vec3(0.0, 0.0, CG)));
+      hT = b; hCls = 2; hOwn = CLOUD_OWNER; hLv = cloudLevelOf(n); hCol = vec3(0.0);
+      return;
     }
     tp = t;
     if (t >= tb) break;
@@ -1826,6 +1890,16 @@ function initGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return t;
   };
+  // 雲の立体（cloudS）：x → 高さ → z の並びのまま 3 次元の絵にする
+  const tex3 = (unit, w, h, d) => {
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_3D, t);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R16F, w, h, d, 0, gl.RED, gl.FLOAT, null);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],
+                          [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, k, v);
+    return t;
+  };
   const fbo = (...texs) => {
     const f = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, f);
@@ -1833,13 +1907,14 @@ function initGL() {
     gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
     return f;
   };
-  // 0 形, 1 鯉, 3 雲, 4 マスの見出し, 5 マスの一覧, 6 影, 7 色, 8 奥行き
+  // 0 形, 1 鯉, 3 雲, 9 雲の立体, 4 マスの見出し, 5 マスの一覧, 6 影, 7 色, 8 奥行き
   const NE = gl.NEAREST;
   GLX = {
     eye: program(EYE_FRAG), top: program(TOP_FRAG), comp: program(COMP_FRAG),
     tPrim: tex(0, PT, MAXP, gl.RGBA32F, gl.RGBA, gl.FLOAT, NE),
     tFish: tex(1, FISH_TX, MAX_FISH, gl.RGBA32F, gl.RGBA, gl.FLOAT, NE),
     tCloud: tex(3, CNX, CNZ, gl.RGBA16F, gl.RGBA, gl.FLOAT, gl.LINEAR),
+    tCloudS: tex3(9, CNX, NL, CNZ),
     tHead: tex(4, HEAD_W, HEAD_ROWS, gl.RG32F, gl.RG, gl.FLOAT, NE),
     tList: tex(5, LIST_W, LIST_ROWS, gl.R32F, gl.RED, gl.FLOAT, NE),
     tTop: tex(6, W, D, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, NE),
@@ -1859,6 +1934,11 @@ function renderGL() {
   if (pN > 0) sub(0, X.tPrim, PT, pN, gl.RGBA, primBuf.subarray(0, pN * PT * 4));
   sub(1, X.tFish, FISH_TX, MAX_FISH, gl.RGBA, fishBuf);
   sub(3, X.tCloud, CNX, CNZ, gl.RGBA, cloudTex);
+  if (cloudDirty1 > cloudDirty0) {   // 雲の形は毎フレーム 1/4 ずつ変わるので、変わった範囲だけ送る
+    gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_3D, X.tCloudS);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, cloudDirty0, CNX, NL, cloudDirty1 - cloudDirty0, gl.RED, gl.FLOAT, cloudS, cloudDirty0 * CNX * NL);
+    cloudDirty0 = CNZ; cloudDirty1 = 0;
+  }
   sub(4, X.tHead, HEAD_W, HEAD_ROWS, gl.RG, headBuf);
   const used = Math.min(LIST_ROWS, Math.max(1, Math.ceil((headBuf[(HEAD_W * HEAD_ROWS - 1) * 2] + headBuf[(HEAD_W * HEAD_ROWS - 1) * 2 + 1]) / LIST_W)));
   sub(5, X.tList, LIST_W, used, gl.RED, listBuf.subarray(0, used * LIST_W));
@@ -1867,7 +1947,7 @@ function renderGL() {
   const common = (P, headRow, focal) => {
     gl.useProgram(P.p);
     const u = P.u;
-    [["uPrim", 0], ["uFish", 1], ["uCloud", 3], ["uHead", 4], ["uList", 5], ["uTop", 6]].forEach(([n, k]) => { if (u[n]) gl.uniform1i(u[n], k); });
+    [["uPrim", 0], ["uFish", 1], ["uCloud", 3], ["uHead", 4], ["uList", 5], ["uTop", 6], ["uCloudS", 9]].forEach(([n, k]) => { if (u[n]) gl.uniform1i(u[n], k); });
     if (u.uEye) gl.uniform3f(u.uEye, eye.x, eye.y, eye.z);
     if (u.uF) gl.uniform3fv(u.uF, eye.F);
     if (u.uR) gl.uniform3fv(u.uR, eye.R);
