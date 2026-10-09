@@ -120,7 +120,7 @@
   <div class="panel">
     <div class="title">
       <h1>視線で描く雲海の水槽</h1>
-      <p class="spec">一人称の透視図法 ・ 256 × 160 ドットそれぞれに視線を飛ばして描く</p>
+      <p class="spec">一人称の透視図法 ・ 160 × 100 ドットそれぞれに視線を飛ばして描く</p>
     </div>
     <div class="controls">
       <button id="home" type="button">はじめの位置へ</button>
@@ -1268,7 +1268,7 @@ function scareFish(dt) {
 //    2) 目から光線を飛ばして色と奥行きを求める
 //    3) 奥行きの差で縁取りを付け、遠いほど水の色に溶かして画面に出す
 // ============================================================
-const RW = 256, RH = 160;                 // ドット画面の大きさ
+const RW = 160, RH = 100;                 // ドット画面の大きさ（粗めのドット絵）
 const FOV = 72 * Math.PI / 180;           // 横方向の視野角
 const FOCAL = (RW / 2) / Math.tan(FOV / 2);
 const NEAR = 0.6;
@@ -1300,7 +1300,7 @@ function behindEye(x, y, z, r) {
 //  マス分け：画面を 16 × 16 ドットのマスに分け、マスごとに「映るかもしれない形」の一覧を作る。
 //  GPU は自分のドットのマスの一覧だけを調べればよいので速い（影用の真上からの画面も同じ）
 // ------------------------------------------------------------
-const TS = 16, ETX = RW / TS, ETY = RH / TS, TTX = W / TS, TTY = D / TS;
+const TS = 16, ETX = Math.ceil(RW / TS), ETY = Math.ceil(RH / TS), TTX = W / TS, TTY = D / TS;   // 画面の端のマスは欠けていてよい
 const HEAD_W = Math.max(ETX, TTX), HEAD_ROWS = ETY + TTY;
 const headBuf = new Float32Array(HEAD_W * HEAD_ROWS * 2);
 const LIST_W = 1024, LIST_ROWS = 96, LIST_MAX = LIST_W * LIST_ROWS;
