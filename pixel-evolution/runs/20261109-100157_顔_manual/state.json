@@ -1,22 +1,22 @@
 {
-  "generation": 4,
+  "generation": 6,
   "rng_state": {
     "bit_generator": "PCG64",
     "state": {
-      "state": 87453007315931471244527555287975147416,
+      "state": 275060720147592567603225960396304960741,
       "inc": 332724090758049132448979897138935081983
     },
     "has_uint32": 0,
-    "uinteger": 566172114
+    "uinteger": 3370533349
   },
   "stats": {
-    "mutant_chosen": 1,
-    "parent_chosen": 3,
+    "mutant_chosen": 2,
+    "parent_chosen": 4,
     "undecided": 0,
-    "shown_left_chosen": 0
+    "shown_left_chosen": 1
   },
   "pending": {
-    "generation": 5,
-    "mutant_is_a": false
+    "generation": 7,
+    "mutant_is_a": true
   }
 }

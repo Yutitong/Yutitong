@@ -40,6 +40,9 @@ def save_pair(run_dir: Path, grid_a: np.ndarray, grid_b: np.ndarray, gen: int) -
     draw.text((pad + a.width + gap, 10), "B", fill=(255, 255, 255))
     path = run_dir / "pair.png"
     canvas.save(path)
+    # 横並びだと「右側」を選ぶ位置の偏りが出たため、1枚ずつ単独でも見られるようにする
+    a.save(run_dir / "view_1.png")   # = A
+    b.save(run_dir / "view_2.png")   # = B
     return path
 
 

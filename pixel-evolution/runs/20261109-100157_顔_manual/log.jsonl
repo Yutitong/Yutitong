@@ -2,3 +2,5 @@
 {"generation": 2, "choice": "B", "mutant_was": "B", "chose_mutant": true, "status": "ok", "reason": "全体として、上部に左右の暗い塊、下部中央に黒い横長の塊があり、目と口の配置にわずかに近いB", "thinking": "", "pixels_changed_from_initial": 10}
 {"generation": 3, "choice": "B", "mutant_was": "A", "chose_mutant": false, "status": "ok", "reason": "上部の左右対称に近い暗部と下中央の黒い帯がBの方がまとまって見える", "thinking": "", "pixels_changed_from_initial": 10}
 {"generation": 4, "choice": "B", "mutant_was": "A", "chose_mutant": false, "status": "ok", "reason": "全体の印象でBの方が中央下に口のような黒い塊があり顔に近い", "thinking": "", "pixels_changed_from_initial": 10}
+{"generation": 5, "choice": "B", "mutant_was": "B", "chose_mutant": true, "status": "ok", "reason": "単独で見るとほぼ同一。右上寄りに青い塊が増えて、上部左右の暗部と合わせ目の位置がわずかにまとまって見える2枚目", "thinking": "", "pixels_changed_from_initial": 20}
+{"generation": 6, "choice": "A", "mutant_was": "B", "chose_mutant": false, "status": "ok", "reason": "目・口にあたる領域を見比べても差を判別できず。全体の直感で1枚目", "thinking": "", "pixels_changed_from_initial": 20}
