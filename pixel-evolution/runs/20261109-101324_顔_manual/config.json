@@ -1,0 +1,17 @@
+{
+  "theme": "顔",
+  "size": 16,
+  "mutations": 10,
+  "judge": "claude-in-session",
+  "seed": 42,
+  "palette": [
+    "black",
+    "white",
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "cyan"
+  ],
+  "created": "2026-11-09T10:13:24"
+}

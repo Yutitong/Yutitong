@@ -26,11 +26,12 @@ from PIL import Image, ImageDraw
 from evolve import (COLOR_NAMES, mutate, random_grid, render, save_live_view,
                     save_timeline, slugify)
 
-PAIR_SCALE = 12  # 32px → 384px
+VIEW_PX = 384  # 判定用画像の一辺（グリッドの大きさに関わらず同じ表示サイズにする）
 
 
 def save_pair(run_dir: Path, grid_a: np.ndarray, grid_b: np.ndarray, gen: int) -> Path:
-    a, b = render(grid_a, PAIR_SCALE), render(grid_b, PAIR_SCALE)
+    scale = max(1, VIEW_PX // grid_a.shape[0])
+    a, b = render(grid_a, scale), render(grid_b, scale)
     pad, gap, top = 12, 32, 36
     canvas = Image.new("RGB", (a.width * 2 + gap + pad * 2, a.height + top + pad), (40, 40, 40))
     canvas.paste(a, (pad, top))
