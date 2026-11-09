@@ -1,0 +1,4 @@
+{"generation": 1, "choice": "B", "mutant_was": "A", "chose_mutant": false, "status": "ok", "reason": "差はほぼ判別できない。上部の左右に暗い塊がわずかに目らしく見えるB", "thinking": "", "pixels_changed_from_initial": 0}
+{"generation": 2, "choice": "B", "mutant_was": "B", "chose_mutant": true, "status": "ok", "reason": "全体として、上部に左右の暗い塊、下部中央に黒い横長の塊があり、目と口の配置にわずかに近いB", "thinking": "", "pixels_changed_from_initial": 10}
+{"generation": 3, "choice": "B", "mutant_was": "A", "chose_mutant": false, "status": "ok", "reason": "上部の左右対称に近い暗部と下中央の黒い帯がBの方がまとまって見える", "thinking": "", "pixels_changed_from_initial": 10}
+{"generation": 4, "choice": "B", "mutant_was": "A", "chose_mutant": false, "status": "ok", "reason": "全体の印象でBの方が中央下に口のような黒い塊があり顔に近い", "thinking": "", "pixels_changed_from_initial": 10}
