@@ -1,0 +1,20 @@
+{
+  "generation": 200,
+  "rng_state": {
+    "bit_generator": "PCG64",
+    "state": {
+      "state": 210236298604868406591149629199115303125,
+      "inc": 332724090758049132448979897138935081983
+    },
+    "has_uint32": 1,
+    "uinteger": 2076666685
+  },
+  "stats": {
+    "mutant_chosen": 98,
+    "parent_chosen": 102,
+    "undecided": 0,
+    "shown_left_chosen": 102,
+    "input_tokens": 0,
+    "output_tokens": 0
+  }
+}
