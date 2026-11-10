@@ -22,6 +22,22 @@
 - オープニング・オオウナギ・「アレ」・エンディングの一枚絵風演出
 - 遺跡の中はクラブ仕様：BGM「Flip it n zip」（`ruins-bgm.mp3`）が流れ、ミラーボール・スポットライト・レーザー・光るダンスフロアが曲のビートに合わせて動く。キャラも踊る
 
+## ほかのPCで遊ぶ（オフライン版）
+`dist/kaito-sandal-rpg.html` を1つコピーして、ダブルクリックで開くだけで遊べます。
+
+- インターネット接続は不要です（曲とドット文字フォントがファイルに入っています）
+- Chrome / Edge / Firefox / Safari で動きます
+- セーブデータはそのPCのブラウザに保存されます（別のPCには引き継がれません）
+
+ゲームを変更したあとにオフライン版を作り直すには：
+
+```
+pip install fonttools brotli
+python3 tools/build_offline.py path/to/DotGothic16-Regular.ttf
+```
+
+フォント：DotGothic16（Fontworks） / SIL Open Font License 1.1
+
 ## 裏エンド（ネタバレ）
 <details><summary>条件</summary>
 
