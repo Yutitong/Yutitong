@@ -1,0 +1,1210 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>書き換えラボ</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+1+Code:wght@400;600&family=Zen+Kaku+Gothic+New:wght@400;700;900&display=swap">
+<style>
+/* Layout: 設定パネル（左）と世代の記録＋グラフ（右）の2カラム。900px未満では1カラムに積む */
+:root {
+  --bg: #edf0f5;
+  --surface: #ffffff;
+  --surface-2: #f5f7fa;
+  --ink: #121823;
+  --ink-2: #465163;
+  --muted: #697284;
+  --line: #d8dde6;
+  --accent: #2a46c4;
+  --accent-soft: #e2e7fb;
+  --on-accent: #ffffff;
+  --danger: #b42323;
+  --danger-bg: #fdeaea;
+  --warn: #7a5200;
+  --warn-bg: #fff2d4;
+  --info: #24507f;
+  --info-bg: #e5eef9;
+  --series: #2a78d6;
+  --grid: #e3e6ec;
+  --axis: #c3c8d1;
+  --r1: #2a78d6; --r2: #eb6834; --r3: #1baf7a; --r4: #eda100;
+  --r5: #e87ba4; --r6: #008300; --r7: #6250d6; --r8: #e34948;
+  --f-display: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+  --f-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif;
+  --f-mono: "M PLUS 1 Code", "BIZ UDGothic", ui-monospace, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1117; --surface: #161b24; --surface-2: #1c222d; --ink: #e7ebf2; --ink-2: #adb6c5;
+    --muted: #8b94a4; --line: #2b3341; --accent: #8ea2ff; --accent-soft: #1f2747; --on-accent: #0e1117;
+    --danger: #ff9393; --danger-bg: #3b1a1d; --warn: #f2c46a; --warn-bg: #352a12; --info: #9cc3f2; --info-bg: #182a40;
+    --series: #3987e5; --grid: #252c38; --axis: #3a4352;
+    --r1: #3987e5; --r2: #d95926; --r3: #199e70; --r4: #c98500;
+    --r5: #d55181; --r6: #0ca30c; --r7: #9085e9; --r8: #e66767;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1117; --surface: #161b24; --surface-2: #1c222d; --ink: #e7ebf2; --ink-2: #adb6c5;
+  --muted: #8b94a4; --line: #2b3341; --accent: #8ea2ff; --accent-soft: #1f2747; --on-accent: #0e1117;
+  --danger: #ff9393; --danger-bg: #3b1a1d; --warn: #f2c46a; --warn-bg: #352a12; --info: #9cc3f2; --info-bg: #182a40;
+  --series: #3987e5; --grid: #252c38; --axis: #3a4352;
+  --r1: #3987e5; --r2: #d95926; --r3: #199e70; --r4: #c98500;
+  --r5: #d55181; --r6: #0ca30c; --r7: #9085e9; --r8: #e66767;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; }
+.top h1 {
+  font-family: var(--f-display);
+  font-weight: 900;
+  font-size: clamp(1.7rem, 3.4vw, 2.3rem);
+  letter-spacing: 0.02em;
+  margin: 0;
+  line-height: 1.2;
+}
+.top h1 .mark { font-family: var(--f-mono); font-weight: 600; color: var(--accent); font-size: 0.7em; margin-left: 0.3em; }
+.top p { margin: 0; color: var(--ink-2); max-width: 46em; }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 400px) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.panel h2 {
+  font-family: var(--f-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0;
+  text-wrap: balance;
+}
+.block { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.block + .block { border-top: 1px solid var(--line); padding-top: 18px; }
+.label { font-size: 0.82rem; font-weight: 700; color: var(--ink-2); letter-spacing: 0.03em; }
+.hint { font-size: 0.82rem; color: var(--muted); margin: 0; }
+
+input[type="text"], input[type="number"], select, textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+  width: 100%;
+}
+textarea { font-family: var(--f-mono); font-size: 0.82rem; resize: vertical; min-height: 4.5em; }
+input.mono { font-family: var(--f-mono); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[aria-invalid="true"] { border-color: var(--danger); background: var(--danger-bg); }
+
+button {
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 7px 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+button.primary:hover:not(:disabled) { color: var(--on-accent); filter: brightness(1.08); }
+button.ghost { border-color: transparent; background: transparent; color: var(--muted); padding: 6px 8px; }
+button.ghost:hover:not(:disabled) { color: var(--danger); border-color: transparent; }
+button.confirm { color: var(--danger); border-color: var(--danger); }
+
+/* rules */
+.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rule {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.rule.bad { border-color: var(--danger); background: var(--danger-bg); }
+.rule .tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--f-mono); font-size: 0.8rem; color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--c, var(--muted)); flex: none; }
+.swatch.none { background: transparent; border: 2px dashed var(--muted); }
+.rule .arrow { color: var(--muted); font-family: var(--f-mono); }
+.rule input { font-family: var(--f-mono); }
+.rules-empty { color: var(--muted); font-size: 0.88rem; padding: 6px 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row > input, .row > select { flex: 1 1 140px; width: auto; }
+.inline-num { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.inline-num input { width: 6.5em; flex: none; font-variant-numeric: tabular-nums; }
+
+/* alerts */
+.alert {
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 0.88rem;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.alert strong { font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.alert ul { margin: 0; padding-left: 1.2em; }
+.alert.danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger); }
+.alert.warn { background: var(--warn-bg); color: var(--warn); }
+.alert.info { background: var(--info-bg); color: var(--info); }
+.alert .icon {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+  background: currentColor; flex: none;
+}
+.alert .icon::after { content: "!"; color: var(--surface); font-size: 12px; font-weight: 900; line-height: 1; }
+.alert.info .icon::after { content: "i"; }
+@keyframes shake { 0%,100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+.alert.flash { animation: shake 0.3s ease-in-out 2; }
+
+/* stepper */
+.stepper {
+  display: flex; flex-direction: column; gap: 12px;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2;
+  background: var(--surface);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.step-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.step-status .gen-big { font-family: var(--f-display); font-weight: 900; font-size: 1.5rem; line-height: 1.1; }
+.step-status .gen-big small { font-size: 0.6em; font-weight: 700; color: var(--muted); margin-left: 4px; }
+.step-status .stat { font-family: var(--f-mono); font-size: 0.85rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.step-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.step-controls input[type="range"] { flex: 1 1 140px; accent-color: var(--accent); min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--f-mono); font-size: 0.78rem;
+  padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line);
+  color: var(--ink-2); font-variant-numeric: tabular-nums; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip .swatch { width: 9px; height: 9px; }
+.chip.zero { opacity: 0.55; }
+
+/* generations */
+.gens-wrap { max-height: 62vh; overflow: auto; position: relative; border-radius: 8px; }
+.gens { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gen {
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 8px;
+  border-bottom: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.gen:last-child { border-bottom: none; }
+.gen.current { background: var(--accent-soft); }
+.g-meta { display: flex; flex-direction: column; gap: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.g-num { font-weight: 600; font-size: 0.95rem; color: var(--ink); }
+.g-num small { color: var(--muted); font-weight: 400; font-size: 0.75rem; margin-left: 3px; }
+.g-len, .g-ratio { font-size: 0.75rem; color: var(--muted); }
+.g-body { min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.g-str {
+  font-family: var(--f-mono);
+  font-size: 1.02rem;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  width: 100%;
+}
+.g-str .empty { color: var(--muted); font-family: var(--f-body); font-size: 0.85rem; }
+.seg {
+  background: color-mix(in srgb, var(--c) 20%, transparent);
+  box-shadow: inset 0 -2px 0 var(--c);
+  border-radius: 2px;
+}
+.seg.del {
+  display: inline-block; width: 3px; height: 1.1em; vertical-align: -0.15em;
+  background: var(--c); box-shadow: none; margin: 0 1px;
+}
+.plain-on .seg { background: transparent; box-shadow: none; }
+.plain-on .seg.del { display: none; }
+.g-trunc { font-size: 0.78rem; color: var(--muted); font-family: var(--f-body); }
+.more-btn { font-size: 0.78rem; padding: 3px 9px; }
+.gens-foot { font-size: 0.82rem; color: var(--muted); padding: 8px; }
+.blocked { color: var(--muted); padding: 24px 8px; text-align: center; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--ink-2); cursor: pointer; }
+.toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+
+/* chart */
+.chart-card { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 18px; }
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+.chart text { font-family: var(--f-mono); font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.tooltip {
+  position: absolute; pointer-events: none;
+  background: var(--ink); color: var(--surface);
+  font-size: 0.8rem; padding: 6px 9px; border-radius: 6px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; transform: translate(-50%, calc(-100% - 10px));
+  line-height: 1.4;
+}
+.tooltip b { font-weight: 700; }
+
+/* save */
+.presets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.preset { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--surface-2); border-radius: 8px; }
+.preset .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; }
+.preset .date { font-size: 0.72rem; color: var(--muted); font-family: var(--f-mono); }
+.msg { font-size: 0.82rem; min-height: 1.2em; margin: 0; }
+.msg.err { color: var(--danger); }
+.msg.ok { color: var(--ink-2); }
+input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  background: var(--ink); color: var(--surface);
+  padding: 9px 16px; border-radius: 999px; font-size: 0.88rem;
+  z-index: 20; max-width: calc(100% - 32px);
+}
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 520px) {
+  .panel { padding: 16px; }
+  .gen { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .g-meta { flex-direction: row; gap: 10px; align-items: baseline; }
+  .rule { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { .alert.flash { animation: none; } }
+</style>
+
+<div class="app">
+  <header class="top">
+    <h1>書き換えラボ<span class="mark">A→AB</span></h1>
+    <p>文字列の一部をルールに従って書き換え、その結果にまた同じルールを当てはめます。世代を重ねるごとに文字列がどう変わるかを観察できます。</p>
+  </header>
+
+  <main class="layout">
+    <!-- ===== 設定 ===== -->
+    <section class="panel" aria-labelledby="setup-h">
+      <h2 id="setup-h" class="sr">設定</h2>
+
+      <div class="block">
+        <label class="label" for="initial">最初の文字列（第0世代）</label>
+        <input type="text" id="initial" class="mono" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div class="block">
+        <div class="section-head">
+          <h2>変換ルール</h2>
+          <button type="button" id="addRule">＋ ルールを追加</button>
+        </div>
+        <p class="hint">1世代の中では、文字列を左から読み、一致した部分を一度だけ置き換えます。置き換えた結果は、次の世代まで書き換えられません。変換先を空にすると、その文字列は消えます。</p>
+        <div id="conflict" class="alert danger" role="alert" hidden></div>
+        <ol id="rules" class="rules"></ol>
+      </div>
+
+      <div class="block">
+        <label class="label" for="gens">計算する世代数</label>
+        <div class="inline-num">
+          <input type="number" id="gens" min="1" max="100" step="1">
+          <span class="hint">1〜100世代</span>
+        </div>
+        <label class="label" for="maxLen">文字数の上限</label>
+        <div class="inline-num">
+          <input type="number" id="maxLen" min="100" max="2000000" step="1000">
+          <span class="hint">これを超えた世代で計算を止めます</span>
+        </div>
+      </div>
+
+      <div class="block">
+        <label class="label" for="example">例を読み込む</label>
+        <select id="example">
+          <option value="">例を選んでください…</option>
+          <option value="osaka1">おおさか（お→かき だけ）</option>
+          <option value="osaka2">おおさか（2つのルール）</option>
+          <option value="fib">藻の成長（フィボナッチ数）</option>
+          <option value="thue">トゥエ＝モース数列</option>
+          <option value="cantor">カントール集合</option>
+          <option value="cycle">入れ替わり（周期2）</option>
+        </select>
+      </div>
+
+      <div class="block">
+        <h2>保存と共有</h2>
+        <label class="label" for="presetName">この端末に保存</label>
+        <div class="row">
+          <input type="text" id="presetName" placeholder="保存する名前" autocomplete="off">
+          <button type="button" id="savePreset">保存</button>
+        </div>
+        <ul id="presets" class="presets"></ul>
+        <p class="hint" id="presetsNote">この端末のこのブラウザにだけ保存されます。</p>
+
+        <label class="label" for="codeOut">設定コード</label>
+        <textarea id="codeOut" readonly rows="3"></textarea>
+        <div class="row"><button type="button" id="copyCode">コードをコピー</button></div>
+        <p class="hint">コードを相手に送ると、下の欄に貼り付けて同じ設定を再現できます。</p>
+
+        <label class="label" for="codeIn">コードやファイルから読み込む</label>
+        <textarea id="codeIn" rows="3" placeholder='{"initial":"…","rules":[…]}'></textarea>
+        <div class="row">
+          <button type="button" id="loadCode">貼り付けたコードを読み込む</button>
+        </div>
+        <input type="file" id="fileIn" accept=".json,.txt,application/json,text/plain" aria-label="設定ファイルを選ぶ">
+        <p class="msg" id="loadMsg" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <!-- ===== 結果 ===== -->
+    <section class="panel" aria-labelledby="result-h">
+      <h2 id="result-h" class="sr">結果</h2>
+      <div class="stepper">
+        <div class="step-status">
+          <span class="gen-big" id="genBig">第0世代</span>
+          <span class="stat" id="genStat"></span>
+        </div>
+        <div class="step-controls">
+          <button type="button" id="first" aria-label="第0世代へ">⏮</button>
+          <button type="button" id="prev">◀ 前の世代</button>
+          <input type="range" id="slider" min="0" max="0" value="0" aria-label="表示する世代">
+          <button type="button" id="next" class="primary">次の世代 ▶</button>
+          <button type="button" id="last">すべて表示</button>
+        </div>
+        <div class="chips" id="chips" aria-label="この世代で使われたルール"></div>
+      </div>
+
+      <div id="notices" class="block"></div>
+
+      <div class="section-head">
+        <h2>世代の記録</h2>
+        <label class="toggle"><input type="checkbox" id="plain"> 色分けを消す</label>
+      </div>
+      <div class="gens-wrap" id="gensWrap">
+        <ol class="gens" id="gensList"></ol>
+      </div>
+
+      <div class="chart-card">
+        <div class="section-head">
+          <h2>文字数の推移</h2>
+          <label class="toggle"><input type="checkbox" id="logScale"> 対数目盛</label>
+        </div>
+        <div class="chart" id="chart">
+          <svg id="chartSvg" role="img" aria-label="世代ごとの文字数のグラフ"></svg>
+          <div class="tooltip" id="tip" hidden></div>
+        </div>
+        <p class="hint">点をクリックすると、その世代まで表示します。</p>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const RULE_COLORS = 8;
+  const DISPLAY_LIMIT = 1500;
+  const EXPANDED_LIMIT = 60000;
+  const MAX_GENS = 100;
+  const CYCLE_CHECK_LEN = 20000;
+  const LS_LAST = "rewrite-lab:last";
+  const LS_PRESETS = "rewrite-lab:presets";
+  const fmt = (n) => n.toLocaleString("ja-JP");
+
+  const EXAMPLES = {
+    osaka1: { initial: "おおさか", rules: [["お", "かき"]], generations: 4 },
+    osaka2: { initial: "おおさか", rules: [["お", "かき"], ["か", "おか"]], generations: 8 },
+    fib: { initial: "A", rules: [["A", "AB"], ["B", "A"]], generations: 12 },
+    thue: { initial: "0", rules: [["0", "01"], ["1", "10"]], generations: 8 },
+    cantor: { initial: "A", rules: [["A", "ABA"], ["B", "BBB"]], generations: 5 },
+    cycle: { initial: "あいあい", rules: [["あ", "い"], ["い", "あ"]], generations: 6 },
+  };
+
+  // ---------- state ----------
+  let uid = 0;
+  const mkRule = (from = "", to = "") => ({ id: ++uid, from, to });
+  const S = { initial: "", rules: [], gens: 8, maxLen: 200000 };
+  let gens = [];          // [{ str, counts, overlap }]
+  let stopInfo = null;    // { at, len } when the length limit stopped the run
+  let fixedAt = -1;       // first generation equal to the previous one
+  let cycleInfo = null;   // { at, same }
+  let overlapInfo = null; // { gen, a, b }
+  let compiled = null;
+  let conflicts = [];
+  let badRules = new Set();
+  let current = 0;
+  let followEnd = true;
+  const expanded = new Set();
+  let logScale = false;
+  let prevConflictKey = "";
+
+  // ---------- storage helpers ----------
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } };
+
+  // ---------- rule engine ----------
+  function validate() {
+    conflicts = [];
+    badRules = new Set();
+    const rs = S.rules.map((r, i) => ({ ...r, i })).filter((r) => r.from !== "" || r.to !== "");
+    for (const r of rs) {
+      if (r.from === "") {
+        conflicts.push(`ルール${r.i + 1}：変換元が空です。変換元の文字列を入力してください。`);
+        badRules.add(r.i);
+      }
+    }
+    const nonEmpty = rs.filter((r) => r.from !== "");
+    for (let a = 0; a < nonEmpty.length; a++) {
+      for (let b = a + 1; b < nonEmpty.length; b++) {
+        const A = nonEmpty[a], B = nonEmpty[b];
+        if (A.from === B.from) {
+          conflicts.push(`ルール${A.i + 1}とルール${B.i + 1}：変換元「${A.from}」が同じです。どちらで置き換えるか決められません。`);
+          badRules.add(A.i); badRules.add(B.i);
+        } else if (B.from.startsWith(A.from) || A.from.startsWith(B.from)) {
+          const [s, l] = A.from.length < B.from.length ? [A, B] : [B, A];
+          conflicts.push(`ルール${s.i + 1}「${s.from}」とルール${l.i + 1}「${l.from}」：「${l.from}」が現れる位置では、両方のルールが同時に一致します。`);
+          badRules.add(A.i); badRules.add(B.i);
+        }
+      }
+    }
+    return conflicts.length === 0;
+  }
+
+  function compile() {
+    const byFirst = new Map();
+    S.rules.forEach((r, i) => {
+      if (r.from === "") return;
+      const c = r.from[0];
+      if (!byFirst.has(c)) byFirst.set(c, []);
+      byFirst.get(c).push({ from: r.from, to: r.to, i });
+    });
+    return { byFirst, n: S.rules.length };
+  }
+
+  // Applies every rule once, scanning left to right. With segLimit set, it
+  // stops early once that many output characters have been collected.
+  function apply(str, R, opts) {
+    const segLimit = opts && opts.segLimit;
+    const maxLen = opts && opts.maxLen;
+    const segs = segLimit ? [] : null;
+    const pieces = segs ? null : [];
+    const counts = new Array(R.n).fill(0);
+    let len = 0, overlap = null, over = false;
+    let i = 0, plainFrom = 0;
+    const n = str.length;
+    const push = (t, r) => {
+      len += t.length;
+      if (segs) segs.push({ t, r }); else pieces.push(t);
+    };
+    while (i < n) {
+      const cand = R.byFirst.get(str[i]);
+      let m = null;
+      if (cand) for (const r of cand) { if (str.startsWith(r.from, i)) { m = r; break; } }
+      if (!m) { i++; continue; }
+      if (i > plainFrom) push(str.slice(plainFrom, i), -1);
+      push(m.to, m.i);
+      counts[m.i]++;
+      if (!overlap && !segs) {
+        const end = i + m.from.length;
+        for (let k = i + 1; k < end && !overlap; k++) {
+          const c2 = R.byFirst.get(str[k]);
+          if (c2) for (const r2 of c2) { if (str.startsWith(r2.from, k)) { overlap = { a: m.i, b: r2.i }; break; } }
+        }
+      }
+      i += m.from.length;
+      plainFrom = i;
+      if (maxLen && len > maxLen) { over = true; break; }
+      if (segs && len >= segLimit) return { segs, len, partial: true };
+    }
+    if (!over && plainFrom < n) push(str.slice(plainFrom), -1);
+    if (maxLen && len > maxLen) over = true;
+    return { out: segs || over ? null : pieces.join(""), segs, len, counts, overlap, over };
+  }
+
+  let seen = new Map();
+  function resetRun() {
+    gens = [{ str: S.initial, counts: null, overlap: null }];
+    stopInfo = null; fixedAt = -1; cycleInfo = null; overlapInfo = null;
+    seen = new Map();
+    if (S.initial.length <= CYCLE_CHECK_LEN) seen.set(S.initial, 0);
+    expanded.clear();
+  }
+
+  function ensure(target) {
+    if (!compiled) return;
+    while (gens.length - 1 < target && !stopInfo) {
+      const k = gens.length;
+      const prev = gens[k - 1].str;
+      const r = apply(prev, compiled, { maxLen: S.maxLen });
+      if (r.over) { stopInfo = { at: k, len: r.len }; break; }
+      gens.push({ str: r.out, counts: r.counts, overlap: r.overlap });
+      if (r.overlap && !overlapInfo) overlapInfo = { gen: k, ...r.overlap };
+      if (fixedAt < 0 && r.out === prev) fixedAt = k;
+      if (!cycleInfo && fixedAt < 0 && r.out.length <= CYCLE_CHECK_LEN) {
+        if (seen.has(r.out)) cycleInfo = { at: k, same: seen.get(r.out) };
+        else seen.set(r.out, k);
+      }
+    }
+  }
+
+  function recompute() {
+    const ok = validate();
+    renderConflicts();
+    markRuleRows();
+    if (!ok) { compiled = null; gens = []; renderResults(); return; }
+    compiled = compile();
+    const keep = current;
+    resetRun();
+    ensure(S.gens);
+    const last = gens.length - 1;
+    current = followEnd ? last : Math.min(keep, last);
+    renderResults();
+  }
+
+  // ---------- rendering: rules ----------
+  const colorVar = (i) => (i < RULE_COLORS ? `var(--r${i + 1})` : "");
+
+  function renderRules() {
+    const ol = $("#rules");
+    ol.textContent = "";
+    if (S.rules.length === 0) {
+      const li = document.createElement("li");
+      li.className = "rules-empty";
+      li.textContent = "ルールがありません。「＋ ルールを追加」から作成してください。";
+      ol.appendChild(li);
+      return;
+    }
+    S.rules.forEach((r, i) => {
+      const li = document.createElement("li");
+      li.className = "rule";
+      li.dataset.id = r.id;
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      const sw = document.createElement("span");
+      sw.className = "swatch" + (i < RULE_COLORS ? "" : " none");
+      if (i < RULE_COLORS) sw.style.setProperty("--c", colorVar(i));
+      tag.append(sw, String(i + 1));
+      const from = document.createElement("input");
+      from.type = "text"; from.className = "from"; from.id = `from-${r.id}`;
+      from.value = r.from; from.placeholder = "変換元"; from.spellcheck = false; from.autocomplete = "off";
+      from.setAttribute("aria-label", `ルール${i + 1}の変換元`);
+      const arrow = document.createElement("span");
+      arrow.className = "arrow"; arrow.textContent = "→"; arrow.setAttribute("aria-hidden", "true");
+      const to = document.createElement("input");
+      to.type = "text"; to.className = "to"; to.id = `to-${r.id}`;
+      to.value = r.to; to.placeholder = "変換先（空なら削除）"; to.spellcheck = false; to.autocomplete = "off";
+      to.setAttribute("aria-label", `ルール${i + 1}の変換先`);
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "ghost del"; del.textContent = "✕";
+      del.setAttribute("aria-label", `ルール${i + 1}を削除`);
+      li.append(tag, from, arrow, to, del);
+      ol.appendChild(li);
+    });
+    markRuleRows();
+  }
+
+  function markRuleRows() {
+    document.querySelectorAll("#rules .rule").forEach((li, i) => {
+      const bad = badRules.has(i);
+      li.classList.toggle("bad", bad);
+      li.querySelector(".from").setAttribute("aria-invalid", bad ? "true" : "false");
+    });
+  }
+
+  function renderConflicts() {
+    const box = $("#conflict");
+    if (conflicts.length === 0) { box.hidden = true; prevConflictKey = ""; return; }
+    box.textContent = "";
+    const head = document.createElement("strong");
+    const icon = document.createElement("span"); icon.className = "icon"; icon.setAttribute("aria-hidden", "true");
+    head.append(icon, "ルールに矛盾があります");
+    const ul = document.createElement("ul");
+    conflicts.forEach((c) => { const li = document.createElement("li"); li.textContent = c; ul.appendChild(li); });
+    const tail = document.createElement("span");
+    tail.textContent = "どちらかのルールを変更または削除すると、計算を再開します。";
+    box.append(head, ul, tail);
+    box.hidden = false;
+    const key = conflicts.join("|");
+    if (key !== prevConflictKey) {
+      box.classList.remove("flash"); void box.offsetWidth; box.classList.add("flash");
+    }
+    prevConflictKey = key;
+  }
+
+  // ---------- rendering: results ----------
+  function ruleLabel(i) {
+    const r = S.rules[i];
+    return r ? `${r.from}→${r.to === "" ? "（削除）" : r.to}` : "";
+  }
+
+  function renderResults() {
+    const list = $("#gensList");
+    const chips = $("#chips");
+    const notices = $("#notices");
+    list.textContent = ""; chips.textContent = ""; notices.textContent = "";
+    const blocked = !compiled;
+    ["#first", "#prev", "#next", "#last", "#slider"].forEach((s) => ($(s).disabled = blocked));
+
+    if (blocked) {
+      $("#genBig").textContent = "計算を停止中";
+      $("#genStat").textContent = "";
+      const li = document.createElement("li");
+      li.className = "blocked";
+      li.textContent = "ルールに矛盾があるため、書き換えを実行できません。左の赤い表示を確認してください。";
+      list.appendChild(li);
+      drawChart();
+      return;
+    }
+
+    const last = gens.length - 1;
+    const g = gens[current];
+    const len = g.str.length;
+    $("#genBig").innerHTML = "";
+    $("#genBig").append(`第${current}世代`);
+    const sm = document.createElement("small"); sm.textContent = `／ ${last}`; $("#genBig").appendChild(sm);
+    let stat = `${fmt(len)}文字`;
+    if (current > 0) {
+      const p = gens[current - 1].str.length;
+      const d = len - p;
+      stat += `（前の世代から ${d >= 0 ? "+" : "−"}${fmt(Math.abs(d))}`;
+      if (p > 0) stat += `、×${(len / p).toFixed(3).replace(/\.?0+$/, "")}`;
+      stat += "）";
+    }
+    $("#genStat").textContent = stat;
+
+    const slider = $("#slider");
+    slider.max = String(last);
+    slider.value = String(current);
+    $("#first").disabled = current === 0;
+    $("#prev").disabled = current === 0;
+    $("#next").disabled = current === last && (!!stopInfo || last >= MAX_GENS);
+    $("#last").disabled = current === last;
+
+    // rule usage chips for this generation
+    if (current > 0 && g.counts) {
+      S.rules.forEach((r, i) => {
+        if (r.from === "") return;
+        const c = g.counts[i] || 0;
+        const chip = document.createElement("span");
+        chip.className = "chip" + (c === 0 ? " zero" : "");
+        const sw = document.createElement("span");
+        sw.className = "swatch" + (i < RULE_COLORS ? "" : " none");
+        if (i < RULE_COLORS) sw.style.setProperty("--c", colorVar(i));
+        chip.append(sw, `ルール${i + 1}  ${ruleLabel(i)}  ×${fmt(c)}`);
+        chip.title = `第${current}世代でルール${i + 1}を使った回数`;
+        chips.appendChild(chip);
+      });
+    } else {
+      const chip = document.createElement("span");
+      chip.className = "chip zero";
+      chip.textContent = "第0世代は最初の文字列です";
+      chips.appendChild(chip);
+    }
+
+    // notices
+    const addNotice = (kind, title, text) => {
+      const div = document.createElement("div");
+      div.className = `alert ${kind}`;
+      const st = document.createElement("strong");
+      const ic = document.createElement("span"); ic.className = "icon"; ic.setAttribute("aria-hidden", "true");
+      st.append(ic, title);
+      const sp = document.createElement("span"); sp.textContent = text;
+      div.append(st, sp);
+      notices.appendChild(div);
+    };
+    if (stopInfo) addNotice("warn", "文字数の上限で停止しました",
+      `第${stopInfo.at}世代は${fmt(stopInfo.len)}文字を超え、上限の${fmt(S.maxLen)}文字を上回るため計算していません。上限は左の設定で変更できます。`);
+    if (fixedAt > 0) addNotice("info", "変化が止まりました",
+      `第${fixedAt}世代は第${fixedAt - 1}世代と同じ文字列です。一致するルールがないため、これ以降も変わりません。`);
+    else if (cycleInfo) addNotice("info", "同じ文字列に戻りました",
+      `第${cycleInfo.at}世代は第${cycleInfo.same}世代と同じ文字列です。以降は${cycleInfo.at - cycleInfo.same}世代ごとに同じ変化を繰り返します。`);
+    if (overlapInfo) addNotice("info", "一致する範囲が重なっています",
+      `第${overlapInfo.gen}世代を作るとき、ルール${overlapInfo.a + 1}「${S.rules[overlapInfo.a].from}」が一致した範囲の途中から、ルール${overlapInfo.b + 1}「${S.rules[overlapInfo.b].from}」も一致していました。左にある方を先に置き換えています。`);
+    notices.hidden = notices.childElementCount === 0;
+
+    // generation rows
+    for (let k = 0; k <= current; k++) list.appendChild(renderGen(k));
+    if (current < last) {
+      const li = document.createElement("li");
+      li.className = "gens-foot";
+      li.textContent = `第${current + 1}〜${last}世代は計算済みです。「次の世代 ▶」で表示します。`;
+      list.appendChild(li);
+    }
+    const wrap = $("#gensWrap");
+    const cur = list.children[current];
+    if (cur) {
+      const bottom = cur.offsetTop + cur.offsetHeight;
+      if (bottom > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = bottom - wrap.clientHeight + 8;
+      else if (cur.offsetTop < wrap.scrollTop) wrap.scrollTop = cur.offsetTop;
+    }
+    drawChart();
+  }
+
+  function renderGen(k) {
+    const g = gens[k];
+    const li = document.createElement("li");
+    li.className = "gen" + (k === current ? " current" : "");
+    const meta = document.createElement("div");
+    meta.className = "g-meta";
+    const num = document.createElement("span"); num.className = "g-num";
+    num.append(`G${k}`);
+    const sm = document.createElement("small"); sm.textContent = `第${k}世代`; num.appendChild(sm);
+    const ln = document.createElement("span"); ln.className = "g-len"; ln.textContent = `${fmt(g.str.length)}文字`;
+    meta.append(num, ln);
+    if (k > 0 && gens[k - 1].str.length > 0) {
+      const ra = document.createElement("span"); ra.className = "g-ratio";
+      ra.textContent = `×${(g.str.length / gens[k - 1].str.length).toFixed(2)}`;
+      meta.appendChild(ra);
+    }
+    const body = document.createElement("div"); body.className = "g-body";
+    const strEl = document.createElement("div"); strEl.className = "g-str";
+    const limit = expanded.has(k) ? EXPANDED_LIMIT : DISPLAY_LIMIT;
+    const total = g.str.length;
+    if (total === 0) {
+      const e = document.createElement("span"); e.className = "empty"; e.textContent = "（空の文字列）";
+      strEl.appendChild(e);
+    } else if (k === 0) {
+      strEl.textContent = g.str.slice(0, limit);
+    } else {
+      const r = apply(gens[k - 1].str, compiled, { segLimit: limit });
+      let used = 0;
+      const frag = document.createDocumentFragment();
+      for (const s of r.segs) {
+        if (used >= limit) break;
+        let t = s.t;
+        if (used + t.length > limit) t = t.slice(0, limit - used);
+        used += t.length;
+        if (s.r < 0) { frag.appendChild(document.createTextNode(t)); continue; }
+        const span = document.createElement("span");
+        span.className = "seg";
+        if (s.r < RULE_COLORS) span.style.setProperty("--c", colorVar(s.r));
+        else span.style.setProperty("--c", "var(--muted)");
+        span.title = `ルール${s.r + 1}：${ruleLabel(s.r)}`;
+        if (t === "") { span.classList.add("del"); span.setAttribute("aria-label", `ルール${s.r + 1}で削除`); }
+        else span.textContent = t;
+        frag.appendChild(span);
+      }
+      strEl.appendChild(frag);
+    }
+    body.appendChild(strEl);
+    if (total > limit) {
+      const tr = document.createElement("span"); tr.className = "g-trunc";
+      tr.textContent = `… ほか${fmt(total - limit)}文字を省略`;
+      body.appendChild(tr);
+    }
+    if (total > DISPLAY_LIMIT) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "more-btn"; b.dataset.gen = k;
+      b.textContent = expanded.has(k) ? "折りたたむ" : `全文を表示（${fmt(Math.min(total, EXPANDED_LIMIT))}文字まで）`;
+      body.appendChild(b);
+    }
+    li.append(meta, body);
+    return li;
+  }
+
+  // ---------- chart ----------
+  function niceStep(raw) {
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / p;
+    const m = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+    return Math.max(1, m * p);
+  }
+  const shortNum = (v) => v >= 1e6 ? `${+(v / 1e6).toFixed(1)}M` : v >= 1e4 ? `${+(v / 1e3).toFixed(1)}k` : fmt(v);
+
+  let chartGeom = null;
+  function drawChart() {
+    const svg = $("#chartSvg");
+    const wrap = $("#chart");
+    $("#tip").hidden = true;
+    const W = Math.max(260, Math.round(wrap.clientWidth || 600));
+    const H = 230;
+    const m = { l: 52, r: 18, t: 14, b: 34 };
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (!compiled || gens.length === 0) {
+      svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">ルールの矛盾を解消するとグラフを表示します</text>`;
+      chartGeom = null;
+      return;
+    }
+    const lens = gens.map((g) => g.str.length);
+    const n = lens.length;
+    const maxV = Math.max(1, ...lens);
+    const pw = W - m.l - m.r, ph = H - m.t - m.b;
+    const x = (i) => m.l + (n <= 1 ? pw / 2 : (i / (n - 1)) * pw);
+    let y, ticks;
+    if (logScale) {
+      const top = Math.max(1, Math.ceil(Math.log10(maxV)));
+      y = (v) => m.t + ph - (Math.log10(Math.max(v, 1)) / top) * ph;
+      ticks = [];
+      const every = top > 6 ? 2 : 1;
+      for (let e = 0; e <= top; e += every) ticks.push(Math.pow(10, e));
+    } else {
+      const step = niceStep(maxV / 4);
+      const top = Math.ceil(maxV / step) * step;
+      y = (v) => m.t + ph - (v / top) * ph;
+      ticks = [];
+      for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v);
+    }
+    let s = "";
+    for (const t of ticks) {
+      const yy = y(t).toFixed(1);
+      s += `<line x1="${m.l}" x2="${W - m.r}" y1="${yy}" y2="${yy}" stroke="var(--grid)" stroke-width="1"/>`;
+      s += `<text x="${m.l - 8}" y="${yy}" text-anchor="end" dominant-baseline="middle">${shortNum(t)}</text>`;
+    }
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${m.t + ph}" y2="${m.t + ph}" stroke="var(--axis)" stroke-width="1"/>`;
+    const xStep = Math.max(1, Math.ceil((n - 1) / Math.max(1, Math.floor(pw / 44))));
+    for (let i = 0; i < n; i += xStep) {
+      s += `<text x="${x(i).toFixed(1)}" y="${m.t + ph + 18}" text-anchor="middle">${i}</text>`;
+    }
+    s += `<text x="${W - m.r}" y="${H - 2}" text-anchor="end">世代</text>`;
+    const cx = x(current).toFixed(1);
+    s += `<line x1="${cx}" x2="${cx}" y1="${m.t}" y2="${m.t + ph}" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3 3"/>`;
+    const pts = lens.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    if (n > 1) {
+      s += `<path d="M${pts.join("L")}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    if (n <= 60) {
+      lens.forEach((v, i) => {
+        if (i === current) return;
+        s += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="var(--series)" stroke="var(--surface)" stroke-width="1.5"/>`;
+      });
+    }
+    s += `<circle cx="${cx}" cy="${y(lens[current]).toFixed(1)}" r="5.5" fill="var(--series)" stroke="var(--surface)" stroke-width="2"/>`;
+    s += `<line id="cross" x1="0" x2="0" y1="${m.t}" y2="${m.t + ph}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>`;
+    s += `<rect id="hit" x="${m.l - 10}" y="0" width="${pw + 20}" height="${H}" fill="transparent" style="cursor:pointer"/>`;
+    svg.innerHTML = s;
+    chartGeom = { W, x, y, n, lens, m, pw };
+  }
+
+  function chartIndexAt(evt) {
+    if (!chartGeom) return -1;
+    const svg = $("#chartSvg");
+    const rect = svg.getBoundingClientRect();
+    const px = ((evt.clientX - rect.left) / rect.width) * chartGeom.W;
+    const { n, m, pw } = chartGeom;
+    if (n <= 1) return 0;
+    return Math.max(0, Math.min(n - 1, Math.round(((px - m.l) / pw) * (n - 1))));
+  }
+
+  $("#chartSvg").addEventListener("pointermove", (e) => {
+    const i = chartIndexAt(e);
+    const tip = $("#tip");
+    const cross = $("#cross");
+    if (i < 0 || !cross) { tip.hidden = true; return; }
+    const { x, y, lens, W } = chartGeom;
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i));
+    cross.setAttribute("visibility", "visible");
+    const svg = $("#chartSvg");
+    const scale = svg.getBoundingClientRect().width / W;
+    tip.innerHTML = "";
+    const b = document.createElement("b"); b.textContent = `第${i}世代`;
+    tip.append(b, document.createElement("br"), `${fmt(lens[i])}文字`);
+    tip.hidden = false;
+    const tw = tip.offsetWidth;
+    const left = Math.max(tw / 2, Math.min(svg.clientWidth - tw / 2, x(i) * scale));
+    tip.style.left = `${left}px`;
+    tip.style.top = `${y(lens[i]) * scale}px`;
+  });
+  $("#chartSvg").addEventListener("pointerleave", () => {
+    $("#tip").hidden = true;
+    const c = $("#cross"); if (c) c.setAttribute("visibility", "hidden");
+  });
+  $("#chartSvg").addEventListener("click", (e) => {
+    const i = chartIndexAt(e);
+    if (i >= 0) goTo(i);
+  });
+  if ("ResizeObserver" in window) {
+    let raf = 0;
+    new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(drawChart); }).observe($("#chart"));
+  }
+
+  // ---------- navigation ----------
+  function goTo(i) {
+    if (!compiled) return;
+    const last = gens.length - 1;
+    current = Math.max(0, Math.min(last, i));
+    followEnd = current === last;
+    renderResults();
+  }
+  function stepNext() {
+    if (!compiled) return;
+    if (current < gens.length - 1) { goTo(current + 1); return; }
+    if (stopInfo || gens.length - 1 >= MAX_GENS) return;
+    S.gens = gens.length;
+    $("#gens").value = S.gens;
+    ensure(S.gens);
+    persist();
+    goTo(gens.length - 1);
+  }
+  $("#first").addEventListener("click", () => goTo(0));
+  $("#prev").addEventListener("click", () => goTo(current - 1));
+  $("#next").addEventListener("click", stepNext);
+  $("#last").addEventListener("click", () => goTo(gens.length - 1));
+  $("#slider").addEventListener("input", (e) => goTo(+e.target.value));
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+    if (e.key === "ArrowRight") { e.preventDefault(); stepNext(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); goTo(current - 1); }
+  });
+  $("#gensList").addEventListener("click", (e) => {
+    const b = e.target.closest(".more-btn");
+    if (!b) return;
+    const k = +b.dataset.gen;
+    if (expanded.has(k)) expanded.delete(k); else expanded.add(k);
+    const wrap = $("#gensWrap");
+    const keep = wrap.scrollTop;
+    renderResults();
+    wrap.scrollTop = keep;
+  });
+  $("#plain").addEventListener("change", (e) => $("#gensList").classList.toggle("plain-on", e.target.checked));
+  $("#logScale").addEventListener("change", (e) => { logScale = e.target.checked; drawChart(); });
+
+  // ---------- inputs ----------
+  let persistTimer = 0;
+  function persist() {
+    $("#codeOut").value = codeOf();
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => lsSet(LS_LAST, codeOf()), 300);
+  }
+  let recomputeTimer = 0;
+  function changed(immediate) {
+    persist();
+    clearTimeout(recomputeTimer);
+    if (immediate) recompute();
+    else recomputeTimer = setTimeout(recompute, 120);
+  }
+
+  $("#initial").addEventListener("input", (e) => { S.initial = e.target.value; changed(); });
+  $("#gens").addEventListener("change", (e) => {
+    let v = Math.round(+e.target.value);
+    if (!Number.isFinite(v) || v < 1) v = 1;
+    if (v > MAX_GENS) v = MAX_GENS;
+    e.target.value = v; S.gens = v; followEnd = true; changed(true);
+  });
+  $("#maxLen").addEventListener("change", (e) => {
+    let v = Math.round(+e.target.value);
+    if (!Number.isFinite(v) || v < 100) v = 100;
+    if (v > 2000000) v = 2000000;
+    e.target.value = v; S.maxLen = v; changed(true);
+  });
+  $("#rules").addEventListener("input", (e) => {
+    const li = e.target.closest(".rule");
+    if (!li) return;
+    const r = S.rules.find((x) => x.id === +li.dataset.id);
+    if (!r) return;
+    if (e.target.classList.contains("from")) r.from = e.target.value;
+    else if (e.target.classList.contains("to")) r.to = e.target.value;
+    changed();
+  });
+  $("#rules").addEventListener("click", (e) => {
+    const b = e.target.closest(".del");
+    if (!b) return;
+    const li = b.closest(".rule");
+    S.rules = S.rules.filter((x) => x.id !== +li.dataset.id);
+    renderRules();
+    changed(true);
+  });
+  $("#addRule").addEventListener("click", () => {
+    const r = mkRule();
+    S.rules.push(r);
+    renderRules();
+    changed(true);
+    const inp = document.getElementById(`from-${r.id}`);
+    if (inp) inp.focus();
+  });
+  $("#example").addEventListener("change", (e) => {
+    const ex = EXAMPLES[e.target.value];
+    e.target.value = "";
+    if (!ex) return;
+    loadConfig(ex);
+    toast("例を読み込みました");
+  });
+
+  // ---------- config I/O ----------
+  function codeOf() {
+    return JSON.stringify({
+      initial: S.initial,
+      rules: S.rules.filter((r) => r.from !== "" || r.to !== "").map((r) => [r.from, r.to]),
+      generations: S.gens,
+      maxLength: S.maxLen,
+    });
+  }
+  function parseConfig(obj) {
+    if (!obj || typeof obj !== "object") throw new Error("設定の形式が正しくありません。");
+    if (typeof obj.initial !== "string") throw new Error("「initial」（最初の文字列）が見つかりません。");
+    if (!Array.isArray(obj.rules)) throw new Error("「rules」（ルールの一覧）が見つかりません。");
+    const rules = obj.rules.map((r, i) => {
+      if (Array.isArray(r) && typeof r[0] === "string" && typeof r[1] === "string") return [r[0], r[1]];
+      if (r && typeof r.from === "string" && typeof r.to === "string") return [r.from, r.to];
+      throw new Error(`ルール${i + 1}の形式が正しくありません。["変換元", "変換先"] の形で書いてください。`);
+    });
+    let g = Math.round(+obj.generations);
+    if (!Number.isFinite(g) || g < 1) g = 8;
+    let ml = Math.round(+obj.maxLength);
+    if (!Number.isFinite(ml) || ml < 100) ml = S.maxLen || 200000;
+    return { initial: obj.initial, rules, generations: Math.min(g, MAX_GENS), maxLength: Math.min(ml, 2000000) };
+  }
+  function loadConfig(raw) {
+    const c = parseConfig(raw);
+    S.initial = c.initial;
+    S.rules = c.rules.map(([f, t]) => mkRule(f, t));
+    S.gens = c.generations;
+    S.maxLen = c.maxLength;
+    $("#initial").value = S.initial;
+    $("#gens").value = S.gens;
+    $("#maxLen").value = S.maxLen;
+    followEnd = true;
+    renderRules();
+    changed(true);
+  }
+  function loadText(text) {
+    const msg = $("#loadMsg");
+    try {
+      loadConfig(JSON.parse(text));
+      msg.className = "msg ok"; msg.textContent = "設定を読み込みました。";
+      toast("設定を読み込みました");
+      return true;
+    } catch (err) {
+      msg.className = "msg err";
+      msg.textContent = err instanceof SyntaxError
+        ? "コードを読み取れませんでした。「設定コード」欄の内容をすべてそのまま貼り付けてください。"
+        : err.message;
+      return false;
+    }
+  }
+  $("#loadCode").addEventListener("click", () => {
+    const t = $("#codeIn").value.trim();
+    if (!t) { const m = $("#loadMsg"); m.className = "msg err"; m.textContent = "読み込むコードを貼り付けてください。"; return; }
+    if (loadText(t)) $("#codeIn").value = "";
+  });
+  $("#fileIn").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { loadText(String(rd.result)); e.target.value = ""; };
+    rd.onerror = () => { const m = $("#loadMsg"); m.className = "msg err"; m.textContent = "ファイルを開けませんでした。"; };
+    rd.readAsText(f);
+  });
+  $("#copyCode").addEventListener("click", () => {
+    const ta = $("#codeOut");
+    ta.value = codeOf();
+    const fallback = () => { ta.focus(); ta.select(); toast("コードを選択しました。Ctrl+C（⌘C）でコピーしてください"); };
+    try {
+      navigator.clipboard.writeText(ta.value).then(() => toast("設定コードをコピーしました"), fallback);
+    } catch (err) { fallback(); }
+  });
+
+  // presets
+  function readPresets() {
+    try { const v = JSON.parse(lsGet(LS_PRESETS) || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  }
+  function renderPresets() {
+    const ul = $("#presets");
+    ul.textContent = "";
+    const list = readPresets();
+    list.forEach((p, idx) => {
+      const li = document.createElement("li"); li.className = "preset";
+      const nm = document.createElement("span"); nm.className = "name"; nm.textContent = p.name; nm.title = p.name;
+      const dt = document.createElement("span"); dt.className = "date";
+      try { dt.textContent = new Date(p.savedAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }); } catch (e) {}
+      const ld = document.createElement("button"); ld.type = "button"; ld.textContent = "読み込む"; ld.dataset.act = "load"; ld.dataset.idx = idx;
+      const dl = document.createElement("button"); dl.type = "button"; dl.className = "ghost"; dl.textContent = "削除"; dl.dataset.act = "del"; dl.dataset.idx = idx;
+      dl.setAttribute("aria-label", `「${p.name}」を削除`);
+      li.append(nm, dt, ld, dl);
+      ul.appendChild(li);
+    });
+  }
+  $("#savePreset").addEventListener("click", () => {
+    const name = $("#presetName").value.trim() || `${S.initial.slice(0, 12) || "（空）"} ・ルール${S.rules.length}個`;
+    const list = readPresets().filter((p) => p.name !== name);
+    list.unshift({ name, config: codeOf(), savedAt: Date.now() });
+    if (lsSet(LS_PRESETS, JSON.stringify(list.slice(0, 50)))) {
+      $("#presetName").value = "";
+      renderPresets();
+      toast(`「${name}」を保存しました`);
+    } else {
+      toast("このブラウザでは保存できません。設定コードをコピーして控えてください");
+    }
+  });
+  let delArm = null;
+  $("#presets").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const list = readPresets();
+    const p = list[+b.dataset.idx];
+    if (!p) return;
+    if (b.dataset.act === "load") {
+      try { loadConfig(JSON.parse(p.config)); toast(`「${p.name}」を読み込みました`); }
+      catch (err) { toast("この保存データは読み込めませんでした"); }
+    } else if (b.dataset.act === "del") {
+      if (delArm === b) {
+        list.splice(+b.dataset.idx, 1);
+        lsSet(LS_PRESETS, JSON.stringify(list));
+        delArm = null;
+        renderPresets();
+        toast(`「${p.name}」を削除しました`);
+      } else {
+        if (delArm) { delArm.textContent = "削除"; delArm.classList.remove("confirm"); }
+        delArm = b; b.textContent = "本当に削除"; b.classList.add("confirm");
+        setTimeout(() => { if (delArm === b) { b.textContent = "削除"; b.classList.remove("confirm"); delArm = null; } }, 3500);
+      }
+    }
+  });
+
+  let toastTimer = 0;
+  function toast(text) {
+    const t = $("#toast");
+    t.textContent = text; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (t.hidden = true), 2600);
+  }
+
+  // ---------- boot ----------
+  let booted = false;
+  const saved = lsGet(LS_LAST);
+  if (saved) { try { loadConfig(JSON.parse(saved)); booted = true; } catch (e) {} }
+  if (!booted) loadConfig(EXAMPLES.osaka2);
+  renderPresets();
+})();
+</script>
+</html>
