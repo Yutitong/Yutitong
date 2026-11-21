@@ -225,6 +225,9 @@ button.confirm { color: var(--danger); border-color: var(--danger); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip .swatch { width: 9px; height: 9px; }
+.chips-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.chips-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 0.85rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.chips.scroll { max-height: 4.6rem; overflow-y: auto; padding-right: 4px; }
 .chip.zero { opacity: 0.55; }
 
 /* generations */
@@ -409,7 +412,10 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
           <button type="button" id="next" class="primary">次の世代 ▶</button>
           <button type="button" id="last">すべて表示</button>
         </div>
-        <div class="chips" id="chips" aria-label="この世代で使われたルール"></div>
+        <div class="chips-wrap">
+          <div class="chips-summary" id="chipsSummary" hidden></div>
+          <div class="chips" id="chips" aria-label="この世代で使われたルール"></div>
+        </div>
       </div>
 
       <div id="notices" class="block"></div>
@@ -443,6 +449,8 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
   "use strict";
   const $ = (s) => document.querySelector(s);
   const RULE_COLORS = 8;
+  const CHIP_INLINE_MAX = 4;
+  let chipsOpen = false;
   const DISPLAY_LIMIT = 1500;
   const EXPANDED_LIMIT = 60000;
   const MAX_GENS = 100;
@@ -721,10 +729,30 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
     $("#last").disabled = current === last;
 
     // rule usage chips for this generation
+    const summary = $("#chipsSummary");
+    summary.textContent = "";
+    summary.hidden = true;
+    chips.hidden = false;
+    chips.classList.remove("scroll");
     if (current > 0 && g.counts) {
-      S.rules.forEach((r, i) => {
-        if (r.from === "") return;
-        const c = g.counts[i] || 0;
+      const live = S.rules.map((r, i) => ({ r, i, c: g.counts[i] || 0 })).filter((x) => x.r.from !== "");
+      const used = live.filter((x) => x.c > 0);
+      const compact = live.length > CHIP_INLINE_MAX;
+      if (compact) {
+        const total = used.reduce((a, x) => a + x.c, 0);
+        const txt = document.createElement("span");
+        txt.textContent = `この世代では ${live.length}個中 ${used.length}個のルールを使い、計${fmt(total)}回置き換えました`;
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.className = "more-btn"; btn.id = "chipsToggle";
+        btn.setAttribute("aria-expanded", String(chipsOpen));
+        btn.setAttribute("aria-controls", "chips");
+        btn.textContent = chipsOpen ? "内訳を隠す ▴" : "内訳を表示 ▾";
+        summary.append(txt, btn);
+        summary.hidden = false;
+        chips.hidden = !chipsOpen;
+        chips.classList.add("scroll");
+      }
+      (compact ? used : live).forEach(({ r, i, c }) => {
         const chip = document.createElement("span");
         chip.className = "chip" + (c === 0 ? " zero" : "");
         const sw = document.createElement("span");
@@ -734,6 +762,12 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
         chip.title = `第${current}世代でルール${i + 1}を使った回数`;
         chips.appendChild(chip);
       });
+      if (compact && used.length < live.length) {
+        const rest = document.createElement("span");
+        rest.className = "chip zero";
+        rest.textContent = `未使用のルール ${live.length - used.length}個`;
+        chips.appendChild(rest);
+      }
     } else {
       const chip = document.createElement("span");
       chip.className = "chip zero";
@@ -995,6 +1029,14 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
     const keep = wrap.scrollTop;
     renderResults();
     wrap.scrollTop = keep;
+  });
+  $("#chipsSummary").addEventListener("click", (e) => {
+    const b = e.target.closest("#chipsToggle");
+    if (!b) return;
+    chipsOpen = !chipsOpen;
+    $("#chips").hidden = !chipsOpen;
+    b.setAttribute("aria-expanded", String(chipsOpen));
+    b.textContent = chipsOpen ? "内訳を隠す ▴" : "内訳を表示 ▾";
   });
   $("#plain").addEventListener("change", (e) => $("#gensList").classList.toggle("plain-on", e.target.checked));
   $("#logScale").addEventListener("change", (e) => { logScale = e.target.checked; drawChart(); });
