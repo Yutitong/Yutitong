@@ -156,7 +156,8 @@ button.ghost:hover:not(:disabled) { color: var(--danger); border-color: transpar
 button.confirm { color: var(--danger); border-color: var(--danger); }
 
 /* rules */
-.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rules { list-style: none; margin: 0; padding: 0 4px 0 0; display: flex; flex-direction: column; gap: 8px; max-height: 28rem; overflow-y: auto; }
+.rule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .rule {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1.4fr) auto;
@@ -337,13 +338,15 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
       </div>
 
       <div class="block">
-        <div class="section-head">
-          <h2>変換ルール</h2>
-          <button type="button" id="addRule">＋ ルールを追加</button>
-        </div>
+        <h2>変換ルール</h2>
         <p class="hint">1世代の中では、文字列を左から読み、一致した部分を一度だけ置き換えます。置き換えた結果は、次の世代まで書き換えられません。変換先を空にすると、その文字列は消えます。</p>
         <div id="conflict" class="alert danger" role="alert" hidden></div>
         <ol id="rules" class="rules"></ol>
+        <div class="rule-actions">
+          <button type="button" id="addRule">＋ ルールを追加</button>
+          <button type="button" id="randomKana">五十音をランダムに変換</button>
+        </div>
+        <p class="hint">「五十音をランダムに変換」は、あ〜んと濁音・半濁音の71文字それぞれを、自分以外のどれか1文字に変えるルールを作ります。変換先は重なることがあります。今のルールはすべて置き換わり、押すたびに作り直します。</p>
       </div>
 
       <div class="block">
@@ -1092,7 +1095,43 @@ input[type="file"] { font-size: 0.82rem; color: var(--ink-2); max-width: 100%; }
     renderRules();
     changed(true);
     const inp = document.getElementById(`from-${r.id}`);
-    if (inp) inp.focus();
+    if (inp) {
+      inp.focus({ preventScroll: true });
+      inp.closest(".rule").scrollIntoView({ block: "nearest" });
+    }
+  });
+
+  const KANA = [..."あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんがぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽ"];
+  let randArmed = false, randTimer = 0;
+  function disarmRandom() {
+    randArmed = false;
+    clearTimeout(randTimer);
+    const b = $("#randomKana");
+    b.textContent = "五十音をランダムに変換";
+    b.classList.remove("confirm");
+  }
+  $("#randomKana").addEventListener("click", (e) => {
+    const b = e.currentTarget;
+    const hasOwnRules = S.rules.some((r) => r.from !== "" || r.to !== "");
+    if (hasOwnRules && !randArmed) {
+      randArmed = true;
+      b.textContent = "今のルールを消して作成";
+      b.classList.add("confirm");
+      clearTimeout(randTimer);
+      randTimer = setTimeout(disarmRandom, 4000);
+      return;
+    }
+    disarmRandom();
+    S.rules = KANA.map((c) => {
+      let t;
+      do { t = KANA[Math.floor(Math.random() * KANA.length)]; } while (t === c);
+      return mkRule(c, t);
+    });
+    followEnd = true;
+    renderRules();
+    changed(true);
+    $("#rules").scrollTop = 0;
+    toast(`${KANA.length}文字の変換ルールをランダムに作りました`);
   });
   $("#example").addEventListener("change", (e) => {
     const ex = EXAMPLES[e.target.value];
